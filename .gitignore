@@ -1,0 +1,3 @@
+plugins/memory-lancedb-pro/
+projects/*/temp/
+projects/*/.sisyphus/
