@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=""
+ACTOR="orchestrator"
+TEXT=""
+MODE="apply"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --root)
+      ROOT="${2:-}"
+      shift 2
+      ;;
+    --actor)
+      ACTOR="${2:-}"
+      shift 2
+      ;;
+    --text)
+      TEXT="${2:-}"
+      shift 2
+      ;;
+    --mode)
+      MODE="${2:-}"
+      shift 2
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$TEXT" ]]; then
+  echo "usage: orchestrator-router --text <command> [--root <path>] [--actor <name>] [--mode route|apply]" >&2
+  exit 2
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="$SCRIPT_DIR/lib/task_board.py"
+
+if [[ "$MODE" == "route" ]]; then
+  python3 "$PY" route --actor "$ACTOR" --text "$TEXT"
+  exit 0
+fi
+
+if [[ -z "$ROOT" ]]; then
+  echo "--root is required in apply mode" >&2
+  exit 2
+fi
+
+python3 "$PY" apply --root "$ROOT" --actor "$ACTOR" --text "$TEXT"

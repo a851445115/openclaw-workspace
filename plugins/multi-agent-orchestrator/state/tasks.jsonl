@@ -1,0 +1,3 @@
+{"eventId": "90446104-8987-490e-816d-3693435f9a80", "taskId": "T-101", "type": "task_created", "messageType": "[TASK]", "actor": "lead", "at": "2026-02-26T16:23:27Z", "payload": {"title": "implement collaboration protocol", "assigneeHint": "lead"}}
+{"eventId": "4a1461b9-1c97-4fb0-a4f5-95d2b7f75640", "taskId": "T-101", "type": "task_claimed", "messageType": "[CLAIM]", "actor": "coder", "at": "2026-02-26T16:23:27Z", "payload": {"from": "pending", "to": "claimed", "owner": "coder"}}
+{"eventId": "8e808ebe-6d52-4576-8853-891a3132e791", "taskId": "T-101", "type": "task_done", "messageType": "[DONE]", "actor": "coder", "at": "2026-02-26T16:23:27Z", "payload": {"from": "claimed", "to": "done", "result": "protocol and router implemented"}}

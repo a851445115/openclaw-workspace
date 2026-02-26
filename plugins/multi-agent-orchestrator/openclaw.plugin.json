@@ -1,0 +1,51 @@
+{
+  "id": "multi-agent-orchestrator",
+  "name": "Multi Agent Orchestrator",
+  "description": "Minimal scaffold for file-backed team orchestration.",
+  "skills": ["."],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "projectId": { "type": "string" },
+      "channel": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "provider": { "type": "string", "enum": ["feishu"] },
+          "groupId": { "type": "string" },
+          "milestoneOnly": { "type": "boolean", "default": true }
+        }
+      },
+      "orchestrator": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "maxConcurrentSpawns": { "type": "integer", "minimum": 1, "default": 3 }
+        }
+      },
+      "protocol": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "messageTypes": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "TASK": { "type": "string", "default": "[TASK]" },
+              "CLAIM": { "type": "string", "default": "[CLAIM]" },
+              "DONE": { "type": "string", "default": "[DONE]" },
+              "BLOCKED": { "type": "string", "default": "[BLOCKED]" },
+              "REVIEW": { "type": "string", "default": "[REVIEW]" }
+            }
+          },
+          "allowDirectAgentOverride": { "type": "boolean", "default": true }
+        }
+      },
+      "agents": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    }
+  }
+}

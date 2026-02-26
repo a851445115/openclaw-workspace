@@ -1,0 +1,321 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import re
+import sys
+import uuid
+from datetime import datetime, timezone
+
+MESSAGE_TYPES = {
+    "TASK": "[TASK]",
+    "CLAIM": "[CLAIM]",
+    "DONE": "[DONE]",
+    "BLOCKED": "[BLOCKED]",
+    "REVIEW": "[REVIEW]",
+}
+
+ALLOWED_TRANSITIONS = {
+    "pending": {"claimed"},
+    "claimed": {"in_progress", "done", "blocked"},
+    "in_progress": {"review", "done", "blocked", "failed"},
+    "review": {"done", "in_progress", "blocked"},
+    "blocked": {"in_progress", "claimed"},
+    "failed": {"in_progress"},
+    "done": set(),
+}
+
+
+def now_iso():
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def ensure_state(root):
+    state_dir = os.path.join(root, "state")
+    locks_dir = os.path.join(state_dir, "locks")
+    os.makedirs(locks_dir, exist_ok=True)
+    jsonl = os.path.join(state_dir, "tasks.jsonl")
+    snapshot = os.path.join(state_dir, "tasks.snapshot.json")
+    if not os.path.exists(jsonl):
+        with open(jsonl, "w", encoding="utf-8"):
+            pass
+    if not os.path.exists(snapshot):
+        data = {"tasks": {}, "meta": {"version": 2, "updatedAt": now_iso()}}
+        with open(snapshot, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=True, indent=2)
+            f.write("\n")
+    return jsonl, snapshot
+
+
+def load_snapshot(path):
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if "tasks" not in data or not isinstance(data["tasks"], dict):
+        raise ValueError("invalid snapshot format: tasks must be object")
+    return data
+
+
+def save_snapshot(path, data):
+    data.setdefault("meta", {})
+    data["meta"]["updatedAt"] = now_iso()
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=True, indent=2)
+        f.write("\n")
+
+
+def append_event(jsonl_path, event):
+    with open(jsonl_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(event, ensure_ascii=True) + "\n")
+
+
+def make_event(task_id, event_type, actor, message_type, payload):
+    return {
+        "eventId": str(uuid.uuid4()),
+        "taskId": task_id,
+        "type": event_type,
+        "messageType": message_type,
+        "actor": actor,
+        "at": now_iso(),
+        "payload": payload,
+    }
+
+
+def parse_override(text):
+    m = re.match(r"^\s*@([A-Za-z0-9_.-]+)\s+(.*)$", text)
+    if not m:
+        return None, text.strip()
+    return m.group(1), m.group(2).strip()
+
+
+def parse_route(text):
+    override, body = parse_override(text)
+    lower = body.lower()
+
+    m = re.match(r"^create\s+task(?:\s+([A-Za-z0-9_-]+))?\s*:?\s*(.+)$", body, flags=re.IGNORECASE)
+    if m:
+        task_id = m.group(1)
+        title = m.group(2).strip()
+        return {"intent": "create_task", "overrideAgent": override, "taskId": task_id, "title": title}
+
+    m = re.match(r"^claim\s+task\s+([A-Za-z0-9_-]+)$", body, flags=re.IGNORECASE)
+    if m:
+        return {"intent": "claim_task", "overrideAgent": override, "taskId": m.group(1)}
+
+    m = re.match(r"^mark\s+done\s+([A-Za-z0-9_-]+)(?:\s*:?\s*(.*))?$", body, flags=re.IGNORECASE)
+    if m:
+        return {
+            "intent": "mark_done",
+            "overrideAgent": override,
+            "taskId": m.group(1),
+            "result": (m.group(2) or "").strip(),
+        }
+
+    m = re.match(r"^block\s+task\s+([A-Za-z0-9_-]+)(?:\s*:?\s*(.*))?$", body, flags=re.IGNORECASE)
+    if m:
+        return {
+            "intent": "block_task",
+            "overrideAgent": override,
+            "taskId": m.group(1),
+            "reason": (m.group(2) or "").strip(),
+        }
+
+    m = re.match(r"^status(?:\s+([A-Za-z0-9_-]+))?$", body, flags=re.IGNORECASE)
+    if m:
+        return {"intent": "status", "overrideAgent": override, "taskId": m.group(1)}
+
+    m = re.match(r"^synthesize(?:\s+([A-Za-z0-9_-]+))?$", body, flags=re.IGNORECASE)
+    if m:
+        return {"intent": "synthesize", "overrideAgent": override, "taskId": m.group(1)}
+
+    return {"intent": "unknown", "overrideAgent": override, "raw": body}
+
+
+def next_task_id(tasks):
+    nums = []
+    for tid in tasks.keys():
+        m = re.match(r"^T-(\d+)$", tid)
+        if m:
+            nums.append(int(m.group(1)))
+    n = (max(nums) + 1) if nums else 1
+    return f"T-{n:03d}"
+
+
+def cmd_init(args):
+    jsonl, snapshot = ensure_state(args.root)
+    print(json.dumps({"ok": True, "jsonl": jsonl, "snapshot": snapshot}))
+    return 0
+
+
+def cmd_route(args):
+    route = parse_route(args.text)
+    route["actor"] = args.actor
+    print(json.dumps(route, ensure_ascii=True))
+    return 0
+
+
+def cmd_apply(args):
+    jsonl, snapshot = ensure_state(args.root)
+    data = load_snapshot(snapshot)
+    tasks = data["tasks"]
+    route = parse_route(args.text)
+    actor = args.actor
+    assignee = route.get("overrideAgent") or actor
+
+    intent = route["intent"]
+    if intent == "create_task":
+        task_id = route.get("taskId") or next_task_id(tasks)
+        if task_id in tasks:
+            print(json.dumps({"ok": False, "error": f"task exists: {task_id}"}))
+            return 1
+        title = route.get("title") or "untitled"
+        task = {
+            "taskId": task_id,
+            "title": title,
+            "status": "pending",
+            "owner": None,
+            "createdBy": actor,
+            "createdAt": now_iso(),
+            "updatedAt": now_iso(),
+            "blockedReason": None,
+            "result": None,
+            "review": None,
+            "history": [],
+        }
+        event = make_event(task_id, "task_created", actor, MESSAGE_TYPES["TASK"], {"title": title, "assigneeHint": assignee})
+        task["history"].append(event["eventId"])
+        tasks[task_id] = task
+        append_event(jsonl, event)
+        save_snapshot(snapshot, data)
+        print(json.dumps({"ok": True, "intent": intent, "taskId": task_id, "assigneeHint": assignee}))
+        return 0
+
+    if intent in {"claim_task", "mark_done", "block_task", "status", "synthesize"}:
+        task_id = route.get("taskId")
+    else:
+        task_id = None
+
+    if intent == "status":
+        if task_id:
+            task = tasks.get(task_id)
+            if not task:
+                print(json.dumps({"ok": False, "error": f"task not found: {task_id}"}))
+                return 1
+            print(json.dumps({"ok": True, "task": task}, ensure_ascii=True))
+            return 0
+        by_status = {}
+        for t in tasks.values():
+            by_status[t["status"]] = by_status.get(t["status"], 0) + 1
+        print(json.dumps({"ok": True, "counts": by_status, "total": len(tasks)}))
+        return 0
+
+    if intent == "synthesize":
+        selected = []
+        for t in tasks.values():
+            if task_id and t["taskId"] != task_id:
+                continue
+            if t["status"] in {"done", "review", "blocked"}:
+                selected.append(t)
+        lines = ["SYNTHESIS REPORT"]
+        for t in sorted(selected, key=lambda x: x["taskId"]):
+            detail = t.get("result") or t.get("review") or t.get("blockedReason") or "(no detail)"
+            lines.append(f"- {t['taskId']} [{t['status']}] owner={t.get('owner') or '-'} :: {detail}")
+        if len(lines) == 1:
+            lines.append("- no completed/review/blocked tasks found")
+        print(json.dumps({"ok": True, "intent": intent, "report": "\n".join(lines)}))
+        return 0
+
+    if not task_id or task_id not in tasks:
+        print(json.dumps({"ok": False, "error": f"task not found: {task_id}"}))
+        return 1
+
+    task = tasks[task_id]
+
+    if intent == "claim_task":
+        if task["status"] not in {"pending", "claimed", "in_progress"}:
+            print(json.dumps({"ok": False, "error": f"cannot claim task in status {task['status']}"}))
+            return 1
+        prev = task["status"]
+        task["status"] = "claimed" if prev == "pending" else "in_progress"
+        task["owner"] = assignee
+        task["updatedAt"] = now_iso()
+        event = make_event(task_id, "task_claimed", actor, MESSAGE_TYPES["CLAIM"], {"from": prev, "to": task["status"], "owner": assignee})
+        task["history"].append(event["eventId"])
+        append_event(jsonl, event)
+        save_snapshot(snapshot, data)
+        print(json.dumps({"ok": True, "intent": intent, "taskId": task_id, "owner": assignee, "status": task["status"]}))
+        return 0
+
+    if intent == "mark_done":
+        prev = task["status"]
+        if "done" not in ALLOWED_TRANSITIONS.get(prev, set()) and prev != "done":
+            print(json.dumps({"ok": False, "error": f"invalid transition: {prev} -> done"}))
+            return 1
+        task["status"] = "done"
+        task["owner"] = task.get("owner") or assignee
+        task["result"] = route.get("result") or task.get("result") or "done"
+        task["updatedAt"] = now_iso()
+        event = make_event(task_id, "task_done", actor, MESSAGE_TYPES["DONE"], {"from": prev, "to": "done", "result": task["result"]})
+        task["history"].append(event["eventId"])
+        append_event(jsonl, event)
+        save_snapshot(snapshot, data)
+        print(json.dumps({"ok": True, "intent": intent, "taskId": task_id, "status": "done"}))
+        return 0
+
+    if intent == "block_task":
+        prev = task["status"]
+        if "blocked" not in ALLOWED_TRANSITIONS.get(prev, set()) and prev != "blocked":
+            print(json.dumps({"ok": False, "error": f"invalid transition: {prev} -> blocked"}))
+            return 1
+        reason = route.get("reason") or "unspecified blocker"
+        task["status"] = "blocked"
+        task["blockedReason"] = reason
+        task["updatedAt"] = now_iso()
+        event = make_event(task_id, "task_blocked", actor, MESSAGE_TYPES["BLOCKED"], {"from": prev, "to": "blocked", "reason": reason})
+        task["history"].append(event["eventId"])
+        append_event(jsonl, event)
+        save_snapshot(snapshot, data)
+        print(json.dumps({"ok": True, "intent": intent, "taskId": task_id, "status": "blocked"}))
+        return 0
+
+    print(json.dumps({"ok": False, "error": f"unsupported intent: {intent}"}))
+    return 1
+
+
+def cmd_transition(args):
+    if args.to_status not in ALLOWED_TRANSITIONS.get(args.from_status, set()):
+        print(f"invalid transition: {args.from_status} -> {args.to_status}", file=sys.stderr)
+        return 1
+    print(f"valid transition: {args.from_status} -> {args.to_status}")
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_init = sub.add_parser("init")
+    p_init.add_argument("--root", required=True)
+    p_init.set_defaults(func=cmd_init)
+
+    p_route = sub.add_parser("route")
+    p_route.add_argument("--actor", required=True)
+    p_route.add_argument("--text", required=True)
+    p_route.set_defaults(func=cmd_route)
+
+    p_apply = sub.add_parser("apply")
+    p_apply.add_argument("--root", required=True)
+    p_apply.add_argument("--actor", required=True)
+    p_apply.add_argument("--text", required=True)
+    p_apply.set_defaults(func=cmd_apply)
+
+    p_transition = sub.add_parser("transition")
+    p_transition.add_argument("--from", dest="from_status", required=True)
+    p_transition.add_argument("--to", dest="to_status", required=True)
+    p_transition.set_defaults(func=cmd_transition)
+
+    args = parser.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

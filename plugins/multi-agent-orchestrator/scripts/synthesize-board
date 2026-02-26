@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=""
+ACTOR="orchestrator"
+TASK_ID=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --root)
+      ROOT="${2:-}"
+      shift 2
+      ;;
+    --actor)
+      ACTOR="${2:-}"
+      shift 2
+      ;;
+    --task-id)
+      TASK_ID="${2:-}"
+      shift 2
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$ROOT" ]]; then
+  echo "usage: synthesize-board --root <path> [--task-id <id>] [--actor <name>]" >&2
+  exit 2
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="$SCRIPT_DIR/lib/task_board.py"
+
+if [[ -n "$TASK_ID" ]]; then
+  TEXT="synthesize ${TASK_ID}"
+else
+  TEXT="synthesize"
+fi
+
+python3 "$PY" apply --root "$ROOT" --actor "$ACTOR" --text "$TEXT"

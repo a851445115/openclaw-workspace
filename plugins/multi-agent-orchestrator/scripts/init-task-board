@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=""
+DRY_RUN=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --root)
+      ROOT="${2:-}"
+      shift 2
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$ROOT" ]]; then
+  echo "usage: init-task-board --root <path> [--dry-run]" >&2
+  exit 2
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="$SCRIPT_DIR/lib/task_board.py"
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "[dry-run] python3 $PY init --root $ROOT"
+  exit 0
+fi
+
+python3 "$PY" init --root "$ROOT"

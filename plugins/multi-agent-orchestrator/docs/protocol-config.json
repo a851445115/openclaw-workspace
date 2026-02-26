@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "messageTypes": {
+    "TASK": "[TASK]",
+    "CLAIM": "[CLAIM]",
+    "DONE": "[DONE]",
+    "BLOCKED": "[BLOCKED]",
+    "REVIEW": "[REVIEW]"
+  },
+  "intents": [
+    "create_task",
+    "claim_task",
+    "mark_done",
+    "block_task",
+    "status",
+    "synthesize"
+  ],
+  "routing": {
+    "directOverridePrefix": "@",
+    "metadataOnly": true
+  }
+}

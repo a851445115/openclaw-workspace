@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=""
+TASK_ID=""
+AGENT=""
+DRY_RUN=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --root)
+      ROOT="${2:-}"
+      shift 2
+      ;;
+    --task-id)
+      TASK_ID="${2:-}"
+      shift 2
+      ;;
+    --agent)
+      AGENT="${2:-}"
+      shift 2
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$ROOT" || -z "$TASK_ID" || -z "$AGENT" ]]; then
+  echo "usage: claim-task --root <path> --task-id <id> --agent <name> [--dry-run]" >&2
+  exit 2
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="$SCRIPT_DIR/lib/task_board.py"
+TEXT="@${AGENT} claim task ${TASK_ID}"
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "[dry-run] python3 $PY apply --root $ROOT --actor $AGENT --text '$TEXT'"
+  exit 0
+fi
+
+python3 "$PY" apply --root "$ROOT" --actor "$AGENT" --text "$TEXT"

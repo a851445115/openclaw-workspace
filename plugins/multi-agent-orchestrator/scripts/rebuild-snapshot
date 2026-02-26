@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=""
+MODE="dry-run"
+INPUT_JSONL=""
+OUTPUT_SNAPSHOT=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --root)
+      ROOT="${2:-}"
+      shift 2
+      ;;
+    --input)
+      INPUT_JSONL="${2:-}"
+      shift 2
+      ;;
+    --output)
+      OUTPUT_SNAPSHOT="${2:-}"
+      shift 2
+      ;;
+    --apply)
+      MODE="apply"
+      shift
+      ;;
+    --dry-run)
+      MODE="dry-run"
+      shift
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$ROOT" ]]; then
+  echo "usage: rebuild-snapshot --root <path> [--input <tasks.jsonl>] [--output <tasks.snapshot.json>] [--dry-run|--apply]" >&2
+  exit 2
+fi
+
+if [[ -z "$INPUT_JSONL" ]]; then
+  INPUT_JSONL="$ROOT/state/tasks.jsonl"
+fi
+
+if [[ -z "$OUTPUT_SNAPSHOT" ]]; then
+  OUTPUT_SNAPSHOT="$ROOT/state/tasks.snapshot.rebuilt.json"
+fi
+
+if [[ ! -f "$INPUT_JSONL" ]]; then
+  echo "{\"ok\": false, \"error\": \"missing input jsonl\", \"input\": \"$INPUT_JSONL\"}" >&2
+  exit 1
+fi
+
+# TODO (Milestone C implementation):
+# 1) Replay all events from tasks.jsonl using deterministic reducer.
+# 2) Build canonical snapshot object.
+# 3) Compare rebuilt snapshot with live snapshot hash.
+# 4) In dry-run, report diff summary only.
+# 5) In apply mode, write output snapshot atomically.
+
+LINE_COUNT=$(wc -l < "$INPUT_JSONL" | tr -d ' ')
+echo "{\"ok\": true, \"mode\": \"$MODE\", \"input\": \"$INPUT_JSONL\", \"output\": \"$OUTPUT_SNAPSHOT\", \"events\": $LINE_COUNT, \"todo\": \"replay reducer not implemented yet\"}"

@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=""
+TTL_SECONDS=30
+GRACE_SECONDS=15
+MODE="dry-run"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --root)
+      ROOT="${2:-}"
+      shift 2
+      ;;
+    --ttl-seconds)
+      TTL_SECONDS="${2:-30}"
+      shift 2
+      ;;
+    --grace-seconds)
+      GRACE_SECONDS="${2:-15}"
+      shift 2
+      ;;
+    --apply)
+      MODE="apply"
+      shift
+      ;;
+    --dry-run)
+      MODE="dry-run"
+      shift
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$ROOT" ]]; then
+  echo "usage: recover-stale-locks --root <path> [--ttl-seconds <n>] [--grace-seconds <n>] [--dry-run|--apply]" >&2
+  exit 2
+fi
+
+LOCK_DIR="$ROOT/state/locks"
+if [[ ! -d "$LOCK_DIR" ]]; then
+  echo "{\"ok\": true, \"mode\": \"$MODE\", \"message\": \"no lock directory\", \"lockDir\": \"$LOCK_DIR\"}"
+  exit 0
+fi
+
+# TODO (Milestone C implementation):
+# 1) Parse lock metadata JSON files.
+# 2) Determine stale locks by expiresAt + grace and optional owner pid liveness.
+# 3) In dry-run, print candidates only.
+# 4) In apply mode, remove only stale candidates and emit audit entries.
+
+echo "{\"ok\": true, \"mode\": \"$MODE\", \"lockDir\": \"$LOCK_DIR\", \"ttlSeconds\": $TTL_SECONDS, \"graceSeconds\": $GRACE_SECONDS, \"todo\": \"stale lock detection and recovery not implemented yet\"}"

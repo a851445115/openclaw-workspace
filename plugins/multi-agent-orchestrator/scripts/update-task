@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=""
+TASK_ID=""
+FROM=""
+TO=""
+ACTOR="orchestrator"
+DRY_RUN=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --root)
+      ROOT="${2:-}"
+      shift 2
+      ;;
+    --task-id)
+      TASK_ID="${2:-}"
+      shift 2
+      ;;
+    --from)
+      FROM="${2:-}"
+      shift 2
+      ;;
+    --to)
+      TO="${2:-}"
+      shift 2
+      ;;
+    --actor)
+      ACTOR="${2:-}"
+      shift 2
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$ROOT" || -z "$TASK_ID" || -z "$FROM" || -z "$TO" ]]; then
+  echo "usage: update-task --root <path> --task-id <id> --from <status> --to <status> [--actor <name>] [--dry-run]" >&2
+  exit 2
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="$SCRIPT_DIR/lib/task_board.py"
+
+python3 "$PY" transition --from "$FROM" --to "$TO" >/dev/null
+
+case "$TO" in
+  done)
+    TEXT="mark done ${TASK_ID}: status updated via update-task"
+    ;;
+  blocked)
+    TEXT="block task ${TASK_ID}: status updated via update-task"
+    ;;
+  claimed|in_progress)
+    TEXT="@${ACTOR} claim task ${TASK_ID}"
+    ;;
+  *)
+    echo "unsupported target status in milestone-b wrapper: $TO" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "[dry-run] python3 $PY apply --root $ROOT --actor $ACTOR --text '$TEXT'"
+  exit 0
+fi
+
+python3 "$PY" apply --root "$ROOT" --actor "$ACTOR" --text "$TEXT"
