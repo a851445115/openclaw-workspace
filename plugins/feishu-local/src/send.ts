@@ -8,6 +8,52 @@ import { assertFeishuMessageApiSuccess, toFeishuSendResult } from "./send-result
 import { resolveReceiveIdType, normalizeFeishuTarget } from "./targets.js";
 import type { FeishuSendResult, ResolvedFeishuAccount } from "./types.js";
 
+// ============================================================================
+// Retry Configuration
+// ============================================================================
+
+const DEFAULT_MAX_RETRIES = 3;
+const DEFAULT_CONNECT_TIMEOUT = 30000;
+const DEFAULT_RETRY_DELAY = 1000;
+const DEFAULT_RETRYABLE_ERRORS = [
+  "230011", // message gone
+  "231003", // reply message deleted
+  "500",    // internal server error
+  "502",    // bad gateway
+  "503",    // service unavailable
+  "ETIMEDOUT",
+  "ECONNRESET",
+];
+
+function getRetryConfig(cfg: ClawdbotConfig) {
+  const feishuConfig = cfg.channels?.feishu as Record<string, unknown> | undefined;
+  const retryConfig = feishuConfig?.retry as Record<string, unknown> | undefined;
+  return {
+    maxRetries: (retryConfig?.maxRetries as number) ?? DEFAULT_MAX_RETRIES,
+    connectTimeout: (retryConfig?.connectTimeout as number) ?? DEFAULT_CONNECT_TIMEOUT,
+    retryDelay: (retryConfig?.retryDelay as number) ?? DEFAULT_RETRY_DELAY,
+    retryableErrors: (retryConfig?.retryableErrors as string[]) ?? DEFAULT_RETRYABLE_ERRORS,
+  };
+}
+
+function isRetryableError(error: unknown, retryableErrors: string[]): boolean {
+  const errorStr = String(error ?? "");
+  return retryableErrors.some((code) => errorStr.includes(code));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`Connection timeout after ${ms}ms`)), ms)
+    ),
+  ]);
+}
+
 export type FeishuMessageInfo = {
   messageId: string;
   chatId: string;
@@ -154,28 +200,58 @@ export async function sendMessageFeishu(
 
   const { content, msgType } = buildFeishuPostMessagePayload({ messageText });
 
-  if (replyToMessageId) {
-    const response = await client.im.message.reply({
-      path: { message_id: replyToMessageId },
-      data: {
-        content,
-        msg_type: msgType,
-      },
-    });
-    assertFeishuMessageApiSuccess(response, "Feishu reply failed");
-    return toFeishuSendResult(response, receiveId);
+  // Get retry config
+  const retryConfig = getRetryConfig(cfg);
+
+  // Retry loop
+  let lastError: Error | unknown;
+  for (let attempt = 0; attempt < retryConfig.maxRetries; attempt++) {
+    try {
+      if (replyToMessageId) {
+        const response = await withTimeout(
+          client.im.message.reply({
+            path: { message_id: replyToMessageId },
+            data: {
+              content,
+              msg_type: msgType,
+            },
+          }),
+          retryConfig.connectTimeout,
+        );
+        assertFeishuMessageApiSuccess(response, "Feishu reply failed");
+        return toFeishuSendResult(response, receiveId);
+      }
+
+      const response = await withTimeout(
+        client.im.message.create({
+          params: { receive_id_type: receiveIdType },
+          data: {
+            receive_id: receiveId,
+            content,
+            msg_type: msgType,
+          },
+        }),
+        retryConfig.connectTimeout,
+      );
+      assertFeishuMessageApiSuccess(response, "Feishu send failed");
+      return toFeishuSendResult(response, receiveId);
+    } catch (error) {
+      lastError = error;
+      const isRetryable = isRetryableError(error, retryConfig.retryableErrors);
+
+      // Don't retry if error is not retryable
+      if (!isRetryable || attempt === retryConfig.maxRetries - 1) {
+        throw error;
+      }
+
+      // Exponential backoff
+      const delay = retryConfig.retryDelay * Math.pow(2, attempt);
+      await sleep(delay);
+    }
   }
 
-  const response = await client.im.message.create({
-    params: { receive_id_type: receiveIdType },
-    data: {
-      receive_id: receiveId,
-      content,
-      msg_type: msgType,
-    },
-  });
-  assertFeishuMessageApiSuccess(response, "Feishu send failed");
-  return toFeishuSendResult(response, receiveId);
+  // Should not reach here, but just in case
+  throw lastError;
 }
 
 export type SendFeishuCardParams = {

@@ -131,7 +131,11 @@ function splitFeishuReasoningText(text: string): {
 
   // Check if text starts with reasoning prefix (already formatted)
   if (trimmed.startsWith(REASONING_MESSAGE_PREFIX) && trimmed.length > 11) {
-    return { reasoningText: trimmed };
+    const contentAfterPrefix = trimmed.slice(REASONING_MESSAGE_PREFIX.length).trim();
+    return {
+      reasoningText: trimmed,
+      answerText: contentAfterPrefix || undefined,
+    };
   }
 
   // Extract reasoning from tags (e.g., <think韵</think韵)
@@ -150,16 +154,35 @@ function splitFeishuReasoningText(text: string): {
 
   return {
     reasoningText: taggedReasoning ? formatReasoningMessage(taggedReasoning) : undefined,
-    answerText: strippedAnswer || undefined,
+    // 如果 strippedAnswer 为空但原始文本不为空，使用原始文本作为 answer（避免消息丢失）
+    answerText: strippedAnswer || (trimmed ? trimmed : undefined),
   };
 }
 
 // ============================================================================
-// Constants
+// Constants - Configurable via cfg.channels.feishu.retry
 // ============================================================================
 
-const FINAL_TEXT_RETRY_MAX_ATTEMPTS = 4;
-const FINAL_TEXT_RETRY_BASE_DELAY_MS = 1200;
+const DEFAULT_RETRY_ATTEMPTS = 4;
+const DEFAULT_RETRY_DELAY_MS = 1200;
+const DEFAULT_RETRYABLE_ERRORS = [
+  "230011", "231003", "500", "502", "503", "ETIMEDOUT", "ECONNRESET",
+];
+
+// Get retry config from cfg (with defaults)
+function getRetryConfig(cfg: ClawdbotConfig) {
+  const feishuConfig = cfg.channels?.feishu as Record<string, unknown> | undefined;
+  const retryConfig = feishuConfig?.retry as Record<string, unknown> | undefined;
+  return {
+    maxAttempts: (retryConfig?.maxRetries as number) ?? DEFAULT_RETRY_ATTEMPTS,
+    baseDelayMs: (retryConfig?.retryDelay as number) ?? DEFAULT_RETRY_DELAY_MS,
+    retryableErrors: (retryConfig?.retryableErrors as string[]) ?? DEFAULT_RETRYABLE_ERRORS,
+  };
+}
+
+// Legacy constants for compatibility
+const FINAL_TEXT_RETRY_MAX_ATTEMPTS = DEFAULT_RETRY_ATTEMPTS;
+const FINAL_TEXT_RETRY_BASE_DELAY_MS = DEFAULT_RETRY_DELAY_MS;
 const FINAL_TEXT_REPLY_GONE_CODES = ["230011", "231003"];
 const finalTextDeliveryQueues = new Map<string, Promise<void>>();
 
@@ -219,7 +242,10 @@ function queueFinalTextWithConsistency(params: {
   tableMode: string;
   log?: (message: string) => void;
   error?: (message: string) => void;
+  onFailure?: (error: Error) => void;
 }) {
+  // Get retry config from cfg
+  const retryConfig = getRetryConfig(params.cfg);
   const queueKey = `${params.accountKey}:${params.chatId}`;
   const previous = finalTextDeliveryQueues.get(queueKey) ?? Promise.resolve();
   let current: Promise<void>;
@@ -227,7 +253,7 @@ function queueFinalTextWithConsistency(params: {
     .catch(() => {})
     .then(async () => {
       let replyToId = params.replyToMessageId;
-      for (let attempt = 1; attempt <= FINAL_TEXT_RETRY_MAX_ATTEMPTS; attempt++) {
+      for (let attempt = 1; attempt <= retryConfig.maxAttempts; attempt++) {
         try {
           await sendFinalText({
             cfg: params.cfg,
@@ -249,13 +275,14 @@ function queueFinalTextWithConsistency(params: {
           if (replyToId && shouldFallbackToFreshMessage(error)) {
             replyToId = undefined;
           }
-          if (attempt >= FINAL_TEXT_RETRY_MAX_ATTEMPTS) {
-            params.error?.(
-              `feishu[${params.accountKey}] final consistency delivery failed after ${attempt} attempts: ${String(error)}`,
-            );
+          if (attempt >= retryConfig.maxAttempts) {
+            const errorMsg = `feishu[${params.accountKey}] final consistency delivery failed after ${attempt} attempts: ${String(error)}`;
+            params.error?.(errorMsg);
+            // 修复：重试失败后调用 onFailure 回调，通知上层发送失败
+            params.onFailure?.(error instanceof Error ? error : new Error(String(error)));
             return;
           }
-          await sleep(FINAL_TEXT_RETRY_BASE_DELAY_MS * attempt);
+          await sleep(retryConfig.baseDelayMs * attempt);
         }
       }
     })
@@ -408,6 +435,26 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
               tableMode,
               log: params.runtime.log,
               error: params.runtime.error,
+              // 修复：添加失败回调，在重试全部失败后发送明确的错误通知
+              onFailure: async (err) => {
+                params.runtime.error?.(
+                  `feishu[${account.accountId}] final consistency delivery failed permanently: ${err.message}`,
+                );
+                // 尝试发送一条简短的错误通知给用户
+                try {
+                  await sendMessageFeishu({
+                    cfg,
+                    to: chatId,
+                    text: `⚠️ 消息发送失败：回复内容较长或网络不稳定，请稍后重试或简化请求。`,
+                    accountId,
+                  });
+                } catch {
+                  // 如果连错误通知都发送失败，只能记录日志
+                  params.runtime.error?.(
+                    `feishu[${account.accountId}] failed to send error notification to user`,
+                  );
+                }
+              },
             });
           }
         } else if (reasoningText?.trim()) {

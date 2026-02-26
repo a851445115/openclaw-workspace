@@ -202,40 +202,76 @@ async function monitorWebSocket({
   const log = runtime?.log ?? console.log;
   const error = runtime?.error ?? console.error;
 
-  log(`feishu[${accountId}]: starting WebSocket connection...`);
+  // WebSocket reconnect config
+  const MAX_RECONNECT_ATTEMPTS = 10;
+  const BASE_RECONNECT_DELAY_MS = 1000;
+  const MAX_RECONNECT_DELAY_MS = 60000;
 
-  const wsClient = createFeishuWSClient(account);
-  wsClients.set(accountId, wsClient);
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-  return new Promise((resolve, reject) => {
-    const cleanup = () => {
-      wsClients.delete(accountId);
-      botOpenIds.delete(accountId);
-    };
+  const connectWebSocket = async (attempt: number): Promise<void> => {
+    log(`feishu[${accountId}]: WebSocket connection attempt ${attempt}/${MAX_RECONNECT_ATTEMPTS}...`);
 
-    const handleAbort = () => {
-      log(`feishu[${accountId}]: abort signal received, stopping`);
-      cleanup();
-      resolve();
-    };
+    const wsClient = createFeishuWSClient(account);
+    wsClients.set(accountId, wsClient);
 
-    if (abortSignal?.aborted) {
-      cleanup();
-      resolve();
-      return;
-    }
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        wsClients.delete(accountId);
+        botOpenIds.delete(accountId);
+      };
 
-    abortSignal?.addEventListener("abort", handleAbort, { once: true });
+      const handleAbort = () => {
+        log(`feishu[${accountId}]: abort signal received, stopping`);
+        cleanup();
+        resolve();
+      };
 
+      if (abortSignal?.aborted) {
+        cleanup();
+        resolve();
+        return;
+      }
+
+      abortSignal?.addEventListener("abort", handleAbort, { once: true });
+
+      try {
+        // Note: Lark WSClient.start() is a long-running call
+        // It will throw on connection failure
+        wsClient.start({ eventDispatcher });
+        log(`feishu[${accountId}]: WebSocket client started`);
+      } catch (err) {
+        cleanup();
+        abortSignal?.removeEventListener("abort", handleAbort);
+        reject(err);
+      }
+    });
+  };
+
+  // Main loop with reconnect logic
+  let reconnectAttempt = 0;
+
+  while (!abortSignal?.aborted) {
     try {
-      wsClient.start({ eventDispatcher });
-      log(`feishu[${accountId}]: WebSocket client started`);
+      await connectWebSocket(reconnectAttempt + 1);
+      // If we reach here, connection was successful
+      return;
     } catch (err) {
-      cleanup();
-      abortSignal?.removeEventListener("abort", handleAbort);
-      reject(err);
+      reconnectAttempt++;
+      const delay = Math.min(
+        BASE_RECONNECT_DELAY_MS * Math.pow(2, reconnectAttempt - 1),
+        MAX_RECONNECT_DELAY_MS,
+      );
+
+      if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+        error(`feishu[${accountId}]: WebSocket failed after ${MAX_RECONNECT_ATTEMPTS} attempts, giving up`);
+        throw err;
+      }
+
+      error(`feishu[${accountId}]: WebSocket connection failed: ${String(err)}, reconnecting in ${delay}ms...`);
+      await sleep(delay);
     }
-  });
+  }
 }
 
 async function monitorWebhook({
