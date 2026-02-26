@@ -82,8 +82,6 @@ const permissionErrorNotifiedAt = new Map<string, number>();
 const PERMISSION_ERROR_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
 const DISPATCH_FAILED_FALLBACK_TEXT =
   "本次处理出现异常，未能产出最终回复。请稍后重试。";
-const NO_FINAL_REPLY_FALLBACK_TEXT =
-  "本次处理未产出最终回复（可能遇到子任务超时或连接中断）。请重试。";
 
 type SenderNameResult = {
   name?: string;
@@ -1010,8 +1008,13 @@ export async function handleFeishuMessage(params: {
       });
     }
 
-    if ((counts.final ?? 0) === 0) {
-      await sendFallbackFinal(NO_FINAL_REPLY_FALLBACK_TEXT, "no-final");
+    const hasVisibleReply =
+      queuedFinal || (counts.block ?? 0) > 0 || (counts.final ?? 0) > 0;
+
+    if (!hasVisibleReply) {
+      log(
+        `feishu[${account.accountId}]: dispatch produced no immediate visible reply (queuedFinal=${queuedFinal}, blocks=${counts.block ?? 0}, replies=${counts.final ?? 0})`,
+      );
     }
 
     log(

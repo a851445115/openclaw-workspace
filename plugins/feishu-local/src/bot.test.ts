@@ -152,7 +152,7 @@ describe("handleFeishuMessage command authorization", () => {
     );
   });
 
-  it("sends fallback final when dispatch produces no final reply", async () => {
+  it("does not send misleading fallback when dispatch produces no immediate final reply", async () => {
     mockShouldComputeCommandAuthorized.mockReturnValue(false);
     mockDispatchReplyFromConfig.mockResolvedValueOnce({ queuedFinal: false, counts: { final: 0 } });
 
@@ -181,12 +181,7 @@ describe("handleFeishuMessage command authorization", () => {
 
     await dispatchMessage({ cfg, event });
 
-    expect(mockSendMessageFeishu).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: "oc-dm",
-        replyToMessageId: "msg-no-final-fallback",
-      }),
-    );
+    expect(mockSendMessageFeishu).not.toHaveBeenCalled();
   });
 
   it("sends fallback final when dispatch throws", async () => {
