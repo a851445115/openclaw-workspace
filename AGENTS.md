@@ -123,6 +123,9 @@ Skills provide your tools. When you need one, check its `SKILL.md`. Keep local n
 - Do **not** use `nodes` tool action `screen_record` on this host's current core node.
 - Reason: this node advertises `browser/system` only and does not support `screen.record`.
 - If screenshot fails, run `peekaboo permissions` and then retry via `peekaboo image`.
+- If the user asks to send the screenshot to Feishu, you MUST call `message` with `action: send`, `channel: feishu`, and `filePath: <local image path>`.
+- Do **not** claim "sent to group" if you only used `read` on an image file; `read` does not guarantee media delivery to Feishu.
+- Treat screenshot-send as success only when `message` tool result includes a Feishu `messageId`; otherwise report failure and retry.
 
 **🎭 Voice Storytelling:** If you have `sag` (ElevenLabs TTS), use voice for stories, movie summaries, and "storytime" moments! Way more engaging than walls of text. Surprise people with funny voices.
 

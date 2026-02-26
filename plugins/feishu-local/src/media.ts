@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { Readable } from "stream";
+import { fileURLToPath } from "url";
 import { withTempDownloadPath, type ClawdbotConfig } from "openclaw/plugin-sdk";
 import { resolveFeishuAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
@@ -389,6 +390,20 @@ export function detectFileType(
   }
 }
 
+function resolveAbsoluteLocalMediaPath(mediaUrl: string): string | null {
+  if (/^https?:\/\//i.test(mediaUrl) || /^data:/i.test(mediaUrl)) {
+    return null;
+  }
+  if (mediaUrl.startsWith("file://")) {
+    try {
+      return fileURLToPath(mediaUrl);
+    } catch {
+      return null;
+    }
+  }
+  return path.isAbsolute(mediaUrl) ? mediaUrl : null;
+}
+
 /**
  * Upload and send media (image or file) from URL, local path, or buffer
  */
@@ -415,12 +430,25 @@ export async function sendMediaFeishu(params: {
     buffer = mediaBuffer;
     name = fileName ?? "file";
   } else if (mediaUrl) {
-    const loaded = await getFeishuRuntime().media.loadWebMedia(mediaUrl, {
-      maxBytes: mediaMaxBytes,
-      optimizeImages: false,
-    });
-    buffer = loaded.buffer;
-    name = fileName ?? loaded.fileName ?? "file";
+    const absoluteLocalPath = resolveAbsoluteLocalMediaPath(mediaUrl);
+    if (absoluteLocalPath) {
+      const stat = await fs.promises.stat(absoluteLocalPath);
+      if (!stat.isFile()) {
+        throw new Error(`Local media is not a file: ${absoluteLocalPath}`);
+      }
+      if (stat.size > mediaMaxBytes) {
+        throw new Error(`Local media exceeds max size (${mediaMaxBytes} bytes): ${absoluteLocalPath}`);
+      }
+      buffer = await fs.promises.readFile(absoluteLocalPath);
+      name = fileName ?? (path.basename(absoluteLocalPath) || "file");
+    } else {
+      const loaded = await getFeishuRuntime().media.loadWebMedia(mediaUrl, {
+        maxBytes: mediaMaxBytes,
+        optimizeImages: false,
+      });
+      buffer = loaded.buffer;
+      name = fileName ?? loaded.fileName ?? "file";
+    }
   } else {
     throw new Error("Either mediaUrl or mediaBuffer must be provided");
   }

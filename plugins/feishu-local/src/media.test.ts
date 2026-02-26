@@ -209,6 +209,33 @@ describe("sendMediaFeishu msg_type routing", () => {
     expect(messageReplyMock).not.toHaveBeenCalled();
   });
 
+  it("reads absolute local media paths directly instead of loadWebMedia", async () => {
+    const localPath = path.join(os.tmpdir(), `feishu-local-media-${Date.now()}.opus`);
+    await fs.promises.writeFile(localPath, Buffer.from("local-audio"));
+
+    try {
+      await sendMediaFeishu({
+        cfg: {} as any,
+        to: "user:ou_target",
+        mediaUrl: localPath,
+      });
+
+      expect(loadWebMediaMock).not.toHaveBeenCalled();
+      expect(fileCreateMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ file_type: "opus" }),
+        }),
+      );
+      expect(messageCreateMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ msg_type: "media" }),
+        }),
+      );
+    } finally {
+      await fs.promises.rm(localPath, { force: true });
+    }
+  });
+
   it("uses isolated temp paths for image downloads", async () => {
     const imageKey = "img_v3_01abc123";
     let capturedPath: string | undefined;
