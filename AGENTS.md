@@ -117,6 +117,13 @@ Reactions are lightweight social signals. Humans use them constantly — they sa
 
 Skills provide your tools. When you need one, check its `SKILL.md`. Keep local notes (camera names, SSH details, voice preferences) in `TOOLS.md`.
 
+### Screenshot rule (this host)
+
+- For screenshot/capture tasks, use `exec` with `peekaboo` directly.
+- Do **not** use `nodes` tool action `screen_record` on this host's current core node.
+- Reason: this node advertises `browser/system` only and does not support `screen.record`.
+- If screenshot fails, run `peekaboo permissions` and then retry via `peekaboo image`.
+
 **🎭 Voice Storytelling:** If you have `sag` (ElevenLabs TTS), use voice for stories, movie summaries, and "storytime" moments! Way more engaging than walls of text. Surprise people with funny voices.
 
 **📝 Platform Formatting:**
