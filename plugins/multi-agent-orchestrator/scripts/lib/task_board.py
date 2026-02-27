@@ -13,10 +13,11 @@ MESSAGE_TYPES = {
     "DONE": "[DONE]",
     "BLOCKED": "[BLOCKED]",
     "REVIEW": "[REVIEW]",
+    "DIAG": "[DIAG]",
 }
 
 ALLOWED_TRANSITIONS = {
-    "pending": {"claimed"},
+    "pending": {"claimed", "blocked"},
     "claimed": {"in_progress", "done", "blocked"},
     "in_progress": {"review", "done", "blocked", "failed"},
     "review": {"done", "in_progress", "blocked"},
@@ -89,9 +90,10 @@ def parse_override(text):
 
 def parse_route(text):
     override, body = parse_override(text)
-    lower = body.lower()
 
-    m = re.match(r"^create\s+task(?:\s+([A-Za-z0-9_-]+))?\s*:?\s*(.+)$", body, flags=re.IGNORECASE)
+    m = re.match(
+        r"^create\s+task(?:\s+([A-Za-z0-9_-]+))?\s*:?\s*(.+)$", body, flags=re.IGNORECASE
+    )
     if m:
         task_id = m.group(1)
         title = m.group(2).strip()
@@ -119,6 +121,16 @@ def parse_route(text):
             "reason": (m.group(2) or "").strip(),
         }
 
+    # Escalate a task to the debugger role: block original + create a DIAG follow-up task.
+    m = re.match(r"^escalate\s+task\s+([A-Za-z0-9_-]+)(?:\s*:?\s*(.*))?$", body, flags=re.IGNORECASE)
+    if m:
+        return {
+            "intent": "escalate_task",
+            "overrideAgent": override,
+            "taskId": m.group(1),
+            "reason": (m.group(2) or "").strip(),
+        }
+
     m = re.match(r"^status(?:\s+([A-Za-z0-9_-]+))?$", body, flags=re.IGNORECASE)
     if m:
         return {"intent": "status", "overrideAgent": override, "taskId": m.group(1)}
@@ -127,7 +139,7 @@ def parse_route(text):
     if m:
         return {"intent": "synthesize", "overrideAgent": override, "taskId": m.group(1)}
 
-    return {"intent": "unknown", "overrideAgent": override, "raw": body}
+    return {"intent": "unknown", "overrideAgent": override, "raw": body.strip()}
 
 
 def next_task_id(tasks):
@@ -173,15 +185,23 @@ def cmd_apply(args):
             "title": title,
             "status": "pending",
             "owner": None,
+            "assigneeHint": assignee,
             "createdBy": actor,
             "createdAt": now_iso(),
             "updatedAt": now_iso(),
             "blockedReason": None,
             "result": None,
             "review": None,
+            "relatedTo": None,
             "history": [],
         }
-        event = make_event(task_id, "task_created", actor, MESSAGE_TYPES["TASK"], {"title": title, "assigneeHint": assignee})
+        event = make_event(
+            task_id,
+            "task_created",
+            actor,
+            MESSAGE_TYPES["TASK"],
+            {"title": title, "assigneeHint": assignee},
+        )
         task["history"].append(event["eventId"])
         tasks[task_id] = task
         append_event(jsonl, event)
@@ -189,7 +209,7 @@ def cmd_apply(args):
         print(json.dumps({"ok": True, "intent": intent, "taskId": task_id, "assigneeHint": assignee}))
         return 0
 
-    if intent in {"claim_task", "mark_done", "block_task", "status", "synthesize"}:
+    if intent in {"claim_task", "mark_done", "block_task", "escalate_task", "status", "synthesize"}:
         task_id = route.get("taskId")
     else:
         task_id = None
@@ -213,12 +233,13 @@ def cmd_apply(args):
         for t in tasks.values():
             if task_id and t["taskId"] != task_id:
                 continue
-            if t["status"] in {"done", "review", "blocked"}:
+            if t["status"] in {"done", "review", "blocked"} or t.get("relatedTo"):
                 selected.append(t)
         lines = ["SYNTHESIS REPORT"]
         for t in sorted(selected, key=lambda x: x["taskId"]):
             detail = t.get("result") or t.get("review") or t.get("blockedReason") or "(no detail)"
-            lines.append(f"- {t['taskId']} [{t['status']}] owner={t.get('owner') or '-'} :: {detail}")
+            rel = f" relatedTo={t.get('relatedTo')}" if t.get("relatedTo") else ""
+            lines.append(f"- {t['taskId']} [{t['status']}] owner={t.get('owner') or '-'}{rel} :: {detail}")
         if len(lines) == 1:
             lines.append("- no completed/review/blocked tasks found")
         print(json.dumps({"ok": True, "intent": intent, "report": "\n".join(lines)}))
@@ -238,7 +259,13 @@ def cmd_apply(args):
         task["status"] = "claimed" if prev == "pending" else "in_progress"
         task["owner"] = assignee
         task["updatedAt"] = now_iso()
-        event = make_event(task_id, "task_claimed", actor, MESSAGE_TYPES["CLAIM"], {"from": prev, "to": task["status"], "owner": assignee})
+        event = make_event(
+            task_id,
+            "task_claimed",
+            actor,
+            MESSAGE_TYPES["CLAIM"],
+            {"from": prev, "to": task["status"], "owner": assignee},
+        )
         task["history"].append(event["eventId"])
         append_event(jsonl, event)
         save_snapshot(snapshot, data)
@@ -254,27 +281,97 @@ def cmd_apply(args):
         task["owner"] = task.get("owner") or assignee
         task["result"] = route.get("result") or task.get("result") or "done"
         task["updatedAt"] = now_iso()
-        event = make_event(task_id, "task_done", actor, MESSAGE_TYPES["DONE"], {"from": prev, "to": "done", "result": task["result"]})
+        event = make_event(
+            task_id,
+            "task_done",
+            actor,
+            MESSAGE_TYPES["DONE"],
+            {"from": prev, "to": "done", "result": task["result"]},
+        )
         task["history"].append(event["eventId"])
         append_event(jsonl, event)
         save_snapshot(snapshot, data)
         print(json.dumps({"ok": True, "intent": intent, "taskId": task_id, "status": "done"}))
         return 0
 
+    def apply_block(tid, reason, message_type):
+        t = tasks[tid]
+        prev_status = t["status"]
+        if "blocked" not in ALLOWED_TRANSITIONS.get(prev_status, set()) and prev_status != "blocked":
+            return None, {"ok": False, "error": f"invalid transition: {prev_status} -> blocked"}
+        t["status"] = "blocked"
+        t["blockedReason"] = reason
+        t["updatedAt"] = now_iso()
+        ev = make_event(
+            tid,
+            "task_blocked",
+            actor,
+            message_type,
+            {"from": prev_status, "to": "blocked", "reason": reason},
+        )
+        t["history"].append(ev["eventId"])
+        append_event(jsonl, ev)
+        return ev, None
+
     if intent == "block_task":
-        prev = task["status"]
-        if "blocked" not in ALLOWED_TRANSITIONS.get(prev, set()) and prev != "blocked":
-            print(json.dumps({"ok": False, "error": f"invalid transition: {prev} -> blocked"}))
-            return 1
         reason = route.get("reason") or "unspecified blocker"
-        task["status"] = "blocked"
-        task["blockedReason"] = reason
-        task["updatedAt"] = now_iso()
-        event = make_event(task_id, "task_blocked", actor, MESSAGE_TYPES["BLOCKED"], {"from": prev, "to": "blocked", "reason": reason})
-        task["history"].append(event["eventId"])
-        append_event(jsonl, event)
+        _, err = apply_block(task_id, reason, MESSAGE_TYPES["BLOCKED"])
+        if err:
+            print(json.dumps(err))
+            return 1
         save_snapshot(snapshot, data)
         print(json.dumps({"ok": True, "intent": intent, "taskId": task_id, "status": "blocked"}))
+        return 0
+
+    if intent == "escalate_task":
+        reason = route.get("reason") or "unspecified escalation"
+        _, err = apply_block(task_id, reason, MESSAGE_TYPES["BLOCKED"])
+        if err:
+            print(json.dumps(err))
+            return 1
+
+        # Create a follow-up diagnostic task for debugger.
+        diag_task_id = next_task_id(tasks)
+        diag_title = f"DIAG {task_id}: {reason}" if reason else f"DIAG {task_id}"
+        diag = {
+            "taskId": diag_task_id,
+            "title": diag_title,
+            "status": "pending",
+            "owner": None,
+            "assigneeHint": "debugger",
+            "createdBy": actor,
+            "createdAt": now_iso(),
+            "updatedAt": now_iso(),
+            "blockedReason": None,
+            "result": None,
+            "review": None,
+            "relatedTo": task_id,
+            "history": [],
+        }
+        ev = make_event(
+            diag_task_id,
+            "diag_task_created",
+            actor,
+            MESSAGE_TYPES["DIAG"],
+            {"title": diag_title, "assigneeHint": "debugger", "relatedTo": task_id},
+        )
+        diag["history"].append(ev["eventId"])
+        tasks[diag_task_id] = diag
+        append_event(jsonl, ev)
+
+        save_snapshot(snapshot, data)
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "intent": intent,
+                    "taskId": task_id,
+                    "status": "blocked",
+                    "diagTaskId": diag_task_id,
+                    "diagAssigneeHint": "debugger",
+                }
+            )
+        )
         return 0
 
     print(json.dumps({"ok": False, "error": f"unsupported intent: {intent}"}))

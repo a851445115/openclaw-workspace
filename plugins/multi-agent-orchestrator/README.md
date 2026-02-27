@@ -3,8 +3,8 @@
 This plugin provides a minimal runnable file-backed orchestrator for local task board flows.
 
 Implemented in Milestone B:
-- Protocol message types: `[TASK] [CLAIM] [DONE] [BLOCKED] [REVIEW]`
-- Command router intents: create task, claim task, mark done, block task, status
+- Protocol message types: `[TASK] [CLAIM] [DONE] [BLOCKED] [REVIEW] [DIAG]`
+- Command router intents: create task, claim task, mark done, block task, escalate task, status
 - Direct `@agent` override parsing (routing metadata only)
 - Synthesis stub pipeline over task board entries
 - Existing scripts upgraded from stubs to functional wrappers
@@ -33,3 +33,13 @@ cd ~/.openclaw/workspace/plugins/multi-agent-orchestrator
 ./scripts/orchestrator-router --root . --actor lead --text "status"
 ./scripts/synthesize-board --root .
 ```
+
+### Debugger Integration (Diagnostic Role)
+
+Use `escalate task` to attach a diagnostic follow-up task for `debugger`:
+
+```bash
+./scripts/orchestrator-router --root . --actor lead --text "escalate task T-001: flaky token refresh"
+```
+
+This blocks `T-001` and creates a new `[DIAG]` task with `assigneeHint=debugger` and `relatedTo=T-001`.

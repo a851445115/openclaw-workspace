@@ -9,7 +9,7 @@ The scaffold exposes a minimal schema in `openclaw.plugin.json`.
 - `channel.groupId`: visible control group.
 - `channel.milestoneOnly`: whether only milestone messages are posted.
 - `orchestrator.maxConcurrentSpawns`: cap for subagent fanout.
-- `agents`: agent IDs allowed to claim tasks.
+- `agents`: agent IDs allowed to claim tasks (e.g. include `debugger` for diagnostic workflow).
 
 ## Default Behavior
 

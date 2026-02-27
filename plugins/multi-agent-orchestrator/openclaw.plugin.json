@@ -36,7 +36,8 @@
               "CLAIM": { "type": "string", "default": "[CLAIM]" },
               "DONE": { "type": "string", "default": "[DONE]" },
               "BLOCKED": { "type": "string", "default": "[BLOCKED]" },
-              "REVIEW": { "type": "string", "default": "[REVIEW]" }
+              "REVIEW": { "type": "string", "default": "[REVIEW]" },
+              "DIAG": { "type": "string", "default": "[DIAG]" }
             }
           },
           "allowDirectAgentOverride": { "type": "boolean", "default": true }

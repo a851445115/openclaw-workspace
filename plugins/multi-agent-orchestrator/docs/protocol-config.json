@@ -5,13 +5,15 @@
     "CLAIM": "[CLAIM]",
     "DONE": "[DONE]",
     "BLOCKED": "[BLOCKED]",
-    "REVIEW": "[REVIEW]"
+    "REVIEW": "[REVIEW]",
+    "DIAG": "[DIAG]"
   },
   "intents": [
     "create_task",
     "claim_task",
     "mark_done",
     "block_task",
+    "escalate_task",
     "status",
     "synthesize"
   ],

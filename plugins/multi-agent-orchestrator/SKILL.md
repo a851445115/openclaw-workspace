@@ -27,6 +27,7 @@ Use local scripts as stable interfaces for task board operations.
 - `claim task`
 - `mark done`
 - `block task`
+- `escalate task` (blocks original + creates `[DIAG]` follow-up task for `debugger`)
 - `status`
 - `synthesize`
 

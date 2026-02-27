@@ -16,10 +16,79 @@
         "4a1461b9-1c97-4fb0-a4f5-95d2b7f75640",
         "8e808ebe-6d52-4576-8853-891a3132e791"
       ]
+    },
+    "T-910": {
+      "taskId": "T-910",
+      "title": "reproduce bug",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "lead",
+      "createdBy": "lead",
+      "createdAt": "2026-02-27T05:34:29Z",
+      "updatedAt": "2026-02-27T05:34:29Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "b3be6e24-e281-4ad7-b816-2295d0410bb4"
+      ]
+    },
+    "T-911": {
+      "taskId": "T-911",
+      "title": "reproduce bug",
+      "status": "blocked",
+      "owner": null,
+      "assigneeHint": "lead",
+      "createdBy": "lead",
+      "createdAt": "2026-02-27T05:34:47Z",
+      "updatedAt": "2026-02-27T05:34:47Z",
+      "blockedReason": "parser crash",
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "78bd5b10-739a-4055-a16e-9403e4f33f8b",
+        "d6b1c57b-ed78-4967-a073-25e3eafb3545"
+      ]
+    },
+    "T-912": {
+      "taskId": "T-912",
+      "title": "DIAG T-911: parser crash",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "debugger",
+      "createdBy": "lead",
+      "createdAt": "2026-02-27T05:34:47Z",
+      "updatedAt": "2026-02-27T05:34:47Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": "T-911",
+      "history": [
+        "af0398fc-de29-46bd-9fb5-9671e907182f"
+      ]
+    },
+    "T-913": {
+      "taskId": "T-913",
+      "title": "test",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "lead",
+      "createdBy": "lead",
+      "createdAt": "2026-02-27T05:38:50Z",
+      "updatedAt": "2026-02-27T05:38:50Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "ac7e9bd1-2624-4a21-8c9f-69571ed25ea2"
+      ]
     }
   },
   "meta": {
     "version": 2,
-    "updatedAt": "2026-02-26T16:23:27Z"
+    "updatedAt": "2026-02-27T05:38:50Z"
   }
 }
