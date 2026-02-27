@@ -16,6 +16,10 @@ CLARIFY_ROLES = {"coder", "invest-analyst", "debugger", "broadcaster"}
 DONE_HINTS = ("[DONE]", " done", "completed", "finish", "完成", "已完成", "通过", "verified")
 BLOCKED_HINTS = ("[BLOCKED]", "blocked", "failed", "error", "exception", "失败", "阻塞", "卡住", "无法")
 EVIDENCE_HINTS = ("/", ".py", ".md", "http", "截图", "日志", "log", "输出", "result", "测试")
+BOT_OPENID_CONFIG_CANDIDATES = (
+    os.path.join("config", "feishu-bot-openids.json"),
+    os.path.join("state", "feishu-bot-openids.json"),
+)
 
 
 def now_iso() -> str:
@@ -27,6 +31,84 @@ def clip(text: Optional[str], limit: int = 160) -> str:
     if len(s) <= limit:
         return s
     return s[: limit - 1] + "..."
+
+
+def load_bot_mentions(root: str) -> Dict[str, Dict[str, str]]:
+    out: Dict[str, Dict[str, str]] = {}
+    script_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    search_roots = [root, script_root]
+
+    for base in search_roots:
+        for rel in BOT_OPENID_CONFIG_CANDIDATES:
+            path = os.path.join(base, rel)
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+            except Exception:
+                continue
+
+            entries: Dict[str, Any] = {}
+            if isinstance(raw, dict):
+                role_map = raw.get("byRole")
+                acct_map = raw.get("byAccountId")
+                if isinstance(role_map, dict):
+                    entries.update(role_map)
+                if isinstance(acct_map, dict):
+                    for k, v in acct_map.items():
+                        entries.setdefault(k, v)
+                if not entries:
+                    entries = raw
+
+            for role, info in entries.items():
+                if not isinstance(role, str) or not isinstance(info, dict):
+                    continue
+                open_id = str(info.get("open_id") or info.get("openId") or "").strip()
+                name = str(info.get("name") or role).strip() or role
+                if not open_id:
+                    continue
+                out[role] = {"open_id": open_id, "name": name}
+
+            if out:
+                return out
+
+    return out
+
+
+def mention_tag_for(role: str, mentions: Dict[str, Dict[str, str]], fallback: str = "") -> str:
+    info = mentions.get(role)
+    if not isinstance(info, dict):
+        return fallback or f"@{role}"
+    open_id = str(info.get("open_id") or "").strip()
+    if not open_id:
+        return fallback or f"@{role}"
+    name = str(info.get("name") or role).strip() or role
+    safe_name = name.replace("<", "").replace(">", "")
+    return f'<at user_id="{open_id}">{safe_name}</at>'
+
+
+def contains_mention(text: str, role: str, mentions: Dict[str, Dict[str, str]]) -> bool:
+    if f"@{role}" in text.lower():
+        return True
+
+    info = mentions.get(role)
+    if not isinstance(info, dict):
+        return False
+
+    open_id = str(info.get("open_id") or "").strip()
+    if open_id:
+        pat = rf'<at\b[^>]*\buser_id\s*=\s*["\']{re.escape(open_id)}["\']'
+        if re.search(pat, text, flags=re.IGNORECASE):
+            return True
+
+    name = str(info.get("name") or role).strip()
+    if name:
+        name_pat = rf"<at\b[^>]*>\s*{re.escape(name)}\s*</at>"
+        if re.search(name_pat, text, flags=re.IGNORECASE):
+            return True
+
+    return False
 
 
 def parse_json_loose(text: str) -> Any:
@@ -434,11 +516,15 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     )
     claim_send = send_group_message(args.group_id, args.account_id, claim_text, args.mode)
 
+    mentions = load_bot_mentions(args.root)
+    orchestrator_mention = mention_tag_for("orchestrator", mentions, fallback="@orchestrator")
+    assignee_mention = mention_tag_for(args.agent, mentions, fallback=f"@{args.agent}")
+    report_template = f"{orchestrator_mention} {args.task_id} 已完成，证据: 日志/截图/链接"
     task_text = "\n".join(
         [
             f"[TASK] {args.task_id} | 负责人={args.agent}",
             f"任务: {dispatch_task}",
-            f"请 @{args.agent} 完成后回报：@orchestrator {args.task_id} 已完成，证据: 日志/截图/链接。",
+            f"请 {assignee_mention} 完成后回报：{report_template}。",
         ]
     )
     task_send = send_group_message(args.group_id, args.account_id, task_text, args.mode)
@@ -458,11 +544,13 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
                 "taskSend": task_send,
                 "waitForReport": True,
                 "autoClose": False,
+                "reportTemplate": report_template,
             },
             ensure_ascii=True,
         )
     )
     return 0 if ok else 1
+
 
 def load_json_file(path: str, default_obj: Dict[str, Any]) -> Dict[str, Any]:
     if not os.path.exists(path):
@@ -712,8 +800,9 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
         )
         return 0 if out.get("ok") else 1
 
-    # Simple Wake-up v1: team member reports with @orchestrator
-    if args.actor != "orchestrator" and "@orchestrator" in norm.lower():
+    # Simple Wake-up v1: team member reports with @orchestrator or Feishu <at ...> mention.
+    mentions = load_bot_mentions(args.root)
+    if args.actor != "orchestrator" and contains_mention(norm, "orchestrator", mentions):
         task_id = find_task_id(norm)
         if not task_id:
             sent = send_group_message(args.group_id, args.account_id, "[TASK] 收到汇报，但未识别到任务ID（例如 T-001）。", args.mode)

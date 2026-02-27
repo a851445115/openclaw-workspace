@@ -16,6 +16,7 @@ The scaffold exposes a minimal schema in `openclaw.plugin.json`.
 - Router scripts are production-facing for Feishu group mentions (`@orchestrator ...`).
 - Task board source of truth remains local files (`state/tasks.jsonl` + snapshot).
 - Milestone broadcasts are concise Chinese status messages from orchestrator router.
+- `config/feishu-bot-openids.json` maps bot role/accountId to Feishu open_id, used to generate real `<at user_id="...">name</at>` mention tags in bot dispatch templates.
 - Validation remains conservative and status-driven.
 
 ## TODO Milestone B/C

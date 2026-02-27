@@ -1,0 +1,38 @@
+{
+  "byRole": {
+    "orchestrator": {
+      "open_id": "ou_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "name": "orchestrator"
+    },
+    "coder": {
+      "open_id": "ou_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "name": "coder"
+    },
+    "debugger": {
+      "open_id": "ou_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "name": "debugger"
+    },
+    "broadcaster": {
+      "open_id": "ou_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "name": "broadcaster"
+    }
+  },
+  "byAccountId": {
+    "orchestrator": {
+      "open_id": "ou_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "name": "orchestrator"
+    },
+    "coder": {
+      "open_id": "ou_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "name": "coder"
+    },
+    "debugger": {
+      "open_id": "ou_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "name": "debugger"
+    },
+    "broadcaster": {
+      "open_id": "ou_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "name": "broadcaster"
+    }
+  }
+}

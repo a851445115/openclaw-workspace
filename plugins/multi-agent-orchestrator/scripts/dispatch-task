@@ -14,7 +14,7 @@ usage() {
   cat >&2 <<'USAGE'
 usage:
   dispatch-task dispatch --root <path> --task-id <id> --agent <role> [--task <text>] [--mode send|dry-run]
-                        [--group-id <chat_id>] [--account-id <id>] [--actor orchestrator] [--session-id <id>] [--timeout-sec <n>] [--dispatch-mode manual|subagent]
+                        [--group-id <chat_id>] [--account-id <id>] [--actor orchestrator] [--session-id <id>] [--timeout-sec <n>]
   dispatch-task clarify --root <path> --task-id <id> --role <coder|invest-analyst|debugger|broadcaster> --question <text>
                         [--mode send|dry-run] [--group-id <chat_id>] [--account-id <id>] [--actor orchestrator]
                         [--cooldown-sec <n>] [--force]
@@ -36,7 +36,6 @@ case "$SUBCOMMAND" in
     TASK_TEXT=""
     SESSION_ID=""
     TIMEOUT_SEC=120
-    DISPATCH_MODE="manual"
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --root) ROOT="${2:-}"; shift 2 ;;
@@ -49,7 +48,6 @@ case "$SUBCOMMAND" in
         --actor) ACTOR="${2:-}"; shift 2 ;;
         --session-id) SESSION_ID="${2:-}"; shift 2 ;;
         --timeout-sec) TIMEOUT_SEC="${2:-120}"; shift 2 ;;
-        --dispatch-mode) DISPATCH_MODE="${2:-manual}"; shift 2 ;;
         *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
       esac
     done
@@ -67,8 +65,7 @@ case "$SUBCOMMAND" in
       --account-id "$ACCOUNT_ID" \
       --actor "$ACTOR" \
       --session-id "$SESSION_ID" \
-      --timeout-sec "$TIMEOUT_SEC" \
-      --dispatch-mode "$DISPATCH_MODE"
+      --timeout-sec "$TIMEOUT_SEC"
     ;;
   clarify)
     TASK_ID=""

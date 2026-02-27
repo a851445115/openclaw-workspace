@@ -615,42 +615,44 @@
     "T-1006": {
       "taskId": "T-1006",
       "title": "[\u6d4b\u8bd5\u9879\u76ee] \u8dd1\u4e00\u6b21dry-run",
-      "status": "pending",
-      "owner": null,
+      "status": "claimed",
+      "owner": "coder",
       "assigneeHint": "coder",
       "createdBy": "orchestrator",
       "createdAt": "2026-02-27T17:02:44Z",
-      "updatedAt": "2026-02-27T17:02:44Z",
+      "updatedAt": "2026-02-27T17:36:24Z",
       "blockedReason": null,
       "result": null,
       "review": null,
       "relatedTo": null,
       "projectId": null,
       "history": [
-        "813996f7-8758-453e-8356-b5a2c607d8a2"
+        "813996f7-8758-453e-8356-b5a2c607d8a2",
+        "7069bc62-5f53-41e9-aba7-b656c2e53d92"
       ]
     },
     "T-1007": {
       "taskId": "T-1007",
       "title": "[\u6d4b\u8bd5\u9879\u76ee] \u8f93\u51fa\u622a\u56fe",
-      "status": "pending",
-      "owner": null,
+      "status": "claimed",
+      "owner": "coder",
       "assigneeHint": "coder",
       "createdBy": "orchestrator",
       "createdAt": "2026-02-27T17:02:47Z",
-      "updatedAt": "2026-02-27T17:02:47Z",
+      "updatedAt": "2026-02-27T18:14:50Z",
       "blockedReason": null,
       "result": null,
       "review": null,
       "relatedTo": null,
       "projectId": null,
       "history": [
-        "44967d40-67b8-4e37-8010-37ce930368b2"
+        "44967d40-67b8-4e37-8010-37ce930368b2",
+        "04329086-64a1-4c99-87ff-d987bc882209"
       ]
     }
   },
   "meta": {
     "version": 2,
-    "updatedAt": "2026-02-27T17:13:42Z"
+    "updatedAt": "2026-02-27T18:14:50Z"
   }
 }

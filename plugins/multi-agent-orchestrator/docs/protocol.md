@@ -61,7 +61,7 @@ Prefix command text with `@agent-name` to attach routing metadata:
 
 - Source of truth remains local task board files (`tasks.jsonl` + snapshot).
 - Default execution is manual dispatch: orchestrator sends `[CLAIM]`/`[TASK]` and waits for report-based completion.
-- Optional subagent execution can be enabled with `--dispatch-mode subagent`.
+- Subagent execution is deferred for a later phase; v1 keeps manual dispatch only.
 - Group messages are milestone summaries for human observability; they are not task state.
 
 ## Broadcast Guardrails
@@ -94,6 +94,8 @@ Prefix command text with `@agent-name` to attach routing metadata:
 
 Wake-up v1: team members report progress/completion with `@orchestrator` (include task id like `T-001`).
 `@orchestrator run [taskId]` 默认只做认领+派发，不会自动完结。成员回报后由 orchestrator 更新为 `[DONE]` / `[BLOCKED]`。
+bot->bot 派发模板会带 Feishu API mention 标签（如 `<at user_id="...">orchestrator</at>`），以便在 Feishu 中形成真实@提醒与 mention gating。
+人工用户仍通过 Feishu UI 直接输入 `@orchestrator` 即可，无需手写 mention 标签。
 若指定已完成任务（`done`），会返回幂等提示：`[DONE] T-xxx 已完成，无需重复执行`，且不改状态。
 
 Inbound wrapper parsing helper: `scripts/feishu-inbound-router` (used by orchestrator agent runtime).
