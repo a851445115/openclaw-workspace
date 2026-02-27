@@ -81,3 +81,13 @@ Prefix command text with `@agent-name` to attach routing metadata:
 - Real lock ownership + stale lock recovery.
 - Review assignment and `[REVIEW]` state transitions.
 - Event replay and snapshot compaction tooling.
+
+
+## Feishu Orchestrator Commands (MVP)
+
+- `@orchestrator create project <name>: <task1>; <task2>; ...`
+- `@orchestrator run [taskId]`
+- `@orchestrator status [taskId]`
+
+Wake-up v1: team members report progress/completion with `@orchestrator` (include task id like `T-001`).
+Orchestrator performs self-check or dispatches `debugger` and then posts `[DONE]` / `[BLOCKED]` in Chinese.

@@ -1,101 +1,61 @@
-# Multi Agent Orchestrator Plugin (Milestone B)
+# Multi Agent Orchestrator Plugin (Milestone A MVP)
 
-This plugin provides a minimal runnable file-backed orchestrator for local task board flows.
+This plugin provides a file-backed orchestrator for Feishu group collaboration.
 
-Implemented in Milestone B:
-- Protocol message types: `[TASK] [CLAIM] [DONE] [BLOCKED] [REVIEW] [DIAG]`
-- Command router intents: create task, claim task, mark done, block task, escalate task, status
-- Direct `@agent` override parsing (routing metadata only)
-- Synthesis stub pipeline over task board entries
-- Existing scripts upgraded from stubs to functional wrappers
-- Milestone announcements to Feishu control group (low-noise summary format)
-- Internal dispatch helper (`/subagents spawn`) with visible pre/post assignment summary
-- Controlled clarify command with role gate + cooldown throttle
+Implemented in this MVP:
+- Plugin skeleton and manifest (`openclaw.plugin.json` + `plugin.json`).
+- File task board: append-only `state/tasks.jsonl` + `state/tasks.snapshot.json`.
+- Atomic board lock (`state/locks/task-board.lock`) and strict status transitions.
+- Feishu command parser for:
+  - `@orchestrator create project ...`
+  - `@orchestrator run`
+  - `@orchestrator status`
+- Simple Wake-up v1:
+  - team member report must include `@orchestrator`
+  - orchestrator self-checks or dispatches `debugger`
+  - orchestrator updates board and posts Chinese `[DONE]/[BLOCKED]` milestone messages
+- Dispatch loop closure:
+  - after `/subagents spawn`, parse result hints
+  - auto write back `mark done` or `block task`
+  - publish concise Chinese milestone summary (no raw logs)
 
 ## Layout
 
-- `openclaw.plugin.json`: plugin manifest + protocol schema keys.
-- `docs/protocol.md`: protocol behavior and command grammar.
-- `docs/protocol-config.json`: protocol defaults for message types/intents.
-- `scripts/lib/task_board.py`: local board engine (route, apply, synthesize).
-- `scripts/init-task-board`: initialize board files.
-- `scripts/claim-task`: claim helper wrapper.
-- `scripts/update-task`: transition validator + apply wrapper.
-- `scripts/orchestrator-router`: plain text command router.
-- `scripts/synthesize-board`: synthesis report helper.
-- `scripts/dispatch-task`: controlled dispatch/clarify helper.
-- `state/`: runtime state placeholders.
+- `openclaw.plugin.json`: plugin manifest and config schema.
+- `scripts/lib/task_board.py`: board engine (route/apply/status) with lock discipline.
+- `scripts/lib/milestones.py`: Feishu parser, wake-up flow, milestone publishing, dispatch close-loop.
+- `scripts/orchestrator-router`: unified command entrypoint.
+- `scripts/dispatch-task`: direct dispatch/clarify wrapper.
+- `scripts/dry-run-mvp`: minimal dry-run verification flow.
 
 ## Quick Start
 
 ```bash
 cd ~/.openclaw/workspace/plugins/multi-agent-orchestrator
 ./scripts/init-task-board --root .
-./scripts/orchestrator-router --root . --actor lead --text "create task T-001: implement parser"
-./scripts/claim-task --root . --task-id T-001 --agent coder
-./scripts/orchestrator-router --root . --actor coder --text "mark done T-001: parser merged"
-./scripts/orchestrator-router --root . --actor lead --text "status"
-./scripts/synthesize-board --root .
+./scripts/orchestrator-router --root . --actor orchestrator --text "@orchestrator create project Alpha: 完成解析器; 编写测试"
+./scripts/orchestrator-router --root . --actor orchestrator --text "@orchestrator run"
+./scripts/orchestrator-router --root . --actor orchestrator --text "@orchestrator status"
 ```
 
-### Debugger Integration (Diagnostic Role)
-
-Use `escalate task` to attach a diagnostic follow-up task for `debugger`:
+Team wake-up report example:
 
 ```bash
-./scripts/orchestrator-router --root . --actor lead --text "escalate task T-001: flaky token refresh"
+./scripts/orchestrator-router --root . --actor coder --text "@orchestrator T-001 已完成，证据: scripts/lib/task_board.py"
 ```
 
-This blocks `T-001` and creates a new `[DIAG]` task with `assigneeHint=debugger` and `relatedTo=T-001`.
-
-### Milestone Broadcast
-
-`orchestrator-router` now publishes concise 1-3 line milestones after task-board mutations (`create_task`, `claim_task`, `mark_done`, `block_task`, `escalate_task -> [DIAG]`):
+## Dry Run Script
 
 ```bash
-./scripts/orchestrator-router --root . --actor orchestrator --text "create task T-001: implement parser"
-./scripts/orchestrator-router --root . --actor coder --text "claim task T-001"
-./scripts/orchestrator-router --root . --actor coder --text "mark done T-001: parser merged"
+./scripts/dry-run-mvp
 ```
 
-Router-level internal scheduling commands:
+## Enable in OpenClaw
 
-```bash
-./scripts/orchestrator-router --root . --actor orchestrator --text "dispatch T-001 coder: implement parser"
-./scripts/orchestrator-router --root . --actor orchestrator --text "clarify T-001 debugger: need failing stack trace?"
-```
-
-Modes:
-
-- `--milestones send` (default): send to control group `oc_041146c92a9ccb403a7f4f48fb59701d`
-- `--milestones dry-run`: skip send and only keep local execution
-- `--milestones off`: disable milestone publish
-
-Active broadcaster gate:
-
-- Default: only `orchestrator` can proactively broadcast.
-- Optional: `--allow-broadcaster` also allows `broadcaster`.
-
-### Internal Dispatch (Still sessions_spawn Path)
-
-```bash
-./scripts/dispatch-task dispatch --root . --task-id T-001 --agent coder
-```
-
-Behavior:
-
-- Sends pre-dispatch assignment summary (`[CLAIM]`).
-- Triggers internal spawn through orchestrator session using `/subagents spawn ...`.
-- Sends post-dispatch summary (`[CLAIM]`, submitted/failed).
-
-### Controlled Clarify (Pointed, Throttled)
-
-```bash
-./scripts/dispatch-task clarify --root . --task-id T-001 --role debugger --question "Need stack trace location?"
-```
-
-Guardrails:
-
-- Restricted to `actor=orchestrator`.
-- Role must be one of `coder|invest-analyst|debugger|broadcaster`.
-- Cooldown (default 180s per `group+role`) stored in `state/clarify.cooldown.json`.
+1. Ensure plugin folder exists at `~/.openclaw/workspace/plugins/multi-agent-orchestrator`.
+2. Ensure `openclaw.plugin.json` contains:
+   - `"id": "multi-agent-orchestrator"`
+   - `"skills": ["."]`
+3. Load/reload OpenClaw plugin discovery (restart gateway if needed):
+   - `openclaw gateway restart`
+4. Bind orchestrator runtime to the same Feishu group as `channel.groupId` in plugin config.

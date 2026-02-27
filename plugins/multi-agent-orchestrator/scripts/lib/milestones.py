@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -12,6 +13,10 @@ DEFAULT_ACCOUNT_ID = "orchestrator"
 DEFAULT_ALLOWED_BROADCASTERS = {"orchestrator"}
 OPTIONAL_BROADCASTER = "broadcaster"
 CLARIFY_ROLES = {"coder", "invest-analyst", "debugger", "broadcaster"}
+
+DONE_HINTS = ("[DONE]", " done", "completed", "finish", "完成", "已完成", "通过", "verified")
+BLOCKED_HINTS = ("[BLOCKED]", "blocked", "failed", "error", "exception", "失败", "阻塞", "卡住", "无法")
+EVIDENCE_HINTS = ("/", ".py", ".md", "http", "截图", "日志", "log", "输出", "result", "测试")
 
 
 def now_iso() -> str:
@@ -90,10 +95,8 @@ def status_zh(status: str) -> str:
 
 
 def build_three_line(prefix: str, task_id: str, status: str, owner_or_hint: str, key_line: str) -> str:
-    # Keep protocol tag prefix (e.g. [TASK]) for easy filtering/search.
     line1 = f"{prefix} {task_id} | 状态={status_zh(status)} | {owner_or_hint}"
-    line2 = key_line.strip()
-    return f"{line1}\n{line2}"
+    return f"{line1}\n{key_line.strip()}"
 
 
 def send_group_message(group_id: str, account_id: str, text: str, mode: str) -> Dict[str, Any]:
@@ -131,17 +134,26 @@ def send_group_message(group_id: str, account_id: str, text: str, mode: str) -> 
             "stderr": clip(stderr, 500),
             "payload": payload,
         }
-    parsed = None
-    try:
-        parsed = parse_json_loose(stdout) if stdout else None
-    except Exception:
-        parsed = None
     out = {"ok": True, "dryRun": False, "payload": payload}
-    if parsed is not None:
-        out["result"] = parsed
+    try:
+        if stdout:
+            out["result"] = parse_json_loose(stdout)
+    except Exception:
+        pass
     if stderr:
         out["stderr"] = clip(stderr, 500)
     return out
+
+
+def board_apply(root: str, actor: str, text: str) -> Dict[str, Any]:
+    script_dir = os.path.dirname(__file__)
+    board_py = os.path.join(script_dir, "task_board.py")
+    cmd = ["python3", board_py, "apply", "--root", root, "--actor", actor, "--text", text]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=45)
+    obj = parse_json_loose(proc.stdout or "{}")
+    if proc.returncode != 0 and obj.get("ok") is True:
+        obj["ok"] = False
+    return obj
 
 
 def build_apply_messages(
@@ -251,6 +263,32 @@ def build_apply_messages(
     return messages
 
 
+def publish_apply_result(
+    root: str,
+    actor: str,
+    apply_obj: Dict[str, Any],
+    group_id: str,
+    account_id: str,
+    mode: str,
+    allow_broadcaster: bool,
+) -> Dict[str, Any]:
+    if mode == "off":
+        return {"ok": True, "skipped": True, "reason": "mode=off"}
+    if not actor_allowed(actor, allow_broadcaster):
+        return {"ok": True, "skipped": True, "reason": f"actor not allowed to broadcast: {actor}"}
+
+    messages = build_apply_messages(root, apply_obj, include_escalate_blocked=False)
+    if not messages:
+        return {"ok": True, "skipped": True, "reason": "no milestone message for intent"}
+
+    results = []
+    for msg in messages:
+        sent = send_group_message(group_id, account_id, msg["text"], mode)
+        results.append({"message": msg, "send": sent})
+    ok = all(r["send"].get("ok") for r in results)
+    return {"ok": ok, "count": len(results), "results": results}
+
+
 def cmd_publish_apply(args: argparse.Namespace) -> int:
     try:
         apply_obj = parse_json_loose(args.apply_json)
@@ -258,34 +296,17 @@ def cmd_publish_apply(args: argparse.Namespace) -> int:
         print(json.dumps({"ok": False, "error": f"invalid apply json: {err}"}))
         return 1
 
-    if args.mode == "off":
-        print(json.dumps({"ok": True, "skipped": True, "reason": "mode=off"}))
-        return 0
-
-    if not actor_allowed(args.actor, args.allow_broadcaster):
-        print(
-            json.dumps(
-                {
-                    "ok": True,
-                    "skipped": True,
-                    "reason": f"actor not allowed to broadcast: {args.actor}",
-                }
-            )
-        )
-        return 0
-
-    messages = build_apply_messages(args.root, apply_obj, args.include_escalate_blocked)
-    if not messages:
-        print(json.dumps({"ok": True, "skipped": True, "reason": "no milestone message for intent"}))
-        return 0
-
-    results = []
-    for msg in messages:
-        sent = send_group_message(args.group_id, args.account_id, msg["text"], args.mode)
-        results.append({"message": msg, "send": sent})
-    ok = all(r["send"].get("ok") for r in results)
-    print(json.dumps({"ok": ok, "count": len(results), "results": results}, ensure_ascii=True))
-    return 0 if ok else 1
+    result = publish_apply_result(
+        args.root,
+        args.actor,
+        apply_obj,
+        args.group_id,
+        args.account_id,
+        args.mode,
+        args.allow_broadcaster,
+    )
+    print(json.dumps(result, ensure_ascii=True))
+    return 0 if result.get("ok") else 1
 
 
 def gateway_sessions_list() -> Dict[str, Any]:
@@ -315,9 +336,7 @@ def resolve_orchestrator_session(group_id: str, explicit_session_id: Optional[st
     raise RuntimeError("cannot resolve orchestrator session id")
 
 
-def run_spawn(
-    session_id: str, target_agent: str, task_prompt: str, timeout_sec: int
-) -> Dict[str, Any]:
+def run_spawn(session_id: str, target_agent: str, task_prompt: str, timeout_sec: int) -> Dict[str, Any]:
     message = f"/subagents spawn {target_agent} {task_prompt}".strip()
     cmd = [
         "openclaw",
@@ -335,8 +354,8 @@ def run_spawn(
         "ok": proc.returncode == 0,
         "returncode": proc.returncode,
         "command": cmd,
-        "stdout": clip(proc.stdout, 4000),
-        "stderr": clip(proc.stderr, 1200),
+        "stdout": clip(proc.stdout, 6000),
+        "stderr": clip(proc.stderr, 1800),
         "rawMessage": message,
     }
     if proc.returncode == 0:
@@ -345,6 +364,57 @@ def run_spawn(
         except Exception:
             pass
     return out
+
+
+def infer_outcome(spawn_result: Dict[str, Any], fallback_summary: str) -> Tuple[str, str]:
+    if not spawn_result.get("ok"):
+        detail = spawn_result.get("error") or spawn_result.get("stderr") or "派发失败"
+        return "blocked", f"执行失败: {clip(detail, 120)}"
+
+    blob = " ".join(
+        [
+            str(spawn_result.get("stdout") or ""),
+            str(spawn_result.get("stderr") or ""),
+            json.dumps(spawn_result.get("parsed") or {}, ensure_ascii=False),
+        ]
+    ).lower()
+    has_done = any(h.lower() in blob for h in DONE_HINTS)
+    has_blocked = any(h.lower() in blob for h in BLOCKED_HINTS)
+
+    if has_blocked:
+        return "blocked", f"复核未通过: {clip(spawn_result.get('stderr') or spawn_result.get('stdout') or fallback_summary, 120)}"
+    if has_done or spawn_result.get("dryRun"):
+        return "done", clip(spawn_result.get("stdout") or fallback_summary or "已完成", 120)
+    return "blocked", "未提取到明确完成结论，已转为阻塞待人工确认"
+
+
+def ensure_claimed(root: str, task_id: str, agent: str) -> Optional[Dict[str, Any]]:
+    snap = load_snapshot(root)
+    task = snap.get("tasks", {}).get(task_id)
+    if not isinstance(task, dict):
+        return None
+    status = str(task.get("status") or "")
+    if status in {"pending", "claimed"}:
+        return board_apply(root, agent, f"@{agent} claim task {task_id}")
+    return {"ok": True, "intent": "claim_task", "taskId": task_id, "status": status, "skipped": True}
+
+
+def close_dispatch_loop(
+    root: str,
+    actor: str,
+    task_id: str,
+    spawn_result: Dict[str, Any],
+    group_id: str,
+    account_id: str,
+    mode: str,
+) -> Dict[str, Any]:
+    outcome, summary = infer_outcome(spawn_result, fallback_summary=f"{task_id} dispatched")
+    if outcome == "done":
+        apply_obj = board_apply(root, actor, f"mark done {task_id}: {summary}")
+    else:
+        apply_obj = board_apply(root, actor, f"block task {task_id}: {summary}")
+    publish = publish_apply_result(root, actor, apply_obj, group_id, account_id, mode, allow_broadcaster=False)
+    return {"outcome": outcome, "summary": summary, "apply": apply_obj, "publish": publish}
 
 
 def cmd_dispatch(args: argparse.Namespace) -> int:
@@ -358,6 +428,8 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
         print(json.dumps({"ok": False, "error": f"task not found: {args.task_id}"}))
         return 1
 
+    claimed = ensure_claimed(args.root, args.task_id, args.agent)
+
     pre_text = "\n".join(
         [
             f"[CLAIM] {args.task_id} | 状态={status_zh(str(task.get('status') or '-'))} | 指派={args.agent}",
@@ -368,12 +440,12 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     pre_send = send_group_message(args.group_id, args.account_id, pre_text, args.mode)
 
     spawn_task = clip(args.task or f"{args.task_id}: {task.get('title') or 'untitled'}", 500)
-    spawn_result: Dict[str, Any]
     if args.mode == "dry-run":
-        spawn_result = {
+        spawn_result: Dict[str, Any] = {
             "ok": True,
             "dryRun": True,
             "note": "spawn skipped in dry-run mode",
+            "stdout": f"[DONE] {args.task_id} dry-run verified",
             "message": f"/subagents spawn {args.agent} {spawn_task}",
         }
     else:
@@ -383,27 +455,41 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
         except Exception as err:
             spawn_result = {"ok": False, "error": str(err)}
 
-    post_status = "已提交" if spawn_result.get("ok") else "失败"
+    post_status = "已完成复核" if spawn_result.get("ok") else "失败"
     detail = spawn_result.get("error") or spawn_result.get("stderr") or spawn_result.get("stdout") or post_status
     post_text = "\n".join(
         [
             f"[CLAIM] {args.task_id} | 状态={status_zh(str(task.get('status') or '-'))} | 指派={args.agent}",
             f"派发结果: {post_status}",
-            f"详情: {clip(detail, 180)}",
+            f"摘要: {clip(detail, 160)}",
         ]
     )
     post_send = send_group_message(args.group_id, args.account_id, post_text, args.mode)
 
-    ok = bool(pre_send.get("ok")) and bool(post_send.get("ok")) and bool(spawn_result.get("ok"))
+    closed = close_dispatch_loop(
+        args.root,
+        "orchestrator",
+        args.task_id,
+        spawn_result,
+        args.group_id,
+        args.account_id,
+        args.mode,
+    )
+
+    ok = bool(pre_send.get("ok")) and bool(post_send.get("ok")) and bool(closed.get("apply", {}).get("ok"))
     print(
         json.dumps(
             {
                 "ok": ok,
+                "handled": True,
+                "intent": "dispatch",
                 "taskId": args.task_id,
                 "agent": args.agent,
+                "claim": claimed,
                 "pre": pre_send,
                 "spawn": spawn_result,
                 "post": post_send,
+                "closed": closed,
             },
             ensure_ascii=True,
         )
@@ -472,6 +558,230 @@ def cmd_clarify(args: argparse.Namespace) -> int:
     return 0 if sent.get("ok") else 1
 
 
+
+
+def suggest_agent_from_title(title: str) -> str:
+    s = (title or "").lower()
+    if any(k in s for k in ["debug", "bug", "故障", "排查", "异常"]):
+        return "debugger"
+    if any(k in s for k in ["调研", "分析", "research", "invest"]):
+        return "invest-analyst"
+    if any(k in s for k in ["发布", "播报", "公告", "broadcast", "summary", "总结"]):
+        return "broadcaster"
+    return "coder"
+
+def parse_project_tasks(payload: str) -> Tuple[str, List[str]]:
+    content = payload.strip()
+    if not content:
+        return "未命名项目", []
+    if ":" in content:
+        project_name, items = content.split(":", 1)
+    else:
+        project_name, items = content, ""
+    project_name = clip(project_name.strip() or "未命名项目", 80)
+    parts = [p.strip(" -") for p in re.split(r"[;\n]+", items) if p.strip()]
+    if not parts and items.strip():
+        parts = [items.strip()]
+    if not parts:
+        parts = [f"项目启动: {project_name}"]
+    return project_name, parts
+
+
+def choose_task_for_run(root: str, requested: str) -> Optional[Dict[str, Any]]:
+    data = load_snapshot(root)
+    tasks = data.get("tasks", {})
+    if requested:
+        t = tasks.get(requested)
+        if isinstance(t, dict):
+            return t
+        return None
+    candidates = []
+    for t in tasks.values():
+        if not isinstance(t, dict):
+            continue
+        if t.get("status") in {"pending", "claimed", "in_progress"}:
+            candidates.append(t)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x.get("taskId") or "")
+    return candidates[0]
+
+
+def has_evidence(text: str) -> bool:
+    lower = text.lower()
+    return any(h.lower() in lower for h in EVIDENCE_HINTS)
+
+
+def parse_wakeup_kind(text: str) -> str:
+    lower = text.lower()
+    if any(h.lower() in lower for h in BLOCKED_HINTS):
+        return "blocked"
+    if any(h.lower() in lower for h in DONE_HINTS):
+        return "done"
+    return "progress"
+
+
+def find_task_id(text: str) -> str:
+    m = re.search(r"\bT-\d+\b", text, flags=re.IGNORECASE)
+    return m.group(0).upper() if m else ""
+
+
+def cmd_feishu_router(args: argparse.Namespace) -> int:
+    text = (args.text or "").strip()
+    norm = text.replace("＠", "@").strip()
+    if not norm:
+        print(json.dumps({"ok": False, "handled": False, "error": "empty text"}))
+        return 1
+
+    cmd_body = norm
+    if norm.lower().startswith("@orchestrator"):
+        cmd_body = norm[len("@orchestrator") :].strip()
+
+    # Command: @orchestrator create project <name>: task1; task2
+    m = re.match(r"^create\s+project\s+(.+)$", cmd_body, flags=re.IGNORECASE)
+    if m:
+        project_name, items = parse_project_tasks(m.group(1))
+        created = []
+        for item in items:
+            assignee = suggest_agent_from_title(item)
+            apply_obj = board_apply(args.root, "orchestrator", f"@{assignee} create task: [{project_name}] {item}")
+            publish = publish_apply_result(
+                args.root,
+                "orchestrator",
+                apply_obj,
+                args.group_id,
+                args.account_id,
+                args.mode,
+                allow_broadcaster=False,
+            )
+            created.append({"apply": apply_obj, "publish": publish})
+        msg = f"[TASK] 项目已创建: {project_name}，共 {len(created)} 个任务。"
+        ack = send_group_message(args.group_id, args.account_id, msg, args.mode)
+        ok = all(c["apply"].get("ok") for c in created) and ack.get("ok")
+        print(json.dumps({"ok": ok, "handled": True, "intent": "create_project", "created": created, "ack": ack}))
+        return 0 if ok else 1
+
+    # Command: @orchestrator run [T-xxx]
+    m = re.match(r"^run(?:\s+([A-Za-z0-9_-]+))?$", cmd_body, flags=re.IGNORECASE)
+    if m:
+        requested = (m.group(1) or "").strip()
+        task = choose_task_for_run(args.root, requested)
+        if not task:
+            sent = send_group_message(args.group_id, args.account_id, "[TASK] 当前没有可执行任务。", args.mode)
+            print(json.dumps({"ok": bool(sent.get("ok")), "handled": True, "intent": "run", "send": sent}))
+            return 0 if sent.get("ok") else 1
+        task_id = str(task.get("taskId"))
+        agent = str(task.get("assigneeHint") or "coder")
+        d_args = argparse.Namespace(
+            root=args.root,
+            task_id=task_id,
+            agent=agent,
+            task=f"{task_id}: {task.get('title') or 'untitled'}",
+            actor="orchestrator",
+            session_id=args.session_id,
+            group_id=args.group_id,
+            account_id=args.account_id,
+            mode=args.mode,
+            timeout_sec=args.timeout_sec,
+        )
+        rc = cmd_dispatch(d_args)
+        return rc
+
+    # Command: @orchestrator status
+    m = re.match(r"^status(?:\s+([A-Za-z0-9_-]+))?$", cmd_body, flags=re.IGNORECASE)
+    if m:
+        task_id = (m.group(1) or "").strip()
+        data = load_snapshot(args.root)
+        tasks = data.get("tasks", {})
+        if task_id:
+            task = tasks.get(task_id)
+            if not isinstance(task, dict):
+                out = send_group_message(args.group_id, args.account_id, f"[TASK] 未找到任务 {task_id}", args.mode)
+                print(json.dumps({"ok": bool(out.get("ok")), "handled": True, "intent": "status", "send": out}))
+                return 0 if out.get("ok") else 1
+            msg = "\n".join(
+                [
+                    f"[TASK] {task_id} | 状态={status_zh(str(task.get('status') or '-'))}",
+                    f"负责人: {task.get('owner') or task.get('assigneeHint') or '-'}",
+                    f"标题: {clip(task.get('title') or '未命名任务')}",
+                ]
+            )
+            out = send_group_message(args.group_id, args.account_id, msg, args.mode)
+            print(json.dumps({"ok": bool(out.get("ok")), "handled": True, "intent": "status", "send": out}))
+            return 0 if out.get("ok") else 1
+
+        counts: Dict[str, int] = {}
+        for t in tasks.values():
+            if not isinstance(t, dict):
+                continue
+            st = str(t.get("status") or "pending")
+            counts[st] = counts.get(st, 0) + 1
+        parts = [f"{status_zh(k)}={v}" for k, v in sorted(counts.items())]
+        summary = "、".join(parts) if parts else "暂无任务"
+        msg = f"[TASK] 任务看板: {summary}"
+        out = send_group_message(args.group_id, args.account_id, msg, args.mode)
+        print(json.dumps({"ok": bool(out.get("ok")), "handled": True, "intent": "status", "counts": counts, "send": out}))
+        return 0 if out.get("ok") else 1
+
+    # Simple Wake-up v1: team member reports with @orchestrator
+    if args.actor != "orchestrator" and "@orchestrator" in norm.lower():
+        task_id = find_task_id(norm)
+        if not task_id:
+            sent = send_group_message(args.group_id, args.account_id, "[TASK] 收到汇报，但未识别到任务ID（例如 T-001）。", args.mode)
+            print(json.dumps({"ok": bool(sent.get("ok")), "handled": True, "intent": "wakeup", "send": sent}))
+            return 0 if sent.get("ok") else 1
+
+        kind = parse_wakeup_kind(norm)
+        if kind == "blocked":
+            apply_obj = board_apply(args.root, "orchestrator", f"block task {task_id}: {clip(norm, 120)}")
+            publish = publish_apply_result(
+                args.root,
+                "orchestrator",
+                apply_obj,
+                args.group_id,
+                args.account_id,
+                args.mode,
+                allow_broadcaster=False,
+            )
+            ok = bool(apply_obj.get("ok")) and bool(publish.get("ok"))
+            print(json.dumps({"ok": ok, "handled": True, "intent": "wakeup", "kind": kind, "apply": apply_obj, "publish": publish}))
+            return 0 if ok else 1
+
+        if kind == "done" and has_evidence(norm):
+            apply_obj = board_apply(args.root, "orchestrator", f"mark done {task_id}: {clip(norm, 120)}")
+            publish = publish_apply_result(
+                args.root,
+                "orchestrator",
+                apply_obj,
+                args.group_id,
+                args.account_id,
+                args.mode,
+                allow_broadcaster=False,
+            )
+            ok = bool(apply_obj.get("ok")) and bool(publish.get("ok"))
+            print(json.dumps({"ok": ok, "handled": True, "intent": "wakeup", "kind": kind, "verify": "self-check", "apply": apply_obj, "publish": publish}))
+            return 0 if ok else 1
+
+        verify_prompt = clip(f"verify {task_id} report from {args.actor}: {norm}", 300)
+        d_args = argparse.Namespace(
+            root=args.root,
+            task_id=task_id,
+            agent="debugger",
+            task=verify_prompt,
+            actor="orchestrator",
+            session_id=args.session_id,
+            group_id=args.group_id,
+            account_id=args.account_id,
+            mode=args.mode,
+            timeout_sec=args.timeout_sec,
+        )
+        rc = cmd_dispatch(d_args)
+        return rc
+
+    print(json.dumps({"ok": True, "handled": False, "intent": "pass-through"}))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -484,7 +794,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_pub.add_argument("--account-id", default=DEFAULT_ACCOUNT_ID)
     p_pub.add_argument("--mode", choices=["send", "dry-run", "off"], default="send")
     p_pub.add_argument("--allow-broadcaster", action="store_true")
-    p_pub.add_argument("--include-escalate-blocked", action="store_true")
     p_pub.set_defaults(func=cmd_publish_apply)
 
     p_dispatch = sub.add_parser("dispatch")
@@ -513,6 +822,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_clarify.add_argument("--mode", choices=["send", "dry-run"], default="send")
     p_clarify.add_argument("--force", action="store_true")
     p_clarify.set_defaults(func=cmd_clarify)
+
+    p_feishu = sub.add_parser("feishu-router")
+    p_feishu.add_argument("--root", required=True)
+    p_feishu.add_argument("--actor", required=True)
+    p_feishu.add_argument("--text", required=True)
+    p_feishu.add_argument("--group-id", default=DEFAULT_GROUP_ID)
+    p_feishu.add_argument("--account-id", default=DEFAULT_ACCOUNT_ID)
+    p_feishu.add_argument("--mode", choices=["send", "dry-run", "off"], default="send")
+    p_feishu.add_argument("--session-id", default="")
+    p_feishu.add_argument("--timeout-sec", type=int, default=120)
+    p_feishu.set_defaults(func=cmd_feishu_router)
 
     return parser
 

@@ -75,9 +75,6 @@ if [[ "$MILESTONES_MODE" != "send" && "$MILESTONES_MODE" != "dry-run" && "$MILES
   exit 2
 fi
 
-# Minimal internal scheduling entrypoints (non-task-board intents).
-# dispatch <taskId> <agent> [: optional task prompt]
-# clarify <taskId> <role>: <question>
 if [[ "$TEXT" =~ ^[[:space:]]*dispatch[[:space:]]+([A-Za-z0-9_-]+)[[:space:]]+([A-Za-z0-9_.-]+)([[:space:]]*:[[:space:]]*(.*))?[[:space:]]*$ ]]; then
   TASK_ID="${BASH_REMATCH[1]}"
   TARGET_AGENT="${BASH_REMATCH[2]}"
@@ -108,6 +105,22 @@ if [[ "$TEXT" =~ ^[[:space:]]*clarify[[:space:]]+([A-Za-z0-9_-]+)[[:space:]]+([A
     --account-id "$MILESTONE_ACCOUNT_ID" \
     --mode "$MILESTONES_MODE"
   exit $?
+fi
+
+# Feishu parser: @orchestrator create project/run/status and wake-up reports.
+FEISHU_JSON="$(python3 "$MILESTONE_PY" feishu-router \
+  --root "$ROOT" \
+  --actor "$ACTOR" \
+  --text "$TEXT" \
+  --group-id "$CONTROL_GROUP_ID" \
+  --account-id "$MILESTONE_ACCOUNT_ID" \
+  --mode "$MILESTONES_MODE" || true)"
+if [[ "$FEISHU_JSON" == *'"handled": true'* ]]; then
+  echo "$FEISHU_JSON"
+  if [[ "$FEISHU_JSON" == *'"ok": true'* ]]; then
+    exit 0
+  fi
+  exit 1
 fi
 
 APPLY_JSON="$(python3 "$PY" apply --root "$ROOT" --actor "$ACTOR" --text "$TEXT")"

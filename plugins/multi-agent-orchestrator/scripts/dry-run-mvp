@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${1:-$(mktemp -d)}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ ! -d "$ROOT/state" ]]; then
+  mkdir -p "$ROOT"
+fi
+
+"$SCRIPT_DIR/init-task-board" --root "$ROOT" >/dev/null
+
+"$SCRIPT_DIR/orchestrator-router" --root "$ROOT" --actor orchestrator --milestones dry-run \
+  --text "@orchestrator create project MVP: 搭建插件骨架; 实现任务看板; 实现命令路由" >/dev/null
+
+"$SCRIPT_DIR/orchestrator-router" --root "$ROOT" --actor orchestrator --milestones dry-run \
+  --text "@orchestrator run" >/dev/null
+
+"$SCRIPT_DIR/orchestrator-router" --root "$ROOT" --actor coder --milestones dry-run \
+  --text "@orchestrator T-002 已完成，证据: scripts/lib/task_board.py 已更新" >/dev/null
+
+STATUS_JSON="$("$SCRIPT_DIR/orchestrator-router" --root "$ROOT" --actor orchestrator --milestones dry-run --text "status")"
+
+echo "$STATUS_JSON"
+echo "dry-run root: $ROOT"
