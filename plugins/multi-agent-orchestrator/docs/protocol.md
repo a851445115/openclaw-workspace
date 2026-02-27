@@ -13,6 +13,12 @@ This protocol is file-backed and runnable in local mode.
 
 Protocol defaults live in `docs/protocol-config.json` and are mirrored in plugin schema.
 
+Milestone publishing format is intentionally low-noise:
+
+- 1-3 lines only.
+- Must include `taskId`, status, owner/assignee hint, and one key detail.
+- Prefix constrained to protocol tags (`[TASK]/[CLAIM]/[DONE]/[BLOCKED]/[DIAG]`).
+
 ## State Files
 
 - `state/tasks.jsonl`: append-only event stream.
@@ -50,6 +56,18 @@ Prefix command text with `@agent-name` to attach routing metadata:
 - Example: `@debugger create task T-900: investigate stale locks`
 - Router behavior in Milestone B: records `overrideAgent` metadata only.
 - Transport layer behavior is intentionally unchanged.
+
+## Visibility vs Execution
+
+- Source of truth remains local task board files (`tasks.jsonl` + snapshot).
+- Internal execution remains subagent spawn (`/subagents spawn ...`) via orchestrator session.
+- Group messages are milestone summaries for human observability; they are not task state.
+
+## Broadcast Guardrails
+
+- Default active broadcaster: `orchestrator`.
+- Optional secondary broadcaster: `broadcaster` (explicit opt-in).
+- Clarify requests are orchestrator-only and role-targeted with cooldown throttle.
 
 ## Synthesis Pipeline (Stub)
 

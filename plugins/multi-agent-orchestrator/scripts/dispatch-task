@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=""
+MODE="send"
+GROUP_ID="oc_041146c92a9ccb403a7f4f48fb59701d"
+ACCOUNT_ID="orchestrator"
+ACTOR="orchestrator"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="$SCRIPT_DIR/lib/milestones.py"
+
+usage() {
+  cat >&2 <<'USAGE'
+usage:
+  dispatch-task dispatch --root <path> --task-id <id> --agent <role> [--task <text>] [--mode send|dry-run]
+                        [--group-id <chat_id>] [--account-id <id>] [--actor orchestrator] [--session-id <id>] [--timeout-sec <n>]
+  dispatch-task clarify --root <path> --task-id <id> --role <coder|invest-analyst|debugger|broadcaster> --question <text>
+                        [--mode send|dry-run] [--group-id <chat_id>] [--account-id <id>] [--actor orchestrator]
+                        [--cooldown-sec <n>] [--force]
+USAGE
+}
+
+if [[ $# -lt 1 ]]; then
+  usage
+  exit 2
+fi
+
+SUBCOMMAND="$1"
+shift
+
+case "$SUBCOMMAND" in
+  dispatch)
+    TASK_ID=""
+    AGENT=""
+    TASK_TEXT=""
+    SESSION_ID=""
+    TIMEOUT_SEC=120
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --root) ROOT="${2:-}"; shift 2 ;;
+        --task-id) TASK_ID="${2:-}"; shift 2 ;;
+        --agent) AGENT="${2:-}"; shift 2 ;;
+        --task) TASK_TEXT="${2:-}"; shift 2 ;;
+        --mode) MODE="${2:-}"; shift 2 ;;
+        --group-id) GROUP_ID="${2:-}"; shift 2 ;;
+        --account-id) ACCOUNT_ID="${2:-}"; shift 2 ;;
+        --actor) ACTOR="${2:-}"; shift 2 ;;
+        --session-id) SESSION_ID="${2:-}"; shift 2 ;;
+        --timeout-sec) TIMEOUT_SEC="${2:-120}"; shift 2 ;;
+        *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
+      esac
+    done
+    if [[ -z "$ROOT" || -z "$TASK_ID" || -z "$AGENT" ]]; then
+      usage
+      exit 2
+    fi
+    exec python3 "$PY" dispatch \
+      --root "$ROOT" \
+      --task-id "$TASK_ID" \
+      --agent "$AGENT" \
+      --task "$TASK_TEXT" \
+      --mode "$MODE" \
+      --group-id "$GROUP_ID" \
+      --account-id "$ACCOUNT_ID" \
+      --actor "$ACTOR" \
+      --session-id "$SESSION_ID" \
+      --timeout-sec "$TIMEOUT_SEC"
+    ;;
+  clarify)
+    TASK_ID=""
+    ROLE=""
+    QUESTION=""
+    COOLDOWN_SEC=180
+    FORCE=0
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --root) ROOT="${2:-}"; shift 2 ;;
+        --task-id) TASK_ID="${2:-}"; shift 2 ;;
+        --role) ROLE="${2:-}"; shift 2 ;;
+        --question) QUESTION="${2:-}"; shift 2 ;;
+        --mode) MODE="${2:-}"; shift 2 ;;
+        --group-id) GROUP_ID="${2:-}"; shift 2 ;;
+        --account-id) ACCOUNT_ID="${2:-}"; shift 2 ;;
+        --actor) ACTOR="${2:-}"; shift 2 ;;
+        --cooldown-sec) COOLDOWN_SEC="${2:-180}"; shift 2 ;;
+        --force) FORCE=1; shift ;;
+        *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
+      esac
+    done
+    if [[ -z "$ROOT" || -z "$TASK_ID" || -z "$ROLE" || -z "$QUESTION" ]]; then
+      usage
+      exit 2
+    fi
+    if [[ "$FORCE" -eq 1 ]]; then
+      exec python3 "$PY" clarify \
+        --root "$ROOT" \
+        --task-id "$TASK_ID" \
+        --role "$ROLE" \
+        --question "$QUESTION" \
+        --mode "$MODE" \
+        --group-id "$GROUP_ID" \
+        --account-id "$ACCOUNT_ID" \
+        --actor "$ACTOR" \
+        --cooldown-sec "$COOLDOWN_SEC" \
+        --force
+    else
+      exec python3 "$PY" clarify \
+        --root "$ROOT" \
+        --task-id "$TASK_ID" \
+        --role "$ROLE" \
+        --question "$QUESTION" \
+        --mode "$MODE" \
+        --group-id "$GROUP_ID" \
+        --account-id "$ACCOUNT_ID" \
+        --actor "$ACTOR" \
+        --cooldown-sec "$COOLDOWN_SEC"
+    fi
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

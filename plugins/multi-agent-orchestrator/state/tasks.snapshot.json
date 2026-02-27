@@ -85,10 +85,266 @@
       "history": [
         "ac7e9bd1-2624-4a21-8c9f-69571ed25ea2"
       ]
+    },
+    "T-914": {
+      "taskId": "T-914",
+      "title": "milestone demo 1772175496",
+      "status": "done",
+      "owner": "coder",
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T06:58:16Z",
+      "updatedAt": "2026-02-27T06:58:16Z",
+      "blockedReason": null,
+      "result": "milestone done 1772175496",
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "ba7ddf39-3b8c-4446-a358-e8935087dca8",
+        "fcfa28f5-96a1-4795-833e-0ca44e68e408",
+        "6d9b3921-4e8a-4bba-90ec-1b5441220f9a"
+      ]
+    },
+    "T-915": {
+      "taskId": "T-915",
+      "title": "milestone demo 1772175543",
+      "status": "done",
+      "owner": "coder",
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T06:59:03Z",
+      "updatedAt": "2026-02-27T06:59:03Z",
+      "blockedReason": null,
+      "result": "milestone done 1772175543",
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "1cb4a362-6835-4710-91a2-846cee87314c",
+        "d58908fd-50d1-45c6-9f54-5e82cbfc14ba",
+        "cec46541-dd1b-4acc-969b-723dfc3d11a6"
+      ]
+    },
+    "T-916": {
+      "taskId": "T-916",
+      "title": "visible milestone flow 1772175580",
+      "status": "done",
+      "owner": "orchestrator",
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T06:59:40Z",
+      "updatedAt": "2026-02-27T06:59:44Z",
+      "blockedReason": null,
+      "result": "visible done 1772175580",
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "00027b24-8891-4c8f-91be-f5a4df447a93",
+        "5e3e7442-cc19-4671-98ed-6f7484ed8bfd",
+        "339d5b68-a9f6-4d9e-9f51-c5a8a6466e4d"
+      ]
+    },
+    "T-917": {
+      "taskId": "T-917",
+      "title": "blocked flow 1772175580",
+      "status": "blocked",
+      "owner": "orchestrator",
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T06:59:45Z",
+      "updatedAt": "2026-02-27T06:59:49Z",
+      "blockedReason": "waiting for external API",
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "15b58f64-a830-4ab5-af03-60d1d2d6f33e",
+        "12dd358f-790d-4036-91cb-e3e99f7f92cd",
+        "3b950ab7-e269-472e-8a37-ba662b5b0961"
+      ]
+    },
+    "T-918": {
+      "taskId": "T-918",
+      "title": "escalate flow 1772175580",
+      "status": "blocked",
+      "owner": "orchestrator",
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T06:59:50Z",
+      "updatedAt": "2026-02-27T06:59:54Z",
+      "blockedReason": "parser crash on edge case",
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "bec749ad-f16a-4d75-a52b-809976aafea2",
+        "a62dd0e6-7226-489f-a560-c36977f43075",
+        "34146012-8f70-4b0c-8003-35841a8e71e1"
+      ]
+    },
+    "T-919": {
+      "taskId": "T-919",
+      "title": "DIAG T-918: parser crash on edge case",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "debugger",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T06:59:54Z",
+      "updatedAt": "2026-02-27T06:59:54Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": "T-918",
+      "history": [
+        "9e6aa1cd-2dd1-4fa3-807a-0a86e671a392"
+      ]
+    },
+    "T-920": {
+      "taskId": "T-920",
+      "title": "visible chain 1772176194",
+      "status": "done",
+      "owner": "orchestrator",
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:09:54Z",
+      "updatedAt": "2026-02-27T07:10:00Z",
+      "blockedReason": null,
+      "result": "chain done 1772176194",
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "487ff89c-81f5-4140-b351-4153abf4f327",
+        "2bacc009-bd67-4d0d-89c5-182e896db1bd",
+        "d02b0e05-a4a0-4bc1-8ace-4dfb5a7816d3"
+      ]
+    },
+    "T-921": {
+      "taskId": "T-921",
+      "title": "escalate chain 1772176194",
+      "status": "blocked",
+      "owner": "orchestrator",
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:10:02Z",
+      "updatedAt": "2026-02-27T07:10:07Z",
+      "blockedReason": "reproducible parser crash",
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "4d993231-638b-4192-b476-4af96a263ca4",
+        "ace7b264-85cc-462d-af7c-32c88e02f991",
+        "78b83a1d-f9e7-46d4-b6e2-5e53b7970d73"
+      ]
+    },
+    "T-922": {
+      "taskId": "T-922",
+      "title": "DIAG T-921: reproducible parser crash",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "debugger",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:10:07Z",
+      "updatedAt": "2026-02-27T07:10:07Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": "T-921",
+      "history": [
+        "3844b122-eb73-486d-bf5d-e70686ff44e7"
+      ]
+    },
+    "T-923": {
+      "taskId": "T-923",
+      "title": "manual verify 1772176447",
+      "status": "done",
+      "owner": "orchestrator",
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:14:07Z",
+      "updatedAt": "2026-02-27T07:14:12Z",
+      "blockedReason": null,
+      "result": "manual verify done 1772176447",
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "ca209656-2089-4a49-9d7c-d54c3772dc95",
+        "3acbedb7-7917-4514-835c-e4cf217b0b4e",
+        "c54b3f35-cb22-46c4-9339-9fe4e93d88b8"
+      ]
+    },
+    "T-924": {
+      "taskId": "T-924",
+      "title": "manual escalate 1772176447",
+      "status": "blocked",
+      "owner": "orchestrator",
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:14:14Z",
+      "updatedAt": "2026-02-27T07:14:19Z",
+      "blockedReason": "manual escalate reason",
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "94d32d31-f36b-4f9b-a5a2-b71c5c9680ed",
+        "daa31641-9e4b-433b-a2fe-f1432204ba34",
+        "3652870a-06a8-4fdb-a272-50c321b9b50c"
+      ]
+    },
+    "T-925": {
+      "taskId": "T-925",
+      "title": "DIAG T-924: manual escalate reason",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "debugger",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:14:19Z",
+      "updatedAt": "2026-02-27T07:14:19Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": "T-924",
+      "history": [
+        "ab7d0f83-9f4f-40c1-bfce-ff0751f6ff44"
+      ]
+    },
+    "T-926": {
+      "taskId": "T-926",
+      "title": "dispatch demo 1772176500",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:15:00Z",
+      "updatedAt": "2026-02-27T07:15:00Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "c2faa0ba-45c9-4429-8797-dae8b849e9de"
+      ]
+    },
+    "T-927": {
+      "taskId": "T-927",
+      "title": "dispatch demo 1772176550",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:15:50Z",
+      "updatedAt": "2026-02-27T07:15:50Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "be099daa-abc0-4ae5-b9e5-4f92cfccdf16"
+      ]
     }
   },
   "meta": {
     "version": 2,
-    "updatedAt": "2026-02-27T05:38:50Z"
+    "updatedAt": "2026-02-27T07:15:50Z"
   }
 }

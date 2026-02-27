@@ -37,12 +37,12 @@ if [[ -z "$ROOT" || -z "$TASK_ID" || -z "$AGENT" ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PY="$SCRIPT_DIR/lib/task_board.py"
 TEXT="@${AGENT} claim task ${TASK_ID}"
+ROUTER="$SCRIPT_DIR/orchestrator-router"
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[dry-run] python3 $PY apply --root $ROOT --actor $AGENT --text '$TEXT'"
+  echo "[dry-run] $ROUTER --root $ROOT --actor $AGENT --text '$TEXT' --milestones dry-run"
   exit 0
 fi
 
-python3 "$PY" apply --root "$ROOT" --actor "$AGENT" --text "$TEXT"
+"$ROUTER" --root "$ROOT" --actor "$AGENT" --text "$TEXT"

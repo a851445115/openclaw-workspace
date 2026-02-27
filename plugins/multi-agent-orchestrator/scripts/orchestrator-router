@@ -5,6 +5,10 @@ ROOT=""
 ACTOR="orchestrator"
 TEXT=""
 MODE="apply"
+MILESTONES_MODE="send"
+CONTROL_GROUP_ID="oc_041146c92a9ccb403a7f4f48fb59701d"
+MILESTONE_ACCOUNT_ID="orchestrator"
+ALLOW_BROADCASTER=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -24,6 +28,22 @@ while [[ $# -gt 0 ]]; do
       MODE="${2:-}"
       shift 2
       ;;
+    --milestones)
+      MILESTONES_MODE="${2:-}"
+      shift 2
+      ;;
+    --group-id)
+      CONTROL_GROUP_ID="${2:-}"
+      shift 2
+      ;;
+    --account-id)
+      MILESTONE_ACCOUNT_ID="${2:-}"
+      shift 2
+      ;;
+    --allow-broadcaster)
+      ALLOW_BROADCASTER=1
+      shift
+      ;;
     *)
       echo "unknown argument: $1" >&2
       exit 2
@@ -38,6 +58,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PY="$SCRIPT_DIR/lib/task_board.py"
+MILESTONE_PY="$SCRIPT_DIR/lib/milestones.py"
 
 if [[ "$MODE" == "route" ]]; then
   python3 "$PY" route --actor "$ACTOR" --text "$TEXT"
@@ -49,4 +70,63 @@ if [[ -z "$ROOT" ]]; then
   exit 2
 fi
 
-python3 "$PY" apply --root "$ROOT" --actor "$ACTOR" --text "$TEXT"
+if [[ "$MILESTONES_MODE" != "send" && "$MILESTONES_MODE" != "dry-run" && "$MILESTONES_MODE" != "off" ]]; then
+  echo "--milestones must be send|dry-run|off" >&2
+  exit 2
+fi
+
+APPLY_JSON="$(python3 "$PY" apply --root "$ROOT" --actor "$ACTOR" --text "$TEXT")"
+echo "$APPLY_JSON"
+
+if [[ "$MILESTONES_MODE" != "off" ]]; then
+  if [[ "$MILESTONES_MODE" == "dry-run" ]]; then
+    if [[ "$ALLOW_BROADCASTER" -eq 1 ]]; then
+      MILESTONE_JSON="$(python3 "$MILESTONE_PY" publish-apply \
+        --root "$ROOT" \
+        --actor "$ACTOR" \
+        --apply-json "$APPLY_JSON" \
+        --group-id "$CONTROL_GROUP_ID" \
+        --account-id "$MILESTONE_ACCOUNT_ID" \
+        --mode "$MILESTONES_MODE" \
+        --allow-broadcaster)" || {
+          echo "warning: milestone dry-run generation failed (intent still applied)" >&2
+          exit 0
+        }
+    else
+      MILESTONE_JSON="$(python3 "$MILESTONE_PY" publish-apply \
+        --root "$ROOT" \
+        --actor "$ACTOR" \
+        --apply-json "$APPLY_JSON" \
+        --group-id "$CONTROL_GROUP_ID" \
+        --account-id "$MILESTONE_ACCOUNT_ID" \
+        --mode "$MILESTONES_MODE")" || {
+          echo "warning: milestone dry-run generation failed (intent still applied)" >&2
+          exit 0
+        }
+    fi
+    echo "$MILESTONE_JSON" >&2
+  else
+    if [[ "$ALLOW_BROADCASTER" -eq 1 ]]; then
+      python3 "$MILESTONE_PY" publish-apply \
+        --root "$ROOT" \
+        --actor "$ACTOR" \
+        --apply-json "$APPLY_JSON" \
+        --group-id "$CONTROL_GROUP_ID" \
+        --account-id "$MILESTONE_ACCOUNT_ID" \
+        --mode "$MILESTONES_MODE" \
+        --allow-broadcaster >/dev/null || {
+          echo "warning: milestone publish failed (intent still applied)" >&2
+        }
+    else
+      python3 "$MILESTONE_PY" publish-apply \
+        --root "$ROOT" \
+        --actor "$ACTOR" \
+        --apply-json "$APPLY_JSON" \
+        --group-id "$CONTROL_GROUP_ID" \
+        --account-id "$MILESTONE_ACCOUNT_ID" \
+        --mode "$MILESTONES_MODE" >/dev/null || {
+          echo "warning: milestone publish failed (intent still applied)" >&2
+        }
+    fi
+  fi
+fi

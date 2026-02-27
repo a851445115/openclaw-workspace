@@ -48,6 +48,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PY="$SCRIPT_DIR/lib/task_board.py"
+ROUTER="$SCRIPT_DIR/orchestrator-router"
 
 python3 "$PY" transition --from "$FROM" --to "$TO" >/dev/null
 
@@ -68,8 +69,8 @@ case "$TO" in
 esac
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[dry-run] python3 $PY apply --root $ROOT --actor $ACTOR --text '$TEXT'"
+  echo "[dry-run] $ROUTER --root $ROOT --actor $ACTOR --text '$TEXT' --milestones dry-run"
   exit 0
 fi
 
-python3 "$PY" apply --root "$ROOT" --actor "$ACTOR" --text "$TEXT"
+"$ROUTER" --root "$ROOT" --actor "$ACTOR" --text "$TEXT"
