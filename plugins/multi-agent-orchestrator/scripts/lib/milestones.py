@@ -13,7 +13,6 @@ DEFAULT_ACCOUNT_ID = "orchestrator"
 DEFAULT_ALLOWED_BROADCASTERS = {"orchestrator"}
 OPTIONAL_BROADCASTER = "broadcaster"
 CLARIFY_ROLES = {"coder", "invest-analyst", "debugger", "broadcaster"}
-
 DONE_HINTS = ("[DONE]", " done", "completed", "finish", "完成", "已完成", "通过", "verified")
 BLOCKED_HINTS = ("[BLOCKED]", "blocked", "failed", "error", "exception", "失败", "阻塞", "卡住", "无法")
 EVIDENCE_HINTS = ("/", ".py", ".md", "http", "截图", "日志", "log", "输出", "result", "测试")
@@ -87,11 +86,83 @@ STATUS_ZH = {
     "blocked": "阻塞",
     "failed": "失败",
 }
+STATUS_DISPLAY_ORDER = ["pending", "claimed", "in_progress", "review", "done", "blocked", "failed"]
+STATUS_PENDING_BUCKET = {"pending", "claimed", "in_progress", "review"}
 
 
 def status_zh(status: str) -> str:
     s = (status or "").strip()
     return STATUS_ZH.get(s, s or "-")
+
+
+def sort_tasks_for_status(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return sorted(
+        tasks,
+        key=lambda t: (
+            str(t.get("updatedAt") or ""),
+            str(t.get("taskId") or ""),
+        ),
+        reverse=True,
+    )
+
+
+def format_status_entry(task: Dict[str, Any], kind: str, title_limit: int, extra_limit: int) -> str:
+    task_id = str(task.get("taskId") or "-")
+    title = clip(task.get("title") or "未命名任务", title_limit)
+    if kind == "blocked":
+        reason = clip(task.get("blockedReason") or "未填原因", extra_limit)
+        return f"{task_id} {title}（{reason}）"
+    assignee = task.get("owner") or task.get("assigneeHint") or "未指派"
+    return f"{task_id} {title}（{clip(str(assignee), extra_limit)}）"
+
+
+def format_status_summary_message(tasks: Dict[str, Any], full: bool = False) -> Tuple[str, Dict[str, int]]:
+    counts: Dict[str, int] = {}
+    rows: List[Dict[str, Any]] = []
+    for raw in tasks.values():
+        if not isinstance(raw, dict):
+            continue
+        rows.append(raw)
+        st = str(raw.get("status") or "pending")
+        counts[st] = counts.get(st, 0) + 1
+
+    total = len(rows)
+    blocked_tasks = sort_tasks_for_status([t for t in rows if str(t.get("status") or "") == "blocked"])
+    pending_tasks = sort_tasks_for_status(
+        [t for t in rows if str(t.get("status") or "pending") in STATUS_PENDING_BUCKET]
+    )
+
+    top_n = 6 if full else 3
+    title_limit = 28 if full else 18
+    extra_limit = 20 if full else 12
+    max_chars = 1200 if full else 500
+
+    blocked_items = [format_status_entry(t, "blocked", title_limit, extra_limit) for t in blocked_tasks[:top_n]]
+    pending_items = [format_status_entry(t, "pending", title_limit, extra_limit) for t in pending_tasks[:top_n]]
+
+    ordered = [k for k in STATUS_DISPLAY_ORDER if counts.get(k)]
+    tail = sorted([k for k in counts if k not in STATUS_DISPLAY_ORDER])
+    counts_text = "、".join([f"{status_zh(k)}{counts[k]}" for k in ordered + tail]) or "暂无任务"
+
+    header = f"[TASK] 看板汇总 | 总数{total} | {counts_text}"
+    blocked_line = f"阻塞Top{top_n}: " + ("；".join(blocked_items) if blocked_items else "无")
+    pending_line = f"待推进Top{top_n}: " + ("；".join(pending_items) if pending_items else "无")
+    lines = [header, blocked_line, pending_line]
+
+    while len("\n".join(lines)) > max_chars and (blocked_items or pending_items):
+        if len(blocked_items) >= len(pending_items) and blocked_items:
+            blocked_items.pop()
+        elif pending_items:
+            pending_items.pop()
+        blocked_line = f"阻塞Top{top_n}: " + ("；".join(blocked_items) if blocked_items else "无")
+        pending_line = f"待推进Top{top_n}: " + ("；".join(pending_items) if pending_items else "无")
+        lines = [header, blocked_line, pending_line]
+
+    msg = "\n".join(lines)
+    if len(msg) > max_chars:
+        msg = header
+
+    return msg, counts
 
 
 def build_three_line(prefix: str, task_id: str, status: str, owner_or_hint: str, key_line: str) -> str:
@@ -309,88 +380,14 @@ def cmd_publish_apply(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
-def gateway_sessions_list() -> Dict[str, Any]:
-    cmd = ["openclaw", "gateway", "call", "sessions.list", "--json"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30)
-    if proc.returncode != 0:
-        raise RuntimeError(f"sessions.list failed: {clip(proc.stderr or proc.stdout, 300)}")
-    return parse_json_loose(proc.stdout or "")
-
-
-def resolve_orchestrator_session(group_id: str, explicit_session_id: Optional[str]) -> str:
-    if explicit_session_id:
-        return explicit_session_id
-    data = gateway_sessions_list()
-    sessions = data.get("sessions") if isinstance(data, dict) else None
-    if not isinstance(sessions, list):
-        raise RuntimeError("sessions.list response missing sessions array")
-    target_key = f"agent:orchestrator:feishu:group:{group_id}"
-    for s in sessions:
-        if isinstance(s, dict) and s.get("key") == target_key and s.get("sessionId"):
-            return str(s["sessionId"])
-    for s in sessions:
-        if isinstance(s, dict) and str(s.get("key", "")).startswith("agent:orchestrator:") and s.get(
-            "sessionId"
-        ):
-            return str(s["sessionId"])
-    raise RuntimeError("cannot resolve orchestrator session id")
-
-
-def run_spawn(session_id: str, target_agent: str, task_prompt: str, timeout_sec: int) -> Dict[str, Any]:
-    message = f"/subagents spawn {target_agent} {task_prompt}".strip()
-    cmd = [
-        "openclaw",
-        "agent",
-        "--agent",
-        "orchestrator",
-        "--session-id",
-        session_id,
-        "--message",
-        message,
-        "--json",
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout_sec)
-    out = {
-        "ok": proc.returncode == 0,
-        "returncode": proc.returncode,
-        "command": cmd,
-        "stdout": clip(proc.stdout, 6000),
-        "stderr": clip(proc.stderr, 1800),
-        "rawMessage": message,
-    }
-    if proc.returncode == 0:
-        try:
-            out["parsed"] = parse_json_loose(proc.stdout or "")
-        except Exception:
-            pass
-    return out
-
-
-def infer_outcome(spawn_result: Dict[str, Any], fallback_summary: str) -> Tuple[str, str]:
-    if not spawn_result.get("ok"):
-        detail = spawn_result.get("error") or spawn_result.get("stderr") or "派发失败"
-        return "blocked", f"执行失败: {clip(detail, 120)}"
-
-    blob = " ".join(
-        [
-            str(spawn_result.get("stdout") or ""),
-            str(spawn_result.get("stderr") or ""),
-            json.dumps(spawn_result.get("parsed") or {}, ensure_ascii=False),
-        ]
-    ).lower()
-    has_done = any(h.lower() in blob for h in DONE_HINTS)
-    has_blocked = any(h.lower() in blob for h in BLOCKED_HINTS)
-
-    if has_blocked:
-        return "blocked", f"复核未通过: {clip(spawn_result.get('stderr') or spawn_result.get('stdout') or fallback_summary, 120)}"
-    if has_done or spawn_result.get("dryRun"):
-        return "done", clip(spawn_result.get("stdout") or fallback_summary or "已完成", 120)
-    return "blocked", "未提取到明确完成结论，已转为阻塞待人工确认"
+def get_task(root: str, task_id: str) -> Optional[Dict[str, Any]]:
+    snap = load_snapshot(root)
+    task = snap.get("tasks", {}).get(task_id)
+    return task if isinstance(task, dict) else None
 
 
 def ensure_claimed(root: str, task_id: str, agent: str) -> Optional[Dict[str, Any]]:
-    snap = load_snapshot(root)
-    task = snap.get("tasks", {}).get(task_id)
+    task = get_task(root, task_id)
     if not isinstance(task, dict):
         return None
     status = str(task.get("status") or "")
@@ -399,84 +396,54 @@ def ensure_claimed(root: str, task_id: str, agent: str) -> Optional[Dict[str, An
     return {"ok": True, "intent": "claim_task", "taskId": task_id, "status": status, "skipped": True}
 
 
-def close_dispatch_loop(
-    root: str,
-    actor: str,
-    task_id: str,
-    spawn_result: Dict[str, Any],
-    group_id: str,
-    account_id: str,
-    mode: str,
-) -> Dict[str, Any]:
-    outcome, summary = infer_outcome(spawn_result, fallback_summary=f"{task_id} dispatched")
-    if outcome == "done":
-        apply_obj = board_apply(root, actor, f"mark done {task_id}: {summary}")
-    else:
-        apply_obj = board_apply(root, actor, f"block task {task_id}: {summary}")
-    publish = publish_apply_result(root, actor, apply_obj, group_id, account_id, mode, allow_broadcaster=False)
-    return {"outcome": outcome, "summary": summary, "apply": apply_obj, "publish": publish}
-
-
 def cmd_dispatch(args: argparse.Namespace) -> int:
     if args.actor != "orchestrator":
         print(json.dumps({"ok": False, "error": "dispatch is restricted to actor=orchestrator"}))
         return 1
 
-    data = load_snapshot(args.root)
-    task = data.get("tasks", {}).get(args.task_id)
+    task = get_task(args.root, args.task_id)
     if not isinstance(task, dict):
         print(json.dumps({"ok": False, "error": f"task not found: {args.task_id}"}))
         return 1
 
     claimed = ensure_claimed(args.root, args.task_id, args.agent)
+    if not isinstance(claimed, dict) or not claimed.get("ok"):
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": f"failed to claim task: {args.task_id}",
+                    "claim": claimed,
+                },
+                ensure_ascii=True,
+            )
+        )
+        return 1
 
-    pre_text = "\n".join(
+    task = get_task(args.root, args.task_id) or task
+    status = str(task.get("status") or "")
+    title = clip(task.get("title") or "未命名任务")
+    dispatch_task = clip(args.task or f"{args.task_id}: {task.get('title') or 'untitled'}", 300)
+
+    claim_text = "\n".join(
         [
-            f"[CLAIM] {args.task_id} | 状态={status_zh(str(task.get('status') or '-'))} | 指派={args.agent}",
-            f"标题: {clip(task.get('title') or '未命名任务')}",
-            "派发: 已请求后台执行 (subagent)",
+            f"[CLAIM] {args.task_id} | 状态={status_zh(status or '-')} | 指派={args.agent}",
+            f"标题: {title}",
+            "派发模式: 手动协作（Simple Wake-up v1）",
         ]
     )
-    pre_send = send_group_message(args.group_id, args.account_id, pre_text, args.mode)
+    claim_send = send_group_message(args.group_id, args.account_id, claim_text, args.mode)
 
-    spawn_task = clip(args.task or f"{args.task_id}: {task.get('title') or 'untitled'}", 500)
-    if args.mode == "dry-run":
-        spawn_result: Dict[str, Any] = {
-            "ok": True,
-            "dryRun": True,
-            "note": "spawn skipped in dry-run mode",
-            "stdout": f"[DONE] {args.task_id} dry-run verified",
-            "message": f"/subagents spawn {args.agent} {spawn_task}",
-        }
-    else:
-        try:
-            session_id = resolve_orchestrator_session(args.group_id, args.session_id)
-            spawn_result = run_spawn(session_id, args.agent, spawn_task, args.timeout_sec)
-        except Exception as err:
-            spawn_result = {"ok": False, "error": str(err)}
-
-    post_status = "已完成复核" if spawn_result.get("ok") else "失败"
-    detail = spawn_result.get("error") or spawn_result.get("stderr") or spawn_result.get("stdout") or post_status
-    post_text = "\n".join(
+    task_text = "\n".join(
         [
-            f"[CLAIM] {args.task_id} | 状态={status_zh(str(task.get('status') or '-'))} | 指派={args.agent}",
-            f"派发结果: {post_status}",
-            f"摘要: {clip(detail, 160)}",
+            f"[TASK] {args.task_id} | 负责人={args.agent}",
+            f"任务: {dispatch_task}",
+            f"请 @{args.agent} 完成后回报：@orchestrator {args.task_id} 已完成，证据: 日志/截图/链接。",
         ]
     )
-    post_send = send_group_message(args.group_id, args.account_id, post_text, args.mode)
+    task_send = send_group_message(args.group_id, args.account_id, task_text, args.mode)
 
-    closed = close_dispatch_loop(
-        args.root,
-        "orchestrator",
-        args.task_id,
-        spawn_result,
-        args.group_id,
-        args.account_id,
-        args.mode,
-    )
-
-    ok = bool(pre_send.get("ok")) and bool(post_send.get("ok")) and bool(closed.get("apply", {}).get("ok"))
+    ok = bool(claimed.get("ok")) and bool(claim_send.get("ok")) and bool(task_send.get("ok"))
     print(
         json.dumps(
             {
@@ -485,17 +452,17 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
                 "intent": "dispatch",
                 "taskId": args.task_id,
                 "agent": args.agent,
+                "dispatchMode": "manual",
                 "claim": claimed,
-                "pre": pre_send,
-                "spawn": spawn_result,
-                "post": post_send,
-                "closed": closed,
+                "claimSend": claim_send,
+                "taskSend": task_send,
+                "waitForReport": True,
+                "autoClose": False,
             },
             ensure_ascii=True,
         )
     )
     return 0 if ok else 1
-
 
 def load_json_file(path: str, default_obj: Dict[str, Any]) -> Dict[str, Any]:
     if not os.path.exists(path):
@@ -665,6 +632,25 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
     m = re.match(r"^run(?:\s+([A-Za-z0-9_-]+))?$", cmd_body, flags=re.IGNORECASE)
     if m:
         requested = (m.group(1) or "").strip()
+        if requested:
+            requested_task = get_task(args.root, requested)
+            if isinstance(requested_task, dict) and str(requested_task.get("status") or "") == "done":
+                text_done = f"[DONE] {requested} 已完成，无需重复执行"
+                sent = send_group_message(args.group_id, args.account_id, text_done, args.mode)
+                print(
+                    json.dumps(
+                        {
+                            "ok": bool(sent.get("ok")),
+                            "handled": True,
+                            "intent": "run",
+                            "taskId": requested,
+                            "idempotent": True,
+                            "send": sent,
+                        }
+                    )
+                )
+                return 0 if sent.get("ok") else 1
+
         task = choose_task_for_run(args.root, requested)
         if not task:
             sent = send_group_message(args.group_id, args.account_id, "[TASK] 当前没有可执行任务。", args.mode)
@@ -686,22 +672,22 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
         )
         rc = cmd_dispatch(d_args)
         return rc
-
-    # Command: @orchestrator status
+    # Command: @orchestrator status [taskId|all|full]
     m = re.match(r"^status(?:\s+([A-Za-z0-9_-]+))?$", cmd_body, flags=re.IGNORECASE)
     if m:
-        task_id = (m.group(1) or "").strip()
+        status_arg = (m.group(1) or "").strip()
         data = load_snapshot(args.root)
         tasks = data.get("tasks", {})
-        if task_id:
-            task = tasks.get(task_id)
+        full_mode = status_arg.lower() in {"all", "full"}
+        if status_arg and not full_mode:
+            task = tasks.get(status_arg)
             if not isinstance(task, dict):
-                out = send_group_message(args.group_id, args.account_id, f"[TASK] 未找到任务 {task_id}", args.mode)
+                out = send_group_message(args.group_id, args.account_id, f"[TASK] 未找到任务 {status_arg}", args.mode)
                 print(json.dumps({"ok": bool(out.get("ok")), "handled": True, "intent": "status", "send": out}))
                 return 0 if out.get("ok") else 1
             msg = "\n".join(
                 [
-                    f"[TASK] {task_id} | 状态={status_zh(str(task.get('status') or '-'))}",
+                    f"[TASK] {status_arg} | 状态={status_zh(str(task.get('status') or '-'))}",
                     f"负责人: {task.get('owner') or task.get('assigneeHint') or '-'}",
                     f"标题: {clip(task.get('title') or '未命名任务')}",
                 ]
@@ -710,17 +696,20 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             print(json.dumps({"ok": bool(out.get("ok")), "handled": True, "intent": "status", "send": out}))
             return 0 if out.get("ok") else 1
 
-        counts: Dict[str, int] = {}
-        for t in tasks.values():
-            if not isinstance(t, dict):
-                continue
-            st = str(t.get("status") or "pending")
-            counts[st] = counts.get(st, 0) + 1
-        parts = [f"{status_zh(k)}={v}" for k, v in sorted(counts.items())]
-        summary = "、".join(parts) if parts else "暂无任务"
-        msg = f"[TASK] 任务看板: {summary}"
+        msg, counts = format_status_summary_message(tasks, full=full_mode)
         out = send_group_message(args.group_id, args.account_id, msg, args.mode)
-        print(json.dumps({"ok": bool(out.get("ok")), "handled": True, "intent": "status", "counts": counts, "send": out}))
+        print(
+            json.dumps(
+                {
+                    "ok": bool(out.get("ok")),
+                    "handled": True,
+                    "intent": "status",
+                    "full": full_mode,
+                    "counts": counts,
+                    "send": out,
+                }
+            )
+        )
         return 0 if out.get("ok") else 1
 
     # Simple Wake-up v1: team member reports with @orchestrator

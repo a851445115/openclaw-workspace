@@ -75,12 +75,32 @@ if [[ "$MILESTONES_MODE" != "send" && "$MILESTONES_MODE" != "dry-run" && "$MILES
   exit 2
 fi
 
+
+EFFECTIVE_ROOT="$ROOT"
+DRY_RUN_TMP_ROOT=""
+cleanup() {
+  if [[ -n "$DRY_RUN_TMP_ROOT" && -d "$DRY_RUN_TMP_ROOT" ]]; then
+    rm -rf "$DRY_RUN_TMP_ROOT"
+  fi
+}
+trap cleanup EXIT
+
+if [[ "$MILESTONES_MODE" == "dry-run" ]]; then
+  DRY_RUN_TMP_ROOT="$(mktemp -d)"
+  if [[ -d "$ROOT/state" ]]; then
+    cp -R "$ROOT/state" "$DRY_RUN_TMP_ROOT/state"
+  else
+    mkdir -p "$DRY_RUN_TMP_ROOT/state"
+  fi
+  EFFECTIVE_ROOT="$DRY_RUN_TMP_ROOT"
+fi
+
 if [[ "$TEXT" =~ ^[[:space:]]*dispatch[[:space:]]+([A-Za-z0-9_-]+)[[:space:]]+([A-Za-z0-9_.-]+)([[:space:]]*:[[:space:]]*(.*))?[[:space:]]*$ ]]; then
   TASK_ID="${BASH_REMATCH[1]}"
   TARGET_AGENT="${BASH_REMATCH[2]}"
   TASK_PROMPT="${BASH_REMATCH[4]:-}"
   python3 "$MILESTONE_PY" dispatch \
-    --root "$ROOT" \
+    --root "$EFFECTIVE_ROOT" \
     --task-id "$TASK_ID" \
     --agent "$TARGET_AGENT" \
     --task "$TASK_PROMPT" \
@@ -96,7 +116,7 @@ if [[ "$TEXT" =~ ^[[:space:]]*clarify[[:space:]]+([A-Za-z0-9_-]+)[[:space:]]+([A
   TARGET_ROLE="${BASH_REMATCH[2]}"
   QUESTION="${BASH_REMATCH[3]}"
   python3 "$MILESTONE_PY" clarify \
-    --root "$ROOT" \
+    --root "$EFFECTIVE_ROOT" \
     --task-id "$TASK_ID" \
     --role "$TARGET_ROLE" \
     --question "$QUESTION" \
@@ -109,7 +129,7 @@ fi
 
 # Feishu parser: @orchestrator create project/run/status and wake-up reports.
 FEISHU_JSON="$(python3 "$MILESTONE_PY" feishu-router \
-  --root "$ROOT" \
+  --root "$EFFECTIVE_ROOT" \
   --actor "$ACTOR" \
   --text "$TEXT" \
   --group-id "$CONTROL_GROUP_ID" \
@@ -123,14 +143,14 @@ if [[ "$FEISHU_JSON" == *'"handled": true'* ]]; then
   exit 1
 fi
 
-APPLY_JSON="$(python3 "$PY" apply --root "$ROOT" --actor "$ACTOR" --text "$TEXT")"
+APPLY_JSON="$(python3 "$PY" apply --root "$EFFECTIVE_ROOT" --actor "$ACTOR" --text "$TEXT")"
 echo "$APPLY_JSON"
 
 if [[ "$MILESTONES_MODE" != "off" ]]; then
   if [[ "$MILESTONES_MODE" == "dry-run" ]]; then
     if [[ "$ALLOW_BROADCASTER" -eq 1 ]]; then
       MILESTONE_JSON="$(python3 "$MILESTONE_PY" publish-apply \
-        --root "$ROOT" \
+        --root "$EFFECTIVE_ROOT" \
         --actor "$ACTOR" \
         --apply-json "$APPLY_JSON" \
         --group-id "$CONTROL_GROUP_ID" \
@@ -142,7 +162,7 @@ if [[ "$MILESTONES_MODE" != "off" ]]; then
         }
     else
       MILESTONE_JSON="$(python3 "$MILESTONE_PY" publish-apply \
-        --root "$ROOT" \
+        --root "$EFFECTIVE_ROOT" \
         --actor "$ACTOR" \
         --apply-json "$APPLY_JSON" \
         --group-id "$CONTROL_GROUP_ID" \
@@ -156,7 +176,7 @@ if [[ "$MILESTONES_MODE" != "off" ]]; then
   else
     if [[ "$ALLOW_BROADCASTER" -eq 1 ]]; then
       python3 "$MILESTONE_PY" publish-apply \
-        --root "$ROOT" \
+        --root "$EFFECTIVE_ROOT" \
         --actor "$ACTOR" \
         --apply-json "$APPLY_JSON" \
         --group-id "$CONTROL_GROUP_ID" \
@@ -167,7 +187,7 @@ if [[ "$MILESTONES_MODE" != "off" ]]; then
         }
     else
       python3 "$MILESTONE_PY" publish-apply \
-        --root "$ROOT" \
+        --root "$EFFECTIVE_ROOT" \
         --actor "$ACTOR" \
         --apply-json "$APPLY_JSON" \
         --group-id "$CONTROL_GROUP_ID" \

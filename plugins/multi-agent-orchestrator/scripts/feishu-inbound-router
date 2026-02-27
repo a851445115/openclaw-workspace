@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from typing import Any, Dict
+
+DEFAULT_GROUP_ID = "oc_041146c92a9ccb403a7f4f48fb59701d"
+DEFAULT_ACCOUNT_ID = "orchestrator"
+
+
+def extract_json_block(raw: str, header: str) -> Dict[str, Any]:
+    m = re.search(re.escape(header) + r"\s*```json\s*(\{.*?\})\s*```", raw, flags=re.DOTALL)
+    if not m:
+        return {}
+    try:
+        obj = json.loads(m.group(1))
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
+def normalize_message_text(raw: str) -> str:
+    m = re.search(r"message in group\s+[^:]+:\s*(.+)", raw, flags=re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    if lines:
+        return lines[-1]
+    return ""
+
+
+def resolve_actor(conv: Dict[str, Any], sender: Dict[str, Any]) -> str:
+    for key in ("sender", "sender_id"):
+        v = conv.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    for key in ("name", "label"):
+        v = sender.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return "unknown"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", required=True)
+    parser.add_argument("--account-id", default=DEFAULT_ACCOUNT_ID)
+    parser.add_argument("--group-id", default="")
+    parser.add_argument("--milestones", choices=["send", "dry-run", "off"], default="send")
+    parser.add_argument("--actor", default="")
+    parser.add_argument("--text", default="")
+    args = parser.parse_args()
+
+    raw = args.text if args.text else sys.stdin.read()
+    if not raw.strip():
+        print(json.dumps({"ok": False, "error": "empty inbound payload"}, ensure_ascii=True))
+        return 1
+
+    conv = extract_json_block(raw, "Conversation info (untrusted metadata):")
+    sender = extract_json_block(raw, "Sender (untrusted metadata):")
+
+    group_id = args.group_id or str(conv.get("conversation_label") or "").strip() or DEFAULT_GROUP_ID
+    actor = args.actor.strip() or resolve_actor(conv, sender)
+    text = normalize_message_text(raw)
+
+    was_mentioned = bool(conv.get("was_mentioned"))
+    if was_mentioned and "@orchestrator" not in text.lower():
+        text = f"@orchestrator {text}".strip()
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    router = os.path.join(script_dir, "orchestrator-router")
+    cmd = [
+        router,
+        "--root",
+        args.root,
+        "--actor",
+        actor,
+        "--text",
+        text,
+        "--group-id",
+        group_id,
+        "--account-id",
+        args.account_id,
+        "--milestones",
+        args.milestones,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+    router_stdout = (proc.stdout or "").strip()
+    router_obj = {}
+    if router_stdout:
+        try:
+            parsed = json.loads(router_stdout)
+            if isinstance(parsed, dict):
+                router_obj = parsed
+        except Exception:
+            router_obj = {}
+
+    ok = proc.returncode == 0
+    if isinstance(router_obj.get("ok"), bool):
+        ok = ok and bool(router_obj.get("ok"))
+
+    out = {
+        "ok": ok,
+        "actor": actor,
+        "groupId": group_id,
+        "text": text,
+        "routerExitCode": proc.returncode,
+        "router": router_obj,
+        "routerStdout": router_stdout,
+        "routerStderr": (proc.stderr or "").strip(),
+    }
+    print(json.dumps(out, ensure_ascii=True))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

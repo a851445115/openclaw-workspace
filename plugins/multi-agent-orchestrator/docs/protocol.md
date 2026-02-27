@@ -60,7 +60,8 @@ Prefix command text with `@agent-name` to attach routing metadata:
 ## Visibility vs Execution
 
 - Source of truth remains local task board files (`tasks.jsonl` + snapshot).
-- Internal execution remains subagent spawn (`/subagents spawn ...`) via orchestrator session.
+- Default execution is manual dispatch: orchestrator sends `[CLAIM]`/`[TASK]` and waits for report-based completion.
+- Optional subagent execution can be enabled with `--dispatch-mode subagent`.
 - Group messages are milestone summaries for human observability; they are not task state.
 
 ## Broadcast Guardrails
@@ -88,6 +89,11 @@ Prefix command text with `@agent-name` to attach routing metadata:
 - `@orchestrator create project <name>: <task1>; <task2>; ...`
 - `@orchestrator run [taskId]`
 - `@orchestrator status [taskId]`
+  - 无 taskId: 返回中文摘要（状态计数 + 阻塞Top + 待推进Top）
+  - `status all` / `status full`: 返回扩展列表（仍有上限）
 
 Wake-up v1: team members report progress/completion with `@orchestrator` (include task id like `T-001`).
-Orchestrator performs self-check or dispatches `debugger` and then posts `[DONE]` / `[BLOCKED]` in Chinese.
+`@orchestrator run [taskId]` 默认只做认领+派发，不会自动完结。成员回报后由 orchestrator 更新为 `[DONE]` / `[BLOCKED]`。
+若指定已完成任务（`done`），会返回幂等提示：`[DONE] T-xxx 已完成，无需重复执行`，且不改状态。
+
+Inbound wrapper parsing helper: `scripts/feishu-inbound-router` (used by orchestrator agent runtime).

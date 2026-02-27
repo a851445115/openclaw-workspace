@@ -13,12 +13,19 @@ The scaffold exposes a minimal schema in `openclaw.plugin.json`.
 
 ## Default Behavior
 
-- No runtime orchestration implementation yet.
-- Scripts are local board utilities only.
-- Validation is conservative and status-driven.
+- Router scripts are production-facing for Feishu group mentions (`@orchestrator ...`).
+- Task board source of truth remains local files (`state/tasks.jsonl` + snapshot).
+- Milestone broadcasts are concise Chinese status messages from orchestrator router.
+- Validation remains conservative and status-driven.
 
 ## TODO Milestone B/C
 
 - Add strict schema for agent capabilities.
 - Add retry/backoff policy fields.
 - Add budget and token guardrail configuration.
+
+## Orchestrator Agent Wiring
+
+- Orchestrator workspace instructions should call `scripts/feishu-inbound-router` on inbound Feishu mention wrappers.
+- `feishu-inbound-router` extracts group/sender/text and forwards to `scripts/orchestrator-router`.
+- Keep `channel.groupId` aligned with bound Feishu group for correct milestone routing.

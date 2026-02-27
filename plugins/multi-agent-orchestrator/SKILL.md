@@ -22,6 +22,7 @@ Use local scripts as stable interfaces for task board operations.
 - `scripts/claim-task --root <path> --task-id <id> --agent <name> [--dry-run]`
 - `scripts/update-task --root <path> --task-id <id> --from <status> --to <status> [--actor <name>] [--dry-run]`
 - `scripts/orchestrator-router --root <path> --actor <name> --text "<command>" [--mode route|apply] [--milestones send|dry-run|off]`
+- `scripts/feishu-inbound-router --root <path> [--milestones send|dry-run|off]` (read full Feishu inbound wrapper from stdin)
 - `scripts/dispatch-task dispatch --root <path> --task-id <id> --agent <role> [--task <text>] [--mode send|dry-run]`
 - `scripts/dispatch-task clarify --root <path> --task-id <id> --role <coder|invest-analyst|debugger|broadcaster> --question <text> [--cooldown-sec <n>] [--mode send|dry-run]`
 - `scripts/synthesize-board --root <path> [--task-id <id>] [--actor <name>]`

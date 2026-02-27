@@ -590,10 +590,67 @@
       "history": [
         "cb6e7fd1-2a26-43dd-ac4d-10a36e6e042e"
       ]
+    },
+    "T-1005": {
+      "taskId": "T-1005",
+      "title": "[\u6d4b\u8bd5\u9879\u76ee] \u5199\u4e00\u4e2ahello world",
+      "status": "done",
+      "owner": "coder",
+      "assigneeHint": "coder",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T17:02:41Z",
+      "updatedAt": "2026-02-27T17:13:42Z",
+      "blockedReason": null,
+      "result": "[DONE] T-1005 dry-run verified",
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "bc4655e5-7e58-4fc2-b36e-f85ffe3714cf",
+        "2cb74ed8-4e17-4ba6-b67e-cccd22f2f098",
+        "62864644-af1f-4efe-a43d-514a17c50d80",
+        "36f5077b-f962-413f-a3a2-6f371cbcc676"
+      ]
+    },
+    "T-1006": {
+      "taskId": "T-1006",
+      "title": "[\u6d4b\u8bd5\u9879\u76ee] \u8dd1\u4e00\u6b21dry-run",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "coder",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T17:02:44Z",
+      "updatedAt": "2026-02-27T17:02:44Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "813996f7-8758-453e-8356-b5a2c607d8a2"
+      ]
+    },
+    "T-1007": {
+      "taskId": "T-1007",
+      "title": "[\u6d4b\u8bd5\u9879\u76ee] \u8f93\u51fa\u622a\u56fe",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "coder",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T17:02:47Z",
+      "updatedAt": "2026-02-27T17:02:47Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "44967d40-67b8-4e37-8010-37ce930368b2"
+      ]
     }
   },
   "meta": {
     "version": 2,
-    "updatedAt": "2026-02-27T07:56:32Z"
+    "updatedAt": "2026-02-27T17:13:42Z"
   }
 }

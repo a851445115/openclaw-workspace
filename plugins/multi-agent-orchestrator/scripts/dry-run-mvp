@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT="${1:-$(mktemp -d)}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MILESTONE_PY="$SCRIPT_DIR/lib/milestones.py"
+BOARD_PY="$SCRIPT_DIR/lib/task_board.py"
 
 if [[ ! -d "$ROOT/state" ]]; then
   mkdir -p "$ROOT"
@@ -10,16 +12,73 @@ fi
 
 "$SCRIPT_DIR/init-task-board" --root "$ROOT" >/dev/null
 
-"$SCRIPT_DIR/orchestrator-router" --root "$ROOT" --actor orchestrator --milestones dry-run \
+python3 "$MILESTONE_PY" feishu-router --root "$ROOT" --actor orchestrator --mode dry-run \
   --text "@orchestrator create project MVP: 搭建插件骨架; 实现任务看板; 实现命令路由" >/dev/null
 
-"$SCRIPT_DIR/orchestrator-router" --root "$ROOT" --actor orchestrator --milestones dry-run \
+python3 "$MILESTONE_PY" feishu-router --root "$ROOT" --actor orchestrator --mode dry-run \
   --text "@orchestrator run" >/dev/null
 
-"$SCRIPT_DIR/orchestrator-router" --root "$ROOT" --actor coder --milestones dry-run \
-  --text "@orchestrator T-002 已完成，证据: scripts/lib/task_board.py 已更新" >/dev/null
+python3 "$BOARD_PY" apply --root "$ROOT" --actor orchestrator --text "block task T-003: 等待外部 API" >/dev/null
+python3 "$BOARD_PY" apply --root "$ROOT" --actor orchestrator --text "mark done T-001: dry-run done" >/dev/null
 
-STATUS_JSON="$("$SCRIPT_DIR/orchestrator-router" --root "$ROOT" --actor orchestrator --milestones dry-run --text "status")"
+RUN_DONE_JSON="$(python3 "$MILESTONE_PY" feishu-router --root "$ROOT" --actor orchestrator --mode dry-run --text "@orchestrator run T-001")"
+STATUS_JSON="$(python3 "$MILESTONE_PY" feishu-router --root "$ROOT" --actor orchestrator --mode dry-run --text "status")"
+STATUS_FULL_JSON="$(python3 "$MILESTONE_PY" feishu-router --root "$ROOT" --actor orchestrator --mode dry-run --text "status full")"
 
+python3 - <<'PY' "$ROOT" "$RUN_DONE_JSON" "$STATUS_JSON" "$STATUS_FULL_JSON"
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+run_done = json.loads(sys.argv[2])
+status = json.loads(sys.argv[3])
+status_full = json.loads(sys.argv[4])
+
+msg = status["send"]["payload"]["text"]
+msg_full = status_full["send"]["payload"]["text"]
+assert "阻塞Top" in msg, msg
+assert "待推进Top" in msg, msg
+assert len(msg) <= 500, len(msg)
+assert "Top6" in msg_full, msg_full
+
+run_msg = run_done["send"]["payload"]["text"]
+assert run_done.get("idempotent") is True, run_done
+assert run_msg == "[DONE] T-001 已完成，无需重复执行", run_msg
+
+snap = json.loads((root / "state/tasks.snapshot.json").read_text())
+assert snap["tasks"]["T-001"]["status"] == "done", snap["tasks"]["T-001"]
+print("dry-run status + idempotent run checks passed")
+PY
+
+python3 "$BOARD_PY" apply --root "$ROOT" --actor coder --text "@coder create task T-900: blockable dispatch test" >/dev/null
+python3 "$BOARD_PY" apply --root "$ROOT" --actor coder --text "@coder claim task T-900" >/dev/null
+
+python3 - <<'PY' "$ROOT" "$SCRIPT_DIR"
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+script_dir = Path(sys.argv[2])
+sys.path.insert(0, str(script_dir / "lib"))
+import milestones
+
+failed_spawn = {"ok": False, "error": "spawn timeout"}
+
+closed_done = milestones.close_dispatch_loop(str(root), "orchestrator", "T-001", failed_spawn, "g", "a", "dry-run")
+assert closed_done["apply"].get("skipped") is True, closed_done
+snap = json.loads((root / "state/tasks.snapshot.json").read_text())
+assert snap["tasks"]["T-001"]["status"] == "done", snap["tasks"]["T-001"]
+
+closed_claimed = milestones.close_dispatch_loop(str(root), "orchestrator", "T-900", failed_spawn, "g", "a", "dry-run")
+assert closed_claimed["apply"].get("ok") is True, closed_claimed
+snap = json.loads((root / "state/tasks.snapshot.json").read_text())
+assert snap["tasks"]["T-900"]["status"] == "blocked", snap["tasks"]["T-900"]
+print("dispatch failure transition checks passed")
+PY
+
+echo "$RUN_DONE_JSON"
 echo "$STATUS_JSON"
+echo "$STATUS_FULL_JSON"
 echo "dry-run root: $ROOT"
