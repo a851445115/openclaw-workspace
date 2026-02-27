@@ -103,7 +103,7 @@ Local simulation command:
 
 ```bash
 ./scripts/simulate-coder-autopilot.py \
-  --group-id oc_041146c92a9ccb403a7f4f48fb59701d \
+  --group-id oc_REPLACE_ME \
   --actor orchestrator \
   --message '[TASK] T-1007 | 负责人=coder
 任务: 修复任务派发后的自动回报
@@ -119,7 +119,34 @@ Expected result:
 
 Safety checks implemented by simulator:
 
-- only allowlisted group `oc_041146c92a9ccb403a7f4f48fb59701d`
+- only allowlisted group `oc_REPLACE_ME`
 - ignore self messages (`actor=coder`)
 - ignore orchestrator milestone messages (`[DONE]`, `[BLOCKED]`, `[CLAIM]`)
 - only trigger when assignment is explicit: `[TASK]` + `T-xxxx` + (`负责人=coder` or `<at ...>coder</at>`)
+
+## Feishu E2E Dry-Run (run T-1007)
+
+Use this local dry-run to verify the full chain without posting to Feishu:
+
+```bash
+TASK_MSG=$(python3 scripts/lib/milestones.py feishu-router \
+  --root . \
+  --actor orchestrator \
+  --group-id oc_REPLACE_ME \
+  --mode dry-run \
+  --text '@orchestrator run T-1007' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["taskSend"]["payload"]["text"])')
+
+./scripts/simulate-coder-autopilot.py \
+  --group-id oc_REPLACE_ME \
+  --actor orchestrator \
+  --message "$TASK_MSG"
+```
+
+Pass criteria:
+
+- first command emits a `[TASK] T-1007` assignment with coder mention tag
+- simulator returns `shouldAct=true`
+- simulator `reportPreview` includes real orchestrator mention tag and `T-1007 已完成`
+
+For live Feishu validation, run the same `@orchestrator run T-1007` in the allowlisted group and check coder bot replies without human `@coder` prompting.

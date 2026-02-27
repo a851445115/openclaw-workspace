@@ -634,12 +634,12 @@
     "T-1007": {
       "taskId": "T-1007",
       "title": "[\u6d4b\u8bd5\u9879\u76ee] \u8f93\u51fa\u622a\u56fe",
-      "status": "claimed",
+      "status": "in_progress",
       "owner": "coder",
       "assigneeHint": "coder",
       "createdBy": "orchestrator",
       "createdAt": "2026-02-27T17:02:47Z",
-      "updatedAt": "2026-02-27T18:14:50Z",
+      "updatedAt": "2026-02-27T18:23:04Z",
       "blockedReason": null,
       "result": null,
       "review": null,
@@ -647,12 +647,13 @@
       "projectId": null,
       "history": [
         "44967d40-67b8-4e37-8010-37ce930368b2",
-        "04329086-64a1-4c99-87ff-d987bc882209"
+        "04329086-64a1-4c99-87ff-d987bc882209",
+        "78638732-3b77-46e9-aee0-7ccd973a4363"
       ]
     }
   },
   "meta": {
     "version": 2,
-    "updatedAt": "2026-02-27T18:14:50Z"
+    "updatedAt": "2026-02-27T18:23:04Z"
   }
 }
