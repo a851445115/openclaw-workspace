@@ -73,8 +73,25 @@ def actor_allowed(actor: str, allow_broadcaster: bool) -> bool:
     return actor in allowed
 
 
+STATUS_ZH = {
+    "pending": "待处理",
+    "claimed": "已认领",
+    "in_progress": "进行中",
+    "review": "待复核",
+    "done": "已完成",
+    "blocked": "阻塞",
+    "failed": "失败",
+}
+
+
+def status_zh(status: str) -> str:
+    s = (status or "").strip()
+    return STATUS_ZH.get(s, s or "-")
+
+
 def build_three_line(prefix: str, task_id: str, status: str, owner_or_hint: str, key_line: str) -> str:
-    line1 = f"{prefix} {task_id} | status={status} | {owner_or_hint}"
+    # Keep protocol tag prefix (e.g. [TASK]) for easy filtering/search.
+    line1 = f"{prefix} {task_id} | 状态={status_zh(status)} | {owner_or_hint}"
     line2 = key_line.strip()
     return f"{line1}\n{line2}"
 
@@ -154,8 +171,8 @@ def build_apply_messages(
                 "[TASK]",
                 tid,
                 str(task.get("status", "pending")),
-                f"assignee={task.get('assigneeHint') or '-'}",
-                f"title: {clip(task.get('title') or 'untitled')}",
+                f"建议负责人={task.get('assigneeHint') or '-'}",
+                f"标题: {clip(task.get('title') or '未命名任务')}",
             )
             messages.append({"prefix": "[TASK]", "taskId": tid, "text": text})
         return messages
@@ -168,8 +185,8 @@ def build_apply_messages(
                 "[CLAIM]",
                 tid,
                 str(task.get("status", "claimed")),
-                f"owner={task.get('owner') or '-'}",
-                f"title: {clip(task.get('title') or 'untitled')}",
+                f"负责人={task.get('owner') or '-'}",
+                f"标题: {clip(task.get('title') or '未命名任务')}",
             )
             messages.append({"prefix": "[CLAIM]", "taskId": tid, "text": text})
         return messages
@@ -182,8 +199,8 @@ def build_apply_messages(
                 "[DONE]",
                 tid,
                 str(task.get("status", "done")),
-                f"owner={task.get('owner') or '-'}",
-                f"result: {clip(task.get('result') or 'done')}",
+                f"负责人={task.get('owner') or '-'}",
+                f"结果: {clip(task.get('result') or '完成')}",
             )
             messages.append({"prefix": "[DONE]", "taskId": tid, "text": text})
         return messages
@@ -196,8 +213,8 @@ def build_apply_messages(
                 "[BLOCKED]",
                 tid,
                 str(task.get("status", "blocked")),
-                f"owner={task.get('owner') or '-'}",
-                f"reason: {clip(task.get('blockedReason') or 'unspecified blocker')}",
+                f"负责人={task.get('owner') or '-'}",
+                f"原因: {clip(task.get('blockedReason') or '未填写')}",
             )
             messages.append({"prefix": "[BLOCKED]", "taskId": tid, "text": text})
         return messages
@@ -212,20 +229,20 @@ def build_apply_messages(
                 "[BLOCKED]",
                 blocked_tid,
                 str(blocked_task.get("status", "blocked")),
-                f"owner={blocked_task.get('owner') or '-'}",
-                f"reason: {clip(blocked_task.get('blockedReason') or 'unspecified escalation')}",
+                f"负责人={blocked_task.get('owner') or '-'}",
+                f"原因: {clip(blocked_task.get('blockedReason') or '未填写')}",
             )
             messages.append({"prefix": "[BLOCKED]", "taskId": blocked_tid, "text": text})
         if diag_task:
-            detail = f"title: {clip(diag_task.get('title') or 'diagnostic follow-up')}"
+            detail = f"诊断内容: {clip(diag_task.get('title') or '诊断跟进')}"
             related = diag_task.get("relatedTo")
             if related:
-                detail = f"{detail} | relatedTo={related}"
+                detail = f"{detail} | 关联={related}"
             text = build_three_line(
                 "[DIAG]",
                 diag_tid,
                 str(diag_task.get("status", "pending")),
-                f"assignee={diag_task.get('assigneeHint') or 'debugger'}",
+                f"指派={diag_task.get('assigneeHint') or 'debugger'}",
                 detail,
             )
             messages.append({"prefix": "[DIAG]", "taskId": diag_tid, "text": text})
@@ -343,9 +360,9 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
 
     pre_text = "\n".join(
         [
-            f"[CLAIM] {args.task_id} | status={task.get('status') or '-'} | assignee={args.agent}",
-            f"title: {clip(task.get('title') or 'untitled')}",
-            "dispatch: internal spawn requested",
+            f"[CLAIM] {args.task_id} | 状态={status_zh(str(task.get('status') or '-'))} | 指派={args.agent}",
+            f"标题: {clip(task.get('title') or '未命名任务')}",
+            "派发: 已请求后台执行 (subagent)",
         ]
     )
     pre_send = send_group_message(args.group_id, args.account_id, pre_text, args.mode)
@@ -366,13 +383,13 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
         except Exception as err:
             spawn_result = {"ok": False, "error": str(err)}
 
-    post_status = "submitted" if spawn_result.get("ok") else "failed"
+    post_status = "已提交" if spawn_result.get("ok") else "失败"
     detail = spawn_result.get("error") or spawn_result.get("stderr") or spawn_result.get("stdout") or post_status
     post_text = "\n".join(
         [
-            f"[CLAIM] {args.task_id} | status={task.get('status') or '-'} | assignee={args.agent}",
-            f"dispatch: spawn {post_status}",
-            f"detail: {clip(detail, 180)}",
+            f"[CLAIM] {args.task_id} | 状态={status_zh(str(task.get('status') or '-'))} | 指派={args.agent}",
+            f"派发结果: {post_status}",
+            f"详情: {clip(detail, 180)}",
         ]
     )
     post_send = send_group_message(args.group_id, args.account_id, post_text, args.mode)
@@ -443,8 +460,8 @@ def cmd_clarify(args: argparse.Namespace) -> int:
 
     text = "\n".join(
         [
-            f"[TASK] {args.task_id} | status=clarify | assignee={args.role}",
-            f"@{args.role} clarify: {q}",
+            f"[TASK] {args.task_id} | 状态=澄清 | 目标角色={args.role}",
+            f"问题: {q}",
         ]
     )
     sent = send_group_message(args.group_id, args.account_id, text, args.mode)

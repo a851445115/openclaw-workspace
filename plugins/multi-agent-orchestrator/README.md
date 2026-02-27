@@ -58,6 +58,13 @@ This blocks `T-001` and creates a new `[DIAG]` task with `assigneeHint=debugger`
 ./scripts/orchestrator-router --root . --actor coder --text "mark done T-001: parser merged"
 ```
 
+Router-level internal scheduling commands:
+
+```bash
+./scripts/orchestrator-router --root . --actor orchestrator --text "dispatch T-001 coder: implement parser"
+./scripts/orchestrator-router --root . --actor orchestrator --text "clarify T-001 debugger: need failing stack trace?"
+```
+
 Modes:
 
 - `--milestones send` (default): send to control group `oc_041146c92a9ccb403a7f4f48fb59701d`

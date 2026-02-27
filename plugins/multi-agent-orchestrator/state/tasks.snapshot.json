@@ -341,10 +341,259 @@
       "history": [
         "be099daa-abc0-4ae5-b9e5-4f92cfccdf16"
       ]
+    },
+    "T-928": {
+      "taskId": "T-928",
+      "title": "final verify 1772176954",
+      "status": "done",
+      "owner": "orchestrator",
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:22:34Z",
+      "updatedAt": "2026-02-27T07:22:39Z",
+      "blockedReason": null,
+      "result": "final verify done 1772176954",
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "05afec2a-cc4b-4088-b461-961ed20df44e",
+        "ed4c7c68-0dd8-425c-b2ad-545aae64caf0",
+        "e737456a-40c6-4077-b0ad-7111366de88d"
+      ]
+    },
+    "T-929": {
+      "taskId": "T-929",
+      "title": "dryrun chain 1772177673",
+      "status": "done",
+      "owner": "orchestrator",
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:34:34Z",
+      "updatedAt": "2026-02-27T07:34:34Z",
+      "blockedReason": null,
+      "result": "dryrun done 1772177673",
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "c626da6a-40cf-48f0-92c9-ef910b23c54f",
+        "2e8f27ac-2451-44a0-b437-635d254f8248",
+        "8cbb94d3-bceb-4183-9eab-95339ac6408e"
+      ]
+    },
+    "T-930": {
+      "taskId": "T-930",
+      "title": "dryrun escalate 1772177673",
+      "status": "blocked",
+      "owner": null,
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:34:34Z",
+      "updatedAt": "2026-02-27T07:34:34Z",
+      "blockedReason": "dryrun parser crash",
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "aae62a59-4888-410b-a156-8a55bb185877",
+        "f90a37c2-dd0f-4b80-b6a5-706431266530"
+      ]
+    },
+    "T-931": {
+      "taskId": "T-931",
+      "title": "DIAG T-930: dryrun parser crash",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "debugger",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:34:34Z",
+      "updatedAt": "2026-02-27T07:34:34Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": "T-930",
+      "history": [
+        "bf819c86-41ce-4f23-81cc-504d865ff0e7"
+      ]
+    },
+    "T-932": {
+      "taskId": "T-932",
+      "title": "live chain 1772177704",
+      "status": "done",
+      "owner": "orchestrator",
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:35:04Z",
+      "updatedAt": "2026-02-27T07:35:09Z",
+      "blockedReason": null,
+      "result": "live done 1772177704",
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "137bf128-9496-445f-b12a-c5fb8c7bc05d",
+        "8c79180c-327e-4cc1-831b-a3d932aad956",
+        "1db2fe7c-1bd0-4b33-82c3-7bf9fc988b99"
+      ]
+    },
+    "T-933": {
+      "taskId": "T-933",
+      "title": "live blocked 1772177704",
+      "status": "blocked",
+      "owner": null,
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:35:12Z",
+      "updatedAt": "2026-02-27T07:35:14Z",
+      "blockedReason": "waiting api",
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "e2046be3-7fb6-446d-bd32-c48f8a2805ae",
+        "1c309aae-a960-4aef-9276-1341ec185579"
+      ]
+    },
+    "T-934": {
+      "taskId": "T-934",
+      "title": "live escalate 1772177704",
+      "status": "blocked",
+      "owner": null,
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:35:16Z",
+      "updatedAt": "2026-02-27T07:35:19Z",
+      "blockedReason": "parser crash",
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "a3e33e58-b522-416b-80ba-8a5c8c02796f",
+        "2d5a2899-487c-4933-a743-4cfcd3e286c6"
+      ]
+    },
+    "T-935": {
+      "taskId": "T-935",
+      "title": "DIAG T-934: parser crash",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "debugger",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:35:19Z",
+      "updatedAt": "2026-02-27T07:35:19Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": "T-934",
+      "history": [
+        "d1d7e3b5-dc09-4571-b469-745c949dcd6f"
+      ]
+    },
+    "T-936": {
+      "taskId": "T-936",
+      "title": "dispatch live 1772177744",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:35:44Z",
+      "updatedAt": "2026-02-27T07:35:44Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "36b90572-a30c-49e2-96b8-4c7848764c5d"
+      ]
+    },
+    "T-1000": {
+      "taskId": "T-1000",
+      "title": "codex verify",
+      "status": "blocked",
+      "owner": null,
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:42:34Z",
+      "updatedAt": "2026-02-27T07:42:34Z",
+      "blockedReason": "need diag",
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "da38462e-67e9-4580-a41f-d8cdcbed640b",
+        "d3d6f37b-083e-432d-a583-e2043830caf5"
+      ]
+    },
+    "T-1001": {
+      "taskId": "T-1001",
+      "title": "DIAG T-1000: need diag",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "debugger",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:42:34Z",
+      "updatedAt": "2026-02-27T07:42:34Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": "T-1000",
+      "history": [
+        "6cf4bc6b-aba3-4390-bdc4-3fa70c570492"
+      ]
+    },
+    "T-1002": {
+      "taskId": "T-1002",
+      "title": "message zh test",
+      "status": "blocked",
+      "owner": null,
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:56:14Z",
+      "updatedAt": "2026-02-27T07:56:14Z",
+      "blockedReason": "need diag",
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "838dd85d-1374-4db1-981a-c0433125fd99",
+        "e73799b7-77a1-43cd-ae33-9566b0d61ecc"
+      ]
+    },
+    "T-1003": {
+      "taskId": "T-1003",
+      "title": "DIAG T-1002: need diag",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "debugger",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:56:14Z",
+      "updatedAt": "2026-02-27T07:56:14Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": "T-1002",
+      "history": [
+        "0c05a915-bce8-44d9-9371-4813581440a9"
+      ]
+    },
+    "T-1004": {
+      "taskId": "T-1004",
+      "title": "\u6d4b\u8bd5\u4e2d\u6587\u91cc\u7a0b\u7891",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-27T07:56:32Z",
+      "updatedAt": "2026-02-27T07:56:32Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "history": [
+        "cb6e7fd1-2a26-43dd-ac4d-10a36e6e042e"
+      ]
     }
   },
   "meta": {
     "version": 2,
-    "updatedAt": "2026-02-27T07:15:50Z"
+    "updatedAt": "2026-02-27T07:56:32Z"
   }
 }
