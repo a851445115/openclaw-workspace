@@ -1,0 +1,34 @@
+message in group oc_test_group: @orchestrator status
+
+Conversation info (untrusted metadata):
+```json
+{
+  "conversation_label": "oc_test_group",
+  "sender": "tester",
+  "message_id": "__MESSAGE_ID__",
+  "was_mentioned": true
+}
+```
+
+Sender (untrusted metadata):
+```json
+{
+  "name": "Test User",
+  "sender_type": "user"
+}
+```
+
+Card callback (untrusted metadata):
+```json
+{
+  "open_message_id": "__MESSAGE_ID__",
+  "action": {
+    "tag": "button",
+    "value": {
+      "command": "__COMMAND__",
+      "message_id": "__MESSAGE_ID__",
+      "action_ts": "__ACTION_TS__"
+    }
+  }
+}
+```

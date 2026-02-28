@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
-from typing import Any, Dict
+import time
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 DEFAULT_GROUP_ID = "oc_041146c92a9ccb403a7f4f48fb59701d"
 DEFAULT_ACCOUNT_ID = "orchestrator"
@@ -16,6 +18,8 @@ BOT_OPENID_CONFIG_CANDIDATES = (
     os.path.join("config", "feishu-bot-openids.json"),
     os.path.join("state", "feishu-bot-openids.json"),
 )
+CALLBACK_DEDUP_STATE_FILE = os.path.join("state", "feishu-card-callback-dedup.json")
+CALLBACK_DEDUP_MAX_ENTRIES = 2000
 
 
 def extract_json_block(raw: str, header: str) -> Dict[str, Any]:
@@ -43,6 +47,182 @@ def normalize_message_text(raw: str) -> str:
     if lines:
         return lines[-1]
     return ""
+
+
+def extract_json_objects(raw: str) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for m in re.finditer(r"```json\s*(\{.*?\})\s*```", raw, flags=re.DOTALL):
+        try:
+            parsed = json.loads(m.group(1))
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            out.append(parsed)
+    return out
+
+
+def deep_get(obj: Dict[str, Any], path: Sequence[str]) -> Any:
+    cur: Any = obj
+    for key in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def first_string(objects: Sequence[Dict[str, Any]], paths: Sequence[Sequence[str]]) -> str:
+    for obj in objects:
+        if not isinstance(obj, dict):
+            continue
+        for path in paths:
+            v = deep_get(obj, path)
+            if isinstance(v, (str, int, float)):
+                s = str(v).strip()
+                if s:
+                    return s
+    return ""
+
+
+def build_callback_context(raw: str, conv: Dict[str, Any], sender: Dict[str, Any]) -> Dict[str, str]:
+    objects: List[Dict[str, Any]] = [conv, sender]
+    objects.extend(extract_json_objects(raw))
+
+    command = first_string(
+        objects,
+        [
+            ("action", "value", "command"),
+            ("event", "action", "value", "command"),
+            ("action", "value", "cmd"),
+            ("event", "action", "value", "cmd"),
+            ("value", "command"),
+            ("value", "cmd"),
+            ("form_value", "command"),
+            ("action", "form_value", "command"),
+        ],
+    )
+    if not command:
+        return {}
+
+    message_id = first_string(
+        objects,
+        [
+            ("action", "value", "message_id"),
+            ("action", "value", "messageId"),
+            ("action", "value", "open_message_id"),
+            ("action", "value", "openMessageId"),
+            ("event", "action", "value", "message_id"),
+            ("event", "action", "value", "messageId"),
+            ("event", "message", "message_id"),
+            ("event", "message", "open_message_id"),
+            ("message", "message_id"),
+            ("message", "open_message_id"),
+            ("open_message_id",),
+            ("message_id",),
+            ("openMessageId",),
+            ("messageId",),
+        ],
+    )
+    action_ts = first_string(
+        objects,
+        [
+            ("action", "value", "action_ts"),
+            ("action", "value", "actionTs"),
+            ("event", "action", "value", "action_ts"),
+            ("event", "action", "value", "actionTs"),
+            ("action", "action_ts"),
+            ("action", "ts"),
+            ("event", "action_ts"),
+            ("event", "ts"),
+            ("action_ts",),
+            ("actionTs",),
+            ("ts",),
+        ],
+    )
+
+    command_norm = re.sub(r"\s+", " ", command).strip()
+    dedup_key = ""
+    if message_id.strip() or action_ts.strip():
+        dedup_basis = "|".join(
+            [
+                message_id.strip(),
+                action_ts.strip(),
+                command_norm.lower(),
+            ]
+        )
+        dedup_key = hashlib.sha1(dedup_basis.encode("utf-8")).hexdigest()
+    return {
+        "source": "card_callback",
+        "command": command_norm,
+        "messageId": message_id.strip(),
+        "actionTs": action_ts.strip(),
+        "dedupKey": dedup_key,
+    }
+
+
+def load_callback_dedup_state(root: str) -> Dict[str, Any]:
+    path = os.path.join(root, CALLBACK_DEDUP_STATE_FILE)
+    if not os.path.exists(path):
+        return {"entries": {}}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+    except Exception:
+        return {"entries": {}}
+    if not isinstance(obj, dict):
+        return {"entries": {}}
+    entries = obj.get("entries")
+    if not isinstance(entries, dict):
+        obj["entries"] = {}
+    return obj
+
+
+def save_callback_dedup_state(root: str, state: Dict[str, Any]) -> None:
+    path = os.path.join(root, CALLBACK_DEDUP_STATE_FILE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=True, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def remember_callback_once(root: str, dedup_key: str, context: Dict[str, str]) -> bool:
+    if not dedup_key:
+        return False
+
+    state = load_callback_dedup_state(root)
+    entries = state.setdefault("entries", {})
+    if not isinstance(entries, dict):
+        entries = {}
+        state["entries"] = entries
+
+    if dedup_key in entries:
+        return True
+
+    entries[dedup_key] = {
+        "seenAtTs": int(time.time()),
+        "messageId": str(context.get("messageId") or ""),
+        "actionTs": str(context.get("actionTs") or ""),
+        "command": str(context.get("command") or ""),
+    }
+
+    while len(entries) > CALLBACK_DEDUP_MAX_ENTRIES:
+        oldest: Optional[Tuple[str, int]] = None
+        for key, meta in entries.items():
+            ts = 0
+            if isinstance(meta, dict):
+                try:
+                    ts = int(meta.get("seenAtTs") or 0)
+                except Exception:
+                    ts = 0
+            if oldest is None or ts < oldest[1]:
+                oldest = (key, ts)
+        if oldest is None:
+            break
+        entries.pop(oldest[0], None)
+
+    save_callback_dedup_state(root, state)
+    return False
 
 
 def resolve_actor(conv: Dict[str, Any], sender: Dict[str, Any]) -> str:
@@ -144,11 +324,52 @@ def main() -> int:
     openid_role = load_openid_role_map(args.root)
     actor_raw = args.actor.strip() or resolve_actor(conv, sender)
     actor = normalize_actor(actor_raw, openid_role)
+    callback = build_callback_context(raw, conv, sender)
+
+    source = "text"
     text = normalize_message_text(raw)
+    ack: Dict[str, Any] = {}
+    if callback:
+        source = "card_callback"
+        text = str(callback.get("command") or "").strip() or text
+        ack = {
+            "ok": True,
+            "source": source,
+            "messageId": str(callback.get("messageId") or ""),
+            "actionTs": str(callback.get("actionTs") or ""),
+            "dedupKey": str(callback.get("dedupKey") or ""),
+        }
 
     was_mentioned = bool(conv.get("was_mentioned"))
     if was_mentioned and "@orchestrator" not in text.lower():
         text = f"@orchestrator {text}".strip()
+
+    if source == "card_callback":
+        dedup_key = str(callback.get("dedupKey") or "")
+        is_duplicate = remember_callback_once(args.root, dedup_key, callback)
+        if is_duplicate:
+            ack["deduplicated"] = True
+            out = {
+                "ok": True,
+                "handled": True,
+                "deduplicated": True,
+                "source": source,
+                "actor": actor,
+                "groupId": group_id,
+                "text": text,
+                "routerExitCode": 0,
+                "router": {
+                    "ok": True,
+                    "handled": True,
+                    "intent": "deduplicated_callback",
+                    "source": source,
+                    "ack": ack,
+                },
+                "routerStdout": "",
+                "routerStderr": "",
+            }
+            print(json.dumps(out, ensure_ascii=True))
+            return 0
 
     if is_bot_sender(actor, sender):
         stripped = text.strip()
@@ -159,6 +380,7 @@ def main() -> int:
                 "actor": actor,
                 "groupId": group_id,
                 "text": text,
+                "source": source,
                 "routerExitCode": 0,
                 "router": {"ok": True, "handled": True, "intent": "ignored_loop"},
                 "routerStdout": "",
@@ -196,12 +418,20 @@ def main() -> int:
         except Exception:
             router_obj = {}
 
+    if source == "card_callback":
+        if not isinstance(router_obj, dict):
+            router_obj = {}
+        router_obj["source"] = source
+        router_obj["ack"] = ack
+
     ok = proc.returncode == 0
     if isinstance(router_obj.get("ok"), bool):
         ok = ok and bool(router_obj.get("ok"))
 
     out = {
         "ok": ok,
+        "source": source,
+        "deduplicated": False,
         "actor": actor,
         "groupId": group_id,
         "text": text,
