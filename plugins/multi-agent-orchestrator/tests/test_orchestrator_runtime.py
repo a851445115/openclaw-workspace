@@ -481,6 +481,152 @@ class RuntimeTests(unittest.TestCase):
             out,
         )
 
+    def test_dispatch_prompt_includes_snapshot_history_and_schema(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-040: 结构化提示词测试",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@debugger create task T-041: 阻塞示例",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "block task T-041: sample blocked",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-040",
+            "--agent",
+            "coder",
+            "--task",
+            "T-040: 结构化提示词测试",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"已完成并验证","evidence":["logs/t040.log","pytest passed"]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        prompt = out.get("agentPrompt", "")
+        self.assertIn("BOARD_SNAPSHOT", prompt, out)
+        self.assertIn("TASK_RECENT_HISTORY", prompt, out)
+        self.assertIn("OUTPUT_SCHEMA", prompt, out)
+        self.assertIn('"status": "done|blocked|progress"', prompt, out)
+
+    def test_dispatch_structured_done_report_marks_done(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-042: 结构化回报通过",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-042",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"代码已完成，测试通过","changes":[{"path":"src/a.py","summary":"fix bug"}],"evidence":["pytest -q passed","logs/t042.log"]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["spawn"]["decision"], "done", out)
+        status = run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "status T-042",
+        ])
+        self.assertEqual(status["task"]["status"], "done", status)
+
+    def test_dispatch_structured_done_without_evidence_is_blocked(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-043: 结构化回报拦截",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-043",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"已完成"}',
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["spawn"]["decision"], "blocked", out)
+        self.assertEqual(out["spawn"]["reasonCode"], "incomplete_output", out)
+        status = run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "status T-043",
+        ])
+        self.assertEqual(status["task"]["status"], "blocked", status)
+
 
 if __name__ == "__main__":
     unittest.main()

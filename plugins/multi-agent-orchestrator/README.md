@@ -15,6 +15,9 @@ Implemented in this MVP:
 - Acceptance policy gate:
   - `done` 状态会经过角色化验收策略（`config/acceptance-policy.json`）
   - coder 需包含更强验收信号（测试/验证/日志等关键词）才可自动完结
+- Structured agent prompt:
+  - orchestrator 派发给子 agent 的 prompt 采用结构化模板，包含 `TASK_CONTEXT`、`BOARD_SNAPSHOT`、`TASK_RECENT_HISTORY`、`OUTPUT_SCHEMA`
+  - `OUTPUT_SCHEMA` 统一为 `status/summary/changes/evidence/risks/nextActions`，便于自动验收和下一步调度
 - Visibility modes:
   - `milestone_only`（默认）仅里程碑广播
   - `handoff_visible` / `full_visible` 会额外发送 agent -> orchestrator 的可见交接 @mention
@@ -172,3 +175,24 @@ For live Feishu validation, run the same `@orchestrator run T-1007` in the allow
   --visibility-mode handoff_visible \
   --text "dispatch T-1007 coder: 修复任务派发后的自动回报"
 ```
+
+## Structured Report Contract
+
+子 agent 推荐输出（JSON object only）：
+
+```json
+{
+  "taskId": "T-123",
+  "agent": "coder",
+  "status": "done",
+  "summary": "修复完成，测试通过",
+  "changes": [{"path": "src/a.py", "summary": "修复索引越界"}],
+  "evidence": ["pytest -q passed", "logs/run.log"],
+  "risks": [],
+  "nextActions": []
+}
+```
+
+说明：
+- `status=done` 时必须带 `evidence`，否则会被 acceptance policy 拦截为 `blocked`。
+- 非结构化输出仍兼容，但稳定性低于结构化输出。

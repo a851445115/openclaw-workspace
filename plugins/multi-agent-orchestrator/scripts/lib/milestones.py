@@ -280,6 +280,206 @@ def build_three_line(prefix: str, task_id: str, status: str, owner_or_hint: str,
     return f"{line1}\n{key_line.strip()}"
 
 
+def normalize_string_list(value: Any, limit: int = 6, item_limit: int = 180) -> List[str]:
+    out: List[str] = []
+    if isinstance(value, str):
+        s = clip(value, item_limit)
+        if s:
+            out.append(s)
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, str):
+                s = clip(item, item_limit)
+                if s:
+                    out.append(s)
+            elif isinstance(item, dict):
+                text = clip(json.dumps(item, ensure_ascii=False), item_limit)
+                if text:
+                    out.append(text)
+            else:
+                s = clip(str(item), item_limit)
+                if s:
+                    out.append(s)
+            if len(out) >= limit:
+                break
+    return out[:limit]
+
+
+def compact_event_payload(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return clip(str(payload), 120)
+    compact: Dict[str, str] = {}
+    for key in ("from", "to", "owner", "result", "blockedReason", "review", "relatedTo", "title"):
+        if key in payload and payload.get(key) is not None:
+            compact[key] = clip(str(payload.get(key)), 120)
+    if compact:
+        return compact
+    return clip(json.dumps(payload, ensure_ascii=False), 120)
+
+
+def read_recent_task_events(root: str, task_id: str, limit: int = 8) -> List[Dict[str, Any]]:
+    jsonl, _ = ensure_state(root)
+    rows: List[Dict[str, Any]] = []
+    try:
+        with open(jsonl, "r", encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if not s:
+                    continue
+                try:
+                    obj = json.loads(s)
+                except Exception:
+                    continue
+                if str(obj.get("taskId") or "") != task_id:
+                    continue
+                rows.append(
+                    {
+                        "at": str(obj.get("at") or ""),
+                        "actor": str(obj.get("actor") or ""),
+                        "type": str(obj.get("type") or ""),
+                        "messageType": str(obj.get("messageType") or ""),
+                        "payload": compact_event_payload(obj.get("payload")),
+                    }
+                )
+    except Exception:
+        return []
+    return rows[-limit:]
+
+
+def build_prompt_board_snapshot(root: str, focus_task_id: str, top_n: int = 3) -> Dict[str, Any]:
+    data = load_snapshot(root)
+    tasks = data.get("tasks", {})
+    counts: Dict[str, int] = {}
+    pending: List[Dict[str, str]] = []
+    blocked: List[Dict[str, str]] = []
+
+    for raw in tasks.values():
+        if not isinstance(raw, dict):
+            continue
+        st = str(raw.get("status") or "pending")
+        counts[st] = counts.get(st, 0) + 1
+        rec = {
+            "taskId": str(raw.get("taskId") or ""),
+            "title": clip(str(raw.get("title") or ""), 80),
+            "owner": str(raw.get("owner") or raw.get("assigneeHint") or ""),
+            "status": st,
+            "updatedAt": str(raw.get("updatedAt") or ""),
+        }
+        if st == "blocked":
+            blocked.append(rec)
+        if st in STATUS_PENDING_BUCKET:
+            pending.append(rec)
+
+    pending = sorted(pending, key=lambda x: (x.get("updatedAt") or "", x.get("taskId") or ""), reverse=True)[:top_n]
+    blocked = sorted(blocked, key=lambda x: (x.get("updatedAt") or "", x.get("taskId") or ""), reverse=True)[:top_n]
+    return {
+        "counts": counts,
+        "focusTaskId": focus_task_id,
+        "pendingTop": pending,
+        "blockedTop": blocked,
+    }
+
+
+def infer_task_kind(agent: str, title: str, dispatch_task: str) -> str:
+    agent_norm = (agent or "").strip().lower()
+    text = f"{title} {dispatch_task}".lower()
+    if agent_norm == "debugger" or any(k in text for k in ("debug", "bug", "故障", "异常", "排查", "trace", "error")):
+        return "debug"
+    if agent_norm == "invest-analyst" or any(k in text for k in ("research", "分析", "调研", "source", "report")):
+        return "research"
+    if agent_norm == "broadcaster" or any(k in text for k in ("broadcast", "公告", "发布", "summary", "同步")):
+        return "broadcast"
+    return "coding"
+
+
+def requirements_for_kind(kind: str) -> List[str]:
+    if kind == "debug":
+        return [
+            "先定位根因，再给修复建议或修复结果。",
+            "必须包含复现/日志/错误栈中的至少一项证据。",
+            "若无法修复，给出明确阻塞原因和下一步建议。",
+        ]
+    if kind == "research":
+        return [
+            "先给结论，再给依据列表。",
+            "证据至少包含来源链接、文档路径或数据摘要。",
+            "输出需明确推荐方案与权衡。",
+        ]
+    if kind == "broadcast":
+        return [
+            "输出应面向群成员可直接转发或发布。",
+            "明确对象、目的、发布时间或触发条件。",
+            "如信息不足，返回 blocked 并给缺失字段清单。",
+        ]
+    return [
+        "优先完成最小可交付改动，再补充验证。",
+        "结果必须包含可验证证据（测试、日志、文件、命令输出）。",
+        "如遇阻塞，返回 blocked 并说明根因与下一步。",
+    ]
+
+
+def build_structured_output_schema(task_id: str, agent: str) -> Dict[str, Any]:
+    return {
+        "taskId": task_id,
+        "agent": agent,
+        "status": "done|blocked|progress",
+        "summary": "一句话结果摘要",
+        "changes": [{"path": "文件路径", "summary": "改动说明"}],
+        "evidence": ["日志/命令输出/截图路径/链接"],
+        "risks": ["潜在风险或注意事项"],
+        "nextActions": ["下一步建议（可为空）"],
+    }
+
+
+def build_agent_prompt(root: str, task: Dict[str, Any], agent: str, dispatch_task: str) -> str:
+    task_id = str(task.get("taskId") or "")
+    title = str(task.get("title") or "")
+    task_kind = infer_task_kind(agent, title, dispatch_task)
+    requirements = requirements_for_kind(task_kind)
+    schema = build_structured_output_schema(task_id, agent)
+    board_snapshot = build_prompt_board_snapshot(root, task_id)
+    history = read_recent_task_events(root, task_id, limit=8)
+
+    task_context = {
+        "taskId": task_id,
+        "title": clip(title, 120),
+        "currentStatus": str(task.get("status") or ""),
+        "owner": str(task.get("owner") or ""),
+        "assigneeHint": str(task.get("assigneeHint") or ""),
+        "projectId": str(task.get("projectId") or ""),
+        "relatedTo": str(task.get("relatedTo") or ""),
+        "objective": clip(dispatch_task, 320),
+    }
+
+    lines = [
+        "SYSTEM_ROLE: You are a specialist execution agent in a multi-agent project team.",
+        "TASK_CONTEXT:",
+        json.dumps(task_context, ensure_ascii=False, indent=2),
+        "BOARD_SNAPSHOT:",
+        json.dumps(board_snapshot, ensure_ascii=False, indent=2),
+        "TASK_RECENT_HISTORY:",
+        json.dumps(history, ensure_ascii=False, indent=2),
+        "EXECUTION_REQUIREMENTS:",
+    ]
+    for idx, item in enumerate(requirements, start=1):
+        lines.append(f"{idx}. {item}")
+    lines.extend(
+        [
+            "OUTPUT_SCHEMA:",
+            json.dumps(schema, ensure_ascii=False, indent=2),
+            "OUTPUT_RULES:",
+            "1. Return one valid JSON object only (no markdown fence, no extra text).",
+            "2. Keep taskId and agent fields consistent with TASK_CONTEXT.",
+            "3. status=done must include concrete evidence entries.",
+            "4. If blocked, summary must state blocker cause clearly.",
+        ]
+    )
+    prompt = "\n".join(lines)
+    if len(prompt) <= 5000:
+        return prompt
+    return prompt[:4999] + "..."
+
+
 def send_group_message(group_id: str, account_id: str, text: str, mode: str) -> Dict[str, Any]:
     payload = {
         "channel": "feishu",
@@ -530,36 +730,141 @@ def extract_text_for_judgement(obj: Any) -> str:
     return "\n".join(chunks)
 
 
-def classify_spawn_result(root: str, task_id: str, role: str, spawn_obj: Dict[str, Any], fallback_text: str = "") -> Dict[str, str]:
+def normalize_spawn_report(task_id: str, role: str, spawn_obj: Dict[str, Any], fallback_text: str = "") -> Dict[str, Any]:
+    base = spawn_obj
+    if isinstance(spawn_obj.get("report"), dict):
+        base = spawn_obj.get("report")
+
+    status_hint = str(base.get("status") or spawn_obj.get("status") or base.get("taskStatus") or "").strip().lower()
+    summary = clip(
+        str(base.get("summary") or base.get("message") or base.get("result") or base.get("output") or ""),
+        260,
+    )
+    evidence = normalize_string_list(base.get("evidence"))
+    risks = normalize_string_list(base.get("risks"))
+    next_actions = normalize_string_list(base.get("nextActions") or base.get("next"))
+
+    changes_raw = base.get("changes")
+    changes: List[Dict[str, str]] = []
+    if isinstance(changes_raw, list):
+        for item in changes_raw[:8]:
+            if isinstance(item, dict):
+                changes.append(
+                    {
+                        "path": clip(str(item.get("path") or item.get("file") or ""), 140),
+                        "summary": clip(str(item.get("summary") or item.get("change") or ""), 180),
+                    }
+                )
+            elif isinstance(item, str):
+                changes.append({"path": "", "summary": clip(item, 180)})
+
+    text = (fallback_text or extract_text_for_judgement(spawn_obj) or "").strip()
+    if not summary:
+        summary = clip(text, 260)
+    if not evidence and has_evidence(text):
+        evidence = [clip(text, 200)]
+    if not status_hint and parse_wakeup_kind(text) == "done":
+        status_hint = "done"
+
+    acceptance_chunks = [summary, text]
+    acceptance_chunks.extend([f"{c.get('path')}: {c.get('summary')}" for c in changes if c.get("path") or c.get("summary")])
+    acceptance_chunks.extend(evidence)
+    acceptance_text = "\n".join([c for c in acceptance_chunks if c]).strip()
+
+    detail_parts: List[str] = []
+    if summary:
+        detail_parts.append(summary)
+    if evidence:
+        detail_parts.append("证据: " + "; ".join(evidence[:2]))
+    if changes:
+        first_changes = [c for c in changes[:2] if c.get("path") or c.get("summary")]
+        if first_changes:
+            rendered = "; ".join([f"{c.get('path') or '-'} {c.get('summary') or ''}".strip() for c in first_changes])
+            detail_parts.append("变更: " + rendered)
+    detail = clip(" | ".join(detail_parts) or acceptance_text or f"{task_id} 子代理未返回有效内容", 220)
+
+    structured = bool(
+        isinstance(base, dict)
+        and any(k in base for k in ("summary", "evidence", "changes", "nextActions", "risks", "status"))
+    )
+    return {
+        "taskId": task_id,
+        "agent": role,
+        "status": status_hint,
+        "summary": summary,
+        "evidence": evidence,
+        "changes": changes,
+        "risks": risks,
+        "nextActions": next_actions,
+        "acceptanceText": acceptance_text,
+        "detail": detail,
+        "structured": structured,
+    }
+
+
+def classify_spawn_result(root: str, task_id: str, role: str, spawn_obj: Dict[str, Any], fallback_text: str = "") -> Dict[str, Any]:
     status_hint = str(spawn_obj.get("status") or spawn_obj.get("taskStatus") or "").strip().lower()
     ok_flag = spawn_obj.get("ok")
-    text = (fallback_text or extract_text_for_judgement(spawn_obj) or "").strip()
-    kind = parse_wakeup_kind(text)
+    report = normalize_spawn_report(task_id, role, spawn_obj, fallback_text=fallback_text)
+    text = str(report.get("acceptanceText") or "").strip()
+    detail = str(report.get("detail") or "").strip()
+    kind = parse_wakeup_kind(text or detail)
 
     if status_hint in {"blocked", "failed", "error", "timeout", "cancelled"}:
-        return {"decision": "blocked", "detail": clip(text or f"{task_id} 子代理执行失败", 200), "reasonCode": "spawn_failed"}
+        return {
+            "decision": "blocked",
+            "detail": clip(detail or text or f"{task_id} 子代理执行失败", 200),
+            "reasonCode": "spawn_failed",
+            "report": report,
+        }
 
     if ok_flag is False:
-        return {"decision": "blocked", "detail": clip(text or f"{task_id} 子代理执行失败", 200), "reasonCode": "spawn_failed"}
+        return {
+            "decision": "blocked",
+            "detail": clip(detail or text or f"{task_id} 子代理执行失败", 200),
+            "reasonCode": "spawn_failed",
+            "report": report,
+        }
 
-    maybe_done = status_hint in {"done", "completed", "success", "succeeded"} or kind == "done"
+    maybe_done = status_hint in {"done", "completed", "success", "succeeded"} or str(report.get("status") or "") in {
+        "done",
+        "completed",
+        "success",
+        "succeeded",
+    } or kind == "done"
     if maybe_done:
-        accepted = evaluate_acceptance(root, role, text)
+        accepted = evaluate_acceptance(root, role, text or detail)
         if accepted.get("ok"):
-            return {"decision": "done", "detail": clip(text or f"{task_id} 子代理返回完成", 200), "reasonCode": "done_with_evidence"}
+            return {
+                "decision": "done",
+                "detail": clip(detail or text or f"{task_id} 子代理返回完成", 200),
+                "reasonCode": "done_with_evidence",
+                "report": report,
+            }
         return {
             "decision": "blocked",
             "detail": clip(
-                f"{text or f'{task_id} 子代理结果未通过验收'} | {accepted.get('reason') or '未通过验收策略'}",
+                f"{detail or text or f'{task_id} 子代理结果未通过验收'} | {accepted.get('reason') or '未通过验收策略'}",
                 200,
             ),
             "reasonCode": "incomplete_output",
+            "report": report,
         }
 
-    if kind == "blocked":
-        return {"decision": "blocked", "detail": clip(text or f"{task_id} 子代理返回阻塞", 200), "reasonCode": "blocked_signal"}
+    if str(report.get("status") or "") in {"blocked", "failed", "error"} or kind == "blocked":
+        return {
+            "decision": "blocked",
+            "detail": clip(detail or text or f"{task_id} 子代理返回阻塞", 200),
+            "reasonCode": "blocked_signal",
+            "report": report,
+        }
 
-    return {"decision": "blocked", "detail": clip(text or f"{task_id} 子代理未给出完成信号", 200), "reasonCode": "no_completion_signal"}
+    return {
+        "decision": "blocked",
+        "detail": clip(detail or text or f"{task_id} 子代理未给出完成信号", 200),
+        "reasonCode": "no_completion_signal",
+        "report": report,
+    }
 
 
 def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, Any]:
@@ -591,6 +896,7 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
                 "decision": decision["decision"],
                 "detail": decision["detail"],
                 "reasonCode": decision.get("reasonCode", "classified"),
+                "normalizedReport": decision.get("report"),
             }
         except Exception as err:
             return {
@@ -663,6 +969,7 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
         "decision": decision["decision"],
         "detail": decision["detail"],
         "reasonCode": decision.get("reasonCode", "classified"),
+        "normalizedReport": decision.get("report"),
     }
 
 
@@ -690,6 +997,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     status = str(task.get("status") or "")
     title = clip(task.get("title") or "未命名任务")
     dispatch_task = clip(args.task or f"{args.task_id}: {task.get('title') or 'untitled'}", 300)
+    agent_prompt = build_agent_prompt(args.root, task, args.agent, dispatch_task)
 
     dispatch_mode_line = "派发模式: 手动协作（等待回报）" if not args.spawn else "派发模式: 自动执行闭环（spawn并回写看板）"
 
@@ -730,7 +1038,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     worker_report: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "visibility mode not enabled"}
 
     if args.spawn:
-        spawn = run_dispatch_spawn(args, dispatch_task)
+        spawn = run_dispatch_spawn(args, agent_prompt)
         if (
             not spawn.get("skipped")
             and not args.spawn_output
@@ -738,9 +1046,9 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
             and str(spawn.get("reasonCode") or "") in {"incomplete_output", "missing_evidence", "stage_only", "role_policy_missing_keyword"}
         ):
             retry_prompt = clip(
-                dispatch_task
+                agent_prompt
                 + "\n\n交付硬性要求：请直接给出最终可验证结果（改动文件/命令输出/commit哈希/验证结论），不要只给阶段性进度。",
-                520,
+                5000,
             )
             retry_spawn = run_dispatch_spawn(args, retry_prompt)
             spawn["retried"] = True
@@ -813,6 +1121,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         "waitForReport": not auto_close,
         "autoClose": auto_close,
         "reportTemplate": report_template,
+        "agentPrompt": agent_prompt,
     }
 
 

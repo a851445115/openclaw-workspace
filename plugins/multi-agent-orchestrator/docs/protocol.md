@@ -74,6 +74,18 @@ Prefix command text with `@agent-name` to attach routing metadata:
 - Role rule: each role can require keyword classes (e.g. coder requires test/verify/log style signals).
 - If policy fails, router converts attempted `done` into `blocked` with actionable reason.
 
+## Structured Dispatch Prompt & Report
+
+- Dispatch now sends a structured prompt to worker agents, including:
+  - `TASK_CONTEXT`
+  - `BOARD_SNAPSHOT` (status counts + blocked/pending top tasks)
+  - `TASK_RECENT_HISTORY` (recent events for current task)
+  - `EXECUTION_REQUIREMENTS` (role/task-type specific)
+  - `OUTPUT_SCHEMA`
+- Preferred worker output is a single JSON object with fixed fields:
+  - `taskId`, `agent`, `status`, `summary`, `changes`, `evidence`, `risks`, `nextActions`
+- Classifier remains backward-compatible with legacy free-text/loose JSON responses, but structured output is recommended for stable auto-progression.
+
 ## Broadcast Guardrails
 
 - Default active broadcaster: `orchestrator`.
