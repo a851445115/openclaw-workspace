@@ -63,6 +63,63 @@ DEFAULT_GOVERNANCE_STATE: Dict[str, Any] = {
     "frozenTaskIds": [],
 }
 RECOVERY_AGENT_CHAIN = ("debugger", "invest-analyst", "coder")
+SUPPORTED_TASK_KINDS = ("coding", "debug", "research", "broadcast", "review", "ops")
+DEFAULT_STRATEGY_STATE: Dict[str, Any] = {"selections": {}, "updatedAt": ""}
+TASK_KIND_STRATEGY_LIBRARY: Dict[str, Dict[str, List[str]]] = {
+    "coding": {
+        "default": [
+            "先最小可交付，再补充验证与收尾。",
+            "结果必须包含真实可复现证据（命令/日志/文件路径）。",
+        ],
+        "strict-evidence": [
+            "必须先列出验证命令，再提交结论。",
+            "每个关键结论都要附证据（日志片段、路径、测试结果）。",
+            "缺少证据时应返回 blocked，而不是猜测完成。",
+        ],
+        "fast-lane": [
+            "先完成主路径，次要优化延期。",
+            "保留最小证据链：至少一条验证命令和一条结果证据。",
+        ],
+    },
+    "debug": {
+        "default": [
+            "先定位根因，再给修复或缓解方案。",
+            "至少提供一个可复现实验或关键日志依据。",
+        ],
+        "strict-evidence": [
+            "按“现象-定位-修复-验证”四段输出。",
+            "日志、错误栈或复现步骤至少提供两类证据。",
+        ],
+    },
+    "research": {
+        "default": [
+            "先结论，后依据，最后给推荐方案。",
+            "依据要可追溯（链接/文档路径/数据摘要）。",
+        ],
+        "strict-evidence": [
+            "每条结论至少给一条可复核来源。",
+            "输出中明确权衡项与放弃项。",
+        ],
+    },
+    "broadcast": {
+        "default": [
+            "面向群成员可直接转发，语言简洁。",
+            "明确对象、动作、时间与责任人。",
+        ],
+    },
+    "review": {
+        "default": [
+            "先给风险清单，再给建议改动。",
+            "评论要定位到具体文件或行为。",
+        ],
+    },
+    "ops": {
+        "default": [
+            "先保证稳定性，再优化效率。",
+            "回报里必须包含当前状态与下一步操作建议。",
+        ],
+    },
+}
 
 
 def now_iso() -> str:
@@ -520,6 +577,89 @@ def infer_task_kind(agent: str, title: str, dispatch_task: str) -> str:
     return "coding"
 
 
+def normalize_task_kind(value: str) -> str:
+    raw = str(value or "").strip().lower()
+    alias = {
+        "code": "coding",
+        "dev": "coding",
+        "development": "coding",
+        "debugging": "debug",
+        "investigation": "research",
+        "analysis": "research",
+        "announcement": "broadcast",
+        "operation": "ops",
+    }
+    norm = alias.get(raw, raw)
+    if norm in SUPPORTED_TASK_KINDS:
+        return norm
+    return ""
+
+
+def build_strategy_catalog(task_kind: str) -> Dict[str, List[str]]:
+    kind = normalize_task_kind(task_kind)
+    if not kind:
+        kind = "coding"
+    base = TASK_KIND_STRATEGY_LIBRARY.get(kind)
+    if isinstance(base, dict) and base:
+        return {str(k): [clip(str(x), 200) for x in v if str(x).strip()] for k, v in base.items() if isinstance(v, list)}
+    return {"default": ["优先产出可验证结果并保持回报结构化。"]}
+
+
+def normalize_strategy_state(raw: Dict[str, Any]) -> Dict[str, Any]:
+    state = dict(DEFAULT_STRATEGY_STATE)
+    state["selections"] = {}
+    if not isinstance(raw, dict):
+        return state
+    state["updatedAt"] = str(raw.get("updatedAt") or "")
+    selections = raw.get("selections")
+    if not isinstance(selections, dict):
+        return state
+    out: Dict[str, Dict[str, Dict[str, str]]] = {}
+    for role, role_val in selections.items():
+        role_key = str(role or "").strip().lower()
+        if not role_key or not isinstance(role_val, dict):
+            continue
+        role_out: Dict[str, Dict[str, str]] = {}
+        for kind, kind_val in role_val.items():
+            kind_key = normalize_task_kind(str(kind or ""))
+            if not kind_key:
+                continue
+            variant = ""
+            updated_at = ""
+            if isinstance(kind_val, dict):
+                variant = str(kind_val.get("variant") or "").strip().lower()
+                updated_at = str(kind_val.get("updatedAt") or "")
+            elif isinstance(kind_val, str):
+                variant = kind_val.strip().lower()
+            if not variant:
+                continue
+            role_out[kind_key] = {"variant": variant, "updatedAt": updated_at}
+        if role_out:
+            out[role_key] = role_out
+    state["selections"] = out
+    return state
+
+
+def resolve_strategy_block(root: str, role: str, task_kind: str) -> Dict[str, Any]:
+    role_key = str(role or "").strip().lower()
+    kind_key = normalize_task_kind(task_kind) or "coding"
+    catalog = build_strategy_catalog(kind_key)
+    state = load_strategy_state(root)
+    role_map = state.get("selections", {}).get(role_key, {}) if isinstance(state.get("selections"), dict) else {}
+    selected = role_map.get(kind_key, {}) if isinstance(role_map, dict) else {}
+    selected_variant = str(selected.get("variant") or "").strip().lower() if isinstance(selected, dict) else ""
+    variant = selected_variant if selected_variant in catalog else ("default" if "default" in catalog else next(iter(catalog.keys())))
+    return {
+        "role": role_key,
+        "taskKind": kind_key,
+        "variant": variant,
+        "source": "selection" if selected_variant and selected_variant == variant else "library-default",
+        "updatedAt": str(selected.get("updatedAt") or "") if isinstance(selected, dict) else "",
+        "availableVariants": sorted(catalog.keys()),
+        "rules": catalog.get(variant, []),
+    }
+
+
 def requirements_for_kind(kind: str) -> List[str]:
     if kind == "debug":
         return [
@@ -560,10 +700,18 @@ def build_structured_output_schema(task_id: str, agent: str) -> Dict[str, Any]:
     }
 
 
-def build_agent_prompt(root: str, task: Dict[str, Any], agent: str, dispatch_task: str) -> str:
+def build_agent_prompt(
+    root: str,
+    task: Dict[str, Any],
+    agent: str,
+    dispatch_task: str,
+    strategy_block: Optional[Dict[str, Any]] = None,
+) -> str:
     task_id = str(task.get("taskId") or "")
     title = str(task.get("title") or "")
     task_kind = infer_task_kind(agent, title, dispatch_task)
+    if not isinstance(strategy_block, dict):
+        strategy_block = resolve_strategy_block(root, agent, task_kind)
     requirements = requirements_for_kind(task_kind)
     schema = build_structured_output_schema(task_id, agent)
     board_snapshot = build_prompt_board_snapshot(root, task_id)
@@ -577,6 +725,7 @@ def build_agent_prompt(root: str, task: Dict[str, Any], agent: str, dispatch_tas
         "assigneeHint": str(task.get("assigneeHint") or ""),
         "projectId": str(task.get("projectId") or ""),
         "relatedTo": str(task.get("relatedTo") or ""),
+        "taskKind": task_kind,
         "objective": clip(dispatch_task, 320),
     }
 
@@ -588,6 +737,8 @@ def build_agent_prompt(root: str, task: Dict[str, Any], agent: str, dispatch_tas
         json.dumps(board_snapshot, ensure_ascii=False, indent=2),
         "TASK_RECENT_HISTORY:",
         json.dumps(history, ensure_ascii=False, indent=2),
+        "STRATEGY_BLOCK:",
+        json.dumps(strategy_block, ensure_ascii=False, indent=2),
         "EXECUTION_REQUIREMENTS:",
     ]
     for idx, item in enumerate(requirements, start=1):
@@ -1154,7 +1305,9 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     status = str(task.get("status") or "")
     title = clip(task.get("title") or "未命名任务")
     dispatch_task = clip(args.task or f"{args.task_id}: {task.get('title') or 'untitled'}", 300)
-    agent_prompt = build_agent_prompt(args.root, task, args.agent, dispatch_task)
+    task_kind = infer_task_kind(args.agent, title, dispatch_task)
+    strategy_block = resolve_strategy_block(args.root, args.agent, task_kind)
+    agent_prompt = build_agent_prompt(args.root, task, args.agent, dispatch_task, strategy_block=strategy_block)
 
     dispatch_mode_line = "派发模式: 手动协作（等待回报）" if not args.spawn else "派发模式: 自动执行闭环（spawn并回写看板）"
 
@@ -1333,11 +1486,32 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         "autoClose": auto_close,
         "reportTemplate": report_template,
         "agentPrompt": agent_prompt,
+        "strategy": strategy_block,
     }
 
 
 def cmd_dispatch(args: argparse.Namespace) -> int:
     result = dispatch_once(args)
+    strategy_block = result.get("strategy") if isinstance(result.get("strategy"), dict) else {}
+    spawn = result.get("spawn") if isinstance(result.get("spawn"), dict) else {}
+    audit = append_observability_event(
+        args.root,
+        "dispatch_action",
+        str(getattr(args, "actor", "orchestrator") or "orchestrator"),
+        {
+            "ok": bool(result.get("ok")),
+            "taskId": str(result.get("taskId") or ""),
+            "agent": str(result.get("agent") or ""),
+            "dispatchMode": str(result.get("dispatchMode") or ""),
+            "autoClose": bool(result.get("autoClose")),
+            "decision": str(spawn.get("decision") or ""),
+            "reasonCode": str(spawn.get("reasonCode") or ""),
+            "strategy": strategy_block,
+            "strategyVariant": str(strategy_block.get("variant") or ""),
+            "taskKind": str(strategy_block.get("taskKind") or ""),
+        },
+    )
+    result["audit"] = audit
     print(json.dumps(result, ensure_ascii=True))
     return 0 if result.get("ok") else 1
 
@@ -2012,6 +2186,70 @@ def cmd_decompose_goal(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_strategy(args: argparse.Namespace) -> int:
+    role = clip(str(getattr(args, "role", "") or "").strip().lower(), 80)
+    kind = normalize_task_kind(str(getattr(args, "task_kind", "") or ""))
+    action = str(getattr(args, "action", "status") or "status").strip().lower()
+
+    if not role:
+        print(json.dumps({"ok": False, "error": "--role is required"}))
+        return 1
+    if not kind:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": f"invalid --task-kind, supported: {', '.join(SUPPORTED_TASK_KINDS)}",
+                }
+            )
+        )
+        return 1
+    if action not in {"set", "status"}:
+        print(json.dumps({"ok": False, "error": f"unsupported action: {action}"}))
+        return 1
+
+    if action == "set":
+        variant = clip(str(getattr(args, "variant", "") or "").strip().lower(), 80)
+        if not variant:
+            print(json.dumps({"ok": False, "error": "--variant is required for action=set"}))
+            return 1
+        catalog = build_strategy_catalog(kind)
+        if variant not in catalog:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": f"unsupported variant for {kind}: {variant}",
+                        "availableVariants": sorted(catalog.keys()),
+                    }
+                )
+            )
+            return 1
+        state = load_strategy_state(args.root)
+        selections = state.setdefault("selections", {})
+        role_map = selections.get(role)
+        if not isinstance(role_map, dict):
+            role_map = {}
+            selections[role] = role_map
+        role_map[kind] = {"variant": variant, "updatedAt": now_iso()}
+        state["updatedAt"] = now_iso()
+        save_strategy_state(args.root, state)
+
+    selection = resolve_strategy_block(args.root, role, kind)
+    result = {
+        "ok": True,
+        "handled": True,
+        "intent": "strategy",
+        "action": action,
+        "role": role,
+        "taskKind": kind,
+        "selection": selection,
+        "statePath": strategy_state_path(args.root),
+    }
+    print(json.dumps(result, ensure_ascii=True))
+    return 0
+
+
 def cmd_observability_report(args: argparse.Namespace) -> int:
     window_sec = max(0, parse_int(getattr(args, "window_sec", 604800), 604800))
     report = build_observability_report_data(args.root, window_sec)
@@ -2101,6 +2339,10 @@ def routing_state_path(root: str) -> str:
     return os.path.join(root, "state", "task-routing.json")
 
 
+def strategy_state_path(root: str) -> str:
+    return os.path.join(root, "state", "strategy.selection.json")
+
+
 def observability_events_path(root: str) -> str:
     return os.path.join(root, "state", "observability.events.jsonl")
 
@@ -2169,6 +2411,16 @@ def save_governance_state(root: str, data: Dict[str, Any]) -> None:
     save_json_file(path, normalize_governance_state(data))
 
 
+def load_strategy_state(root: str) -> Dict[str, Any]:
+    path = strategy_state_path(root)
+    return normalize_strategy_state(load_json_file(path, dict(DEFAULT_STRATEGY_STATE)))
+
+
+def save_strategy_state(root: str, data: Dict[str, Any]) -> None:
+    path = strategy_state_path(root)
+    save_json_file(path, normalize_strategy_state(data))
+
+
 def load_task_routing(root: str) -> Dict[str, Any]:
     path = routing_state_path(root)
     default = {"priorities": {}, "dependsOn": {}}
@@ -2217,6 +2469,7 @@ def build_observability_report_data(root: str, window_sec: int) -> Dict[str, Any
         block_reasons[reason] = block_reasons.get(reason, 0) + 1
 
     cycle_events = [e for e in obs_events if str(e.get("type") or "") == "scheduler_cycle"]
+    dispatch_events = [e for e in obs_events if str(e.get("type") or "") == "dispatch_action"]
     cycle_total = len(cycle_events)
     cycle_success = 0
     cycle_time_sum = 0.0
@@ -2224,6 +2477,7 @@ def build_observability_report_data(root: str, window_sec: int) -> Dict[str, Any
     recovery_attempts = 0
     recovered_tasks = 0
     dispatches = 0
+    strategy_usage: Dict[str, int] = {}
     for event in cycle_events:
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         if bool(payload.get("ok")):
@@ -2235,6 +2489,18 @@ def build_observability_report_data(root: str, window_sec: int) -> Dict[str, Any
         dispatches += max(0, parse_int(payload.get("dispatches", 0), 0))
         recovery_attempts += max(0, parse_int(payload.get("recoveryAttempts", 0), 0))
         recovered_tasks += max(0, parse_int(payload.get("recoveredTasks", 0), 0))
+    for event in dispatch_events:
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        strategy = payload.get("strategy") if isinstance(payload.get("strategy"), dict) else {}
+        variant = clip(
+            str(
+                payload.get("strategyVariant")
+                or strategy.get("variant")
+                or "default"
+            ),
+            80,
+        )
+        strategy_usage[variant] = strategy_usage.get(variant, 0) + 1
 
     cycle_success_rate = (cycle_success / cycle_total) if cycle_total > 0 else 0.0
     mean_cycle_time_sec = (cycle_time_sum / cycle_time_count) if cycle_time_count > 0 else 0.0
@@ -2251,6 +2517,7 @@ def build_observability_report_data(root: str, window_sec: int) -> Dict[str, Any
         "dispatches": dispatches,
         "recoveryAttempts": recovery_attempts,
         "recoveredTasks": recovered_tasks,
+        "strategyUsage": strategy_usage,
     }
     return {
         "windowSec": window_sec,
@@ -3288,6 +3555,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_govern.add_argument("--task-id", default="")
     p_govern.add_argument("--reason", default="")
     p_govern.set_defaults(func=cmd_govern)
+
+    p_strategy = sub.add_parser("strategy")
+    p_strategy.add_argument("--root", required=True)
+    p_strategy.add_argument("--action", choices=["set", "status"], default="status")
+    p_strategy.add_argument("--role", required=True)
+    p_strategy.add_argument("--task-kind", required=True)
+    p_strategy.add_argument("--variant", default="")
+    p_strategy.set_defaults(func=cmd_strategy)
 
     p_decompose = sub.add_parser("decompose-goal")
     p_decompose.add_argument("--root", required=True)

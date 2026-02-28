@@ -1404,6 +1404,143 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("report", payload, payload)
         self.assertIn("timeline", payload, payload)
 
+    def test_strategy_command_updates_selection(self):
+        set_out = run_json([
+            "python3",
+            str(MILE),
+            "strategy",
+            "--root",
+            str(self.root),
+            "--action",
+            "set",
+            "--role",
+            "coder",
+            "--task-kind",
+            "coding",
+            "--variant",
+            "strict-evidence",
+        ])
+        self.assertTrue(set_out["ok"], set_out)
+        status_out = run_json([
+            "python3",
+            str(MILE),
+            "strategy",
+            "--root",
+            str(self.root),
+            "--action",
+            "status",
+            "--role",
+            "coder",
+            "--task-kind",
+            "coding",
+        ])
+        self.assertTrue(status_out["ok"], status_out)
+        self.assertEqual(status_out["selection"]["variant"], "strict-evidence", status_out)
+
+    def test_dispatch_prompt_includes_strategy_block(self):
+        run_json([
+            "python3",
+            str(MILE),
+            "strategy",
+            "--root",
+            str(self.root),
+            "--action",
+            "set",
+            "--role",
+            "coder",
+            "--task-kind",
+            "coding",
+            "--variant",
+            "strict-evidence",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-130: strategy prompt",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-130",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/t130.log","pytest passed"]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        prompt = out.get("agentPrompt", "")
+        self.assertIn("STRATEGY_BLOCK", prompt, out)
+        self.assertIn("strict-evidence", prompt, out)
+
+    def test_observability_report_includes_strategy_usage(self):
+        run_json([
+            "python3",
+            str(MILE),
+            "strategy",
+            "--root",
+            str(self.root),
+            "--action",
+            "set",
+            "--role",
+            "coder",
+            "--task-kind",
+            "coding",
+            "--variant",
+            "strict-evidence",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-131: strategy telemetry",
+        ])
+        run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-131",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/t131.log","pytest passed"]}',
+        ])
+        report = run_json([
+            "python3",
+            str(MILE),
+            "observability-report",
+            "--root",
+            str(self.root),
+            "--window-sec",
+            "86400",
+        ])
+        self.assertTrue(report["ok"], report)
+        self.assertIn("strategyUsage", report["metrics"], report)
+        self.assertGreaterEqual(report["metrics"]["strategyUsage"].get("strict-evidence", 0), 1, report)
+
 
 if __name__ == "__main__":
     unittest.main()
