@@ -19,6 +19,7 @@ MILESTONE_PREFIXES = ("[TASK]", "[CLAIM]", "[DONE]", "[BLOCKED]", "[DIAG]", "[RE
 DONE_HINTS = ("[DONE]", " done", "completed", "finish", "完成", "已完成", "通过", "verified")
 BLOCKED_HINTS = ("[BLOCKED]", "blocked", "failed", "error", "exception", "失败", "阻塞", "卡住", "无法")
 EVIDENCE_HINTS = ("/", ".py", ".md", "http", "截图", "日志", "log", "输出", "result", "测试")
+STAGE_ONLY_HINTS = ("接下来", "下一步", "准备", "我先", "随后", "稍后", "计划", "will", "next", "going to", "plan to")
 BOT_OPENID_CONFIG_CANDIDATES = (
     os.path.join("config", "feishu-bot-openids.json"),
     os.path.join("state", "feishu-bot-openids.json"),
@@ -508,23 +509,29 @@ def extract_text_for_judgement(obj: Any) -> str:
 def classify_spawn_result(task_id: str, spawn_obj: Dict[str, Any], fallback_text: str = "") -> Dict[str, str]:
     status_hint = str(spawn_obj.get("status") or spawn_obj.get("taskStatus") or "").strip().lower()
     ok_flag = spawn_obj.get("ok")
-    text = fallback_text or extract_text_for_judgement(spawn_obj)
+    text = (fallback_text or extract_text_for_judgement(spawn_obj) or "").strip()
     kind = parse_wakeup_kind(text)
 
-    if status_hint in {"done", "completed", "success", "succeeded"}:
-        return {"decision": "done", "detail": clip(text or f"{task_id} 子代理返回完成", 200)}
     if status_hint in {"blocked", "failed", "error", "timeout", "cancelled"}:
-        return {"decision": "blocked", "detail": clip(text or f"{task_id} 子代理执行失败", 200)}
-
-    if kind == "done":
-        return {"decision": "done", "detail": clip(text or f"{task_id} 子代理返回完成", 200)}
-    if kind == "blocked":
-        return {"decision": "blocked", "detail": clip(text or f"{task_id} 子代理返回阻塞", 200)}
+        return {"decision": "blocked", "detail": clip(text or f"{task_id} 子代理执行失败", 200), "reasonCode": "spawn_failed"}
 
     if ok_flag is False:
-        return {"decision": "blocked", "detail": clip(text or f"{task_id} 子代理执行失败", 200)}
+        return {"decision": "blocked", "detail": clip(text or f"{task_id} 子代理执行失败", 200), "reasonCode": "spawn_failed"}
 
-    return {"decision": "blocked", "detail": clip(text or f"{task_id} 子代理未给出完成信号", 200)}
+    maybe_done = status_hint in {"done", "completed", "success", "succeeded"} or kind == "done"
+    if maybe_done:
+        if has_evidence(text) and not looks_stage_only(text):
+            return {"decision": "done", "detail": clip(text or f"{task_id} 子代理返回完成", 200), "reasonCode": "done_with_evidence"}
+        return {
+            "decision": "blocked",
+            "detail": clip(text or f"{task_id} 子代理仅返回阶段性话术，缺少证据", 200),
+            "reasonCode": "incomplete_output",
+        }
+
+    if kind == "blocked":
+        return {"decision": "blocked", "detail": clip(text or f"{task_id} 子代理返回阻塞", 200), "reasonCode": "blocked_signal"}
+
+    return {"decision": "blocked", "detail": clip(text or f"{task_id} 子代理未给出完成信号", 200), "reasonCode": "no_completion_signal"}
 
 
 def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, Any]:
@@ -555,6 +562,7 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
                 "spawnResult": obj,
                 "decision": decision["decision"],
                 "detail": decision["detail"],
+                "reasonCode": decision.get("reasonCode", "classified"),
             }
         except Exception as err:
             return {
@@ -565,6 +573,7 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
                 "command": ["--spawn-output"],
                 "decision": "blocked",
                 "detail": clip(str(err), 200),
+                "reasonCode": "invalid_spawn_output",
             }
 
     if args.spawn_cmd:
@@ -613,6 +622,7 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
             "spawnResult": parsed,
             "decision": "blocked",
             "detail": detail,
+            "reasonCode": "spawn_failed",
         }
 
     decision = classify_spawn_result(args.task_id, parsed or {"output": stdout}, fallback_text=stdout)
@@ -624,6 +634,7 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
         "spawnResult": parsed,
         "decision": decision["decision"],
         "detail": decision["detail"],
+        "reasonCode": decision.get("reasonCode", "classified"),
     }
 
 
@@ -695,6 +706,23 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
 
     if args.spawn:
         spawn = run_dispatch_spawn(args, dispatch_task)
+        if (
+            not spawn.get("skipped")
+            and not args.spawn_output
+            and spawn.get("decision") == "blocked"
+            and spawn.get("reasonCode") == "incomplete_output"
+        ):
+            retry_prompt = clip(
+                dispatch_task
+                + "\n\n交付硬性要求：请直接给出最终可验证结果（改动文件/命令输出/commit哈希/验证结论），不要只给阶段性进度。",
+                520,
+            )
+            retry_spawn = run_dispatch_spawn(args, retry_prompt)
+            spawn["retried"] = True
+            spawn["retry"] = retry_spawn
+            if retry_spawn.get("decision") == "done":
+                spawn = retry_spawn
+
         if spawn.get("skipped"):
             close_apply = {"ok": True, "skipped": True, "reason": spawn.get("reason", "spawn skipped")}
             close_publish = {"ok": True, "skipped": True, "reason": "spawn skipped"}
@@ -870,8 +898,14 @@ def choose_task_for_run(root: str, requested: str) -> Optional[Dict[str, Any]]:
 
 
 def has_evidence(text: str) -> bool:
-    lower = text.lower()
+    lower = (text or "").lower()
     return any(h.lower() in lower for h in EVIDENCE_HINTS)
+
+
+def looks_stage_only(text: str) -> bool:
+    lower = (text or "").lower()
+    has_stage = any(h.lower() in lower for h in STAGE_ONLY_HINTS)
+    return has_stage and not has_evidence(text)
 
 
 def parse_wakeup_kind(text: str) -> str:

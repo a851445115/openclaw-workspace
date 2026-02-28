@@ -61,6 +61,7 @@ class RuntimeTests(unittest.TestCase):
             "coder",
             "--mode",
             "dry-run",
+            "--spawn",
             "--spawn-output",
             '{"status":"done","message":"T-001 已完成，证据: logs/run.log"}',
         ])
@@ -80,6 +81,52 @@ class RuntimeTests(unittest.TestCase):
             "status T-001",
         ])
         self.assertEqual(status["task"]["status"], "done", status)
+
+    def test_dispatch_spawn_done_without_evidence_is_blocked(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@debugger create task T-005: 证据门禁测试",
+        ])
+
+        dispatch = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-005",
+            "--agent",
+            "debugger",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","message":"我已经定位到问题，接下来会修复"}',
+        ])
+        self.assertTrue(dispatch["ok"], dispatch)
+        self.assertEqual(dispatch["spawn"]["decision"], "blocked", dispatch)
+        self.assertEqual(dispatch["spawn"]["reasonCode"], "incomplete_output", dispatch)
+
+        status = run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "status T-005",
+        ])
+        self.assertEqual(status["task"]["status"], "blocked", status)
 
     def test_feishu_router_handles_claim_done_commands(self):
         run_json([
