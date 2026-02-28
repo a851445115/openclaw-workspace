@@ -627,6 +627,155 @@ class RuntimeTests(unittest.TestCase):
         ])
         self.assertEqual(status["task"]["status"], "blocked", status)
 
+    def test_user_friendly_help_and_project_status_alias(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-050: 帮助命令测试",
+        ])
+
+        help_out = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@orchestrator 帮助",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(help_out["ok"], help_out)
+        self.assertEqual(help_out.get("intent"), "help", help_out)
+        self.assertIn("开始项目", help_out["send"]["payload"]["text"], help_out)
+
+        status_out = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@orchestrator 项目状态",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(status_out["ok"], status_out)
+        self.assertEqual(status_out.get("intent"), "status", status_out)
+
+    def test_user_friendly_autopilot_toggle_commands(self):
+        opened = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@orchestrator 自动推进 开 2",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(opened["ok"], opened)
+        self.assertEqual(opened.get("intent"), "auto_progress", opened)
+        self.assertTrue((opened.get("state") or {}).get("enabled"), opened)
+        self.assertEqual((opened.get("state") or {}).get("maxSteps"), 2, opened)
+
+        status = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@orchestrator 自动推进 状态",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(status["ok"], status)
+        self.assertEqual(status.get("intent"), "auto_progress", status)
+        self.assertTrue((status.get("state") or {}).get("enabled"), status)
+
+        closed = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@orchestrator 自动推进 关",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(closed["ok"], closed)
+        self.assertEqual(closed.get("intent"), "auto_progress", closed)
+        self.assertFalse((closed.get("state") or {}).get("enabled"), closed)
+
+    def test_user_friendly_start_project_bootstrap(self):
+        proj = self.root / "demo-project"
+        proj.mkdir(parents=True, exist_ok=True)
+        (proj / "PRD.md").write_text(
+            "\n".join(
+                [
+                    "# Demo",
+                    "## 14. 里程碑建议",
+                    "- M1：数据模型 + 指标",
+                    "- M2：周频推荐 + 报告输出",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        out = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            f"@orchestrator 开始项目 {proj}",
+            "--mode",
+            "dry-run",
+            "--dispatch-spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"初始化完成，测试通过","evidence":["logs/start.log"]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out.get("intent"), "start_project", out)
+        self.assertGreaterEqual(out.get("createdCount", 0), 2, out)
+        self.assertTrue((out.get("bootstrap") or {}).get("ok"), out)
+
+        t001 = run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "status T-001",
+        ])
+        self.assertEqual(t001["task"]["status"], "done", t001)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -48,6 +48,15 @@ DEFAULT_ACCEPTANCE_POLICY: Dict[str, Any] = {
         },
     },
 }
+AUTO_PROGRESS_STATE_FILE = "user-friendly.autopilot.json"
+AUTO_PROGRESS_DEFAULT_MAX_STEPS = 2
+AUTO_PROGRESS_MAX_STEPS_LIMIT = 10
+PROJECT_DOC_CANDIDATES = ("PRD.md", "prd.md", "README.md", "readme.md")
+DEFAULT_PROJECT_BOOTSTRAP_TASKS = (
+    "梳理目标与验收标准（来自项目文档）",
+    "拆解可执行里程碑并标注负责人建议",
+    "启动首个最小可交付任务并回传证据",
+)
 
 
 def now_iso() -> str:
@@ -1131,10 +1140,9 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
-def cmd_autopilot(args: argparse.Namespace) -> int:
+def autopilot_once(args: argparse.Namespace) -> Dict[str, Any]:
     if args.actor != "orchestrator":
-        print(json.dumps({"ok": False, "error": "autopilot is restricted to actor=orchestrator"}))
-        return 1
+        return {"ok": False, "error": "autopilot is restricted to actor=orchestrator"}
     max_steps = max(1, int(args.max_steps))
     steps: List[Dict[str, Any]] = []
     summary = {"done": 0, "blocked": 0, "manual": 0}
@@ -1200,8 +1208,13 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
         "visibilityMode": str(args.visibility_mode),
         "steps": steps,
     }
+    return result
+
+
+def cmd_autopilot(args: argparse.Namespace) -> int:
+    result = autopilot_once(args)
     print(json.dumps(result, ensure_ascii=True))
-    return 0 if ok else 1
+    return 0 if result.get("ok") else 1
 
 
 def load_json_file(path: str, default_obj: Dict[str, Any]) -> Dict[str, Any]:
@@ -1303,6 +1316,135 @@ def parse_project_tasks(payload: str) -> Tuple[str, List[str]]:
     if not parts:
         parts = [f"项目启动: {project_name}"]
     return project_name, parts
+
+
+def normalize_project_path(raw: str) -> str:
+    s = (raw or "").strip().strip("'").strip('"')
+    if not s:
+        return ""
+    return os.path.abspath(os.path.expanduser(s))
+
+
+def read_project_doc(project_path: str) -> Tuple[str, str]:
+    for filename in PROJECT_DOC_CANDIDATES:
+        path = os.path.join(project_path, filename)
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return path, f.read()
+        except Exception:
+            continue
+    return "", ""
+
+
+def infer_project_name(project_path: str, doc_text: str) -> str:
+    for line in (doc_text or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            name = stripped.lstrip("#").strip()
+            if name:
+                return clip(name, 80)
+    base = os.path.basename(project_path.rstrip(os.sep))
+    return clip(base or "未命名项目", 80)
+
+
+def extract_project_bootstrap_tasks(doc_text: str) -> List[str]:
+    lines = (doc_text or "").splitlines()
+    if not lines:
+        return []
+
+    tasks: List[str] = []
+    in_milestone = False
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            in_milestone = bool(re.search(r"里程碑|milestone", line, flags=re.IGNORECASE))
+            continue
+
+        m = re.match(r"^[-*]\s*(?:M|m)\d+\s*[：:]\s*(.+)$", line)
+        if m:
+            candidate = clip(m.group(1).strip(), 120)
+            if candidate:
+                tasks.append(candidate)
+            continue
+
+        if in_milestone:
+            m2 = re.match(r"^[-*]\s*(.+)$", line)
+            if m2:
+                candidate = clip(m2.group(1).strip(), 120)
+                if candidate:
+                    tasks.append(candidate)
+
+    deduped: List[str] = []
+    seen = set()
+    for task in tasks:
+        key = task.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(task)
+        if len(deduped) >= 8:
+            break
+    return deduped
+
+
+def build_project_bootstrap(project_path: str) -> Dict[str, Any]:
+    doc_path, doc_text = read_project_doc(project_path)
+    project_name = infer_project_name(project_path, doc_text)
+    tasks = extract_project_bootstrap_tasks(doc_text)
+    if not tasks:
+        tasks = list(DEFAULT_PROJECT_BOOTSTRAP_TASKS)
+    return {
+        "projectPath": project_path,
+        "projectName": project_name,
+        "docPath": doc_path,
+        "tasks": tasks,
+    }
+
+
+def auto_progress_state_path(root: str) -> str:
+    return os.path.join(root, "state", AUTO_PROGRESS_STATE_FILE)
+
+
+def normalize_steps(value: Any, default_steps: int = AUTO_PROGRESS_DEFAULT_MAX_STEPS) -> int:
+    try:
+        n = int(value)
+    except Exception:
+        n = int(default_steps)
+    n = max(1, n)
+    return min(AUTO_PROGRESS_MAX_STEPS_LIMIT, n)
+
+
+def load_auto_progress_state(root: str) -> Dict[str, Any]:
+    path = auto_progress_state_path(root)
+    data = load_json_file(path, {"enabled": False, "maxSteps": AUTO_PROGRESS_DEFAULT_MAX_STEPS, "updatedAt": ""})
+    enabled = bool(data.get("enabled"))
+    max_steps = normalize_steps(data.get("maxSteps"), AUTO_PROGRESS_DEFAULT_MAX_STEPS)
+    return {"enabled": enabled, "maxSteps": max_steps, "updatedAt": str(data.get("updatedAt") or "")}
+
+
+def save_auto_progress_state(root: str, enabled: bool, max_steps: int) -> Dict[str, Any]:
+    state = {
+        "enabled": bool(enabled),
+        "maxSteps": normalize_steps(max_steps, AUTO_PROGRESS_DEFAULT_MAX_STEPS),
+        "updatedAt": now_iso(),
+    }
+    save_json_file(auto_progress_state_path(root), state)
+    return state
+
+
+def build_user_help_message() -> str:
+    lines = [
+        "[TASK] Orchestrator 快速入口",
+        "1) @orchestrator 开始项目 /absolute/path/to/project",
+        "2) @orchestrator 项目状态",
+        "3) @orchestrator 自动推进 开 [N] | 关 | 状态",
+        "4) @orchestrator run / autopilot / dispatch 仍可继续使用",
+    ]
+    return "\n".join(lines)
 
 
 def choose_task_for_run(root: str, requested: str) -> Optional[Dict[str, Any]]:
@@ -1500,6 +1642,165 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
     cmd_body = norm
     if norm.lower().startswith("@orchestrator"):
         cmd_body = norm[len("@orchestrator") :].strip()
+
+    # Command: @orchestrator 帮助
+    if re.match(r"^(?:帮助|help|\?)$", cmd_body, flags=re.IGNORECASE):
+        msg = build_user_help_message()
+        out = send_group_message(args.group_id, args.account_id, msg, args.mode)
+        print(json.dumps({"ok": bool(out.get("ok")), "handled": True, "intent": "help", "send": out}))
+        return 0 if out.get("ok") else 1
+
+    # Command: @orchestrator 自动推进 开 [N] | 关 | 状态
+    m = re.match(
+        r"^(?:自动推进|auto[\s_-]*progress)(?:\s+(开|关|状态|on|off|status)(?:\s+(\d+))?)?$",
+        cmd_body,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        raw_action = (m.group(1) or "状态").strip().lower()
+        raw_steps = (m.group(2) or "").strip()
+        if raw_action in {"on", "开"}:
+            action = "on"
+        elif raw_action in {"off", "关"}:
+            action = "off"
+        else:
+            action = "status"
+
+        state = load_auto_progress_state(args.root)
+        if action == "on":
+            steps = normalize_steps(raw_steps or state.get("maxSteps", AUTO_PROGRESS_DEFAULT_MAX_STEPS))
+            state = save_auto_progress_state(args.root, True, steps)
+        elif action == "off":
+            state = save_auto_progress_state(args.root, False, normalize_steps(state.get("maxSteps", AUTO_PROGRESS_DEFAULT_MAX_STEPS)))
+
+        spawn_enabled = True
+        if bool(getattr(args, "dispatch_manual", False)):
+            spawn_enabled = False
+        if bool(getattr(args, "dispatch_spawn", False)):
+            spawn_enabled = True
+
+        kick = {"ok": True, "skipped": True, "reason": "autopilot not requested"}
+        if action == "on":
+            a_args = argparse.Namespace(
+                root=args.root,
+                actor="orchestrator",
+                session_id=args.session_id,
+                group_id=args.group_id,
+                account_id=args.account_id,
+                mode=args.mode,
+                timeout_sec=args.timeout_sec,
+                spawn=spawn_enabled,
+                spawn_cmd=args.spawn_cmd,
+                spawn_output=args.spawn_output,
+                max_steps=state.get("maxSteps", AUTO_PROGRESS_DEFAULT_MAX_STEPS),
+                visibility_mode=visibility_mode,
+            )
+            kick = autopilot_once(a_args)
+
+        status_text = "开启" if state.get("enabled") else "关闭"
+        msg = f"[TASK] 自动推进已{status_text} | maxSteps={state.get('maxSteps')}"
+        out = send_group_message(args.group_id, args.account_id, msg, args.mode)
+        ok = bool(out.get("ok")) and bool(kick.get("ok"))
+        print(
+            json.dumps(
+                {
+                    "ok": ok,
+                    "handled": True,
+                    "intent": "auto_progress",
+                    "action": action,
+                    "state": state,
+                    "kickoff": kick,
+                    "send": out,
+                },
+                ensure_ascii=True,
+            )
+        )
+        return 0 if ok else 1
+
+    # Command: @orchestrator 开始项目 /path/to/project
+    m = re.match(r"^(?:开始项目|启动项目|start\s+project)\s+(.+)$", cmd_body, flags=re.IGNORECASE)
+    if m:
+        project_path = normalize_project_path(m.group(1))
+        if not project_path or not os.path.isdir(project_path):
+            out = send_group_message(args.group_id, args.account_id, f"[TASK] 项目路径不可用: {clip(project_path or m.group(1), 160)}", args.mode)
+            print(json.dumps({"ok": bool(out.get("ok")), "handled": True, "intent": "start_project", "send": out}))
+            return 0 if out.get("ok") else 1
+
+        bootstrap = build_project_bootstrap(project_path)
+        project_name = str(bootstrap.get("projectName") or "未命名项目")
+        created: List[Dict[str, Any]] = []
+        created_ids: List[str] = []
+        for item in bootstrap.get("tasks", []):
+            assignee = suggest_agent_from_title(str(item))
+            apply_obj = board_apply(args.root, "orchestrator", f"@{assignee} create task: [{project_name}] {clip(str(item), 120)}")
+            if isinstance(apply_obj, dict) and apply_obj.get("ok"):
+                created_ids.append(str(apply_obj.get("taskId") or ""))
+            publish = publish_apply_result(
+                args.root,
+                "orchestrator",
+                apply_obj,
+                args.group_id,
+                args.account_id,
+                args.mode,
+                allow_broadcaster=False,
+            )
+            created.append({"apply": apply_obj, "publish": publish})
+
+        spawn_enabled = True
+        if bool(getattr(args, "dispatch_manual", False)):
+            spawn_enabled = False
+        if bool(getattr(args, "dispatch_spawn", False)):
+            spawn_enabled = True
+
+        kickoff: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "no task created"}
+        first_task = next((tid for tid in created_ids if tid), "")
+        if first_task:
+            first_obj = get_task(args.root, first_task) or {}
+            d_args = argparse.Namespace(
+                root=args.root,
+                task_id=first_task,
+                agent=str(first_obj.get("assigneeHint") or "coder"),
+                task=f"{first_task}: {first_obj.get('title') or 'untitled'}",
+                actor="orchestrator",
+                session_id=args.session_id,
+                group_id=args.group_id,
+                account_id=args.account_id,
+                mode=args.mode,
+                timeout_sec=args.timeout_sec,
+                spawn=spawn_enabled,
+                spawn_cmd=args.spawn_cmd,
+                spawn_output=args.spawn_output,
+                visibility_mode=visibility_mode,
+            )
+            kickoff = dispatch_once(d_args)
+
+        doc_path = str(bootstrap.get("docPath") or "")
+        doc_hint = f"文档={doc_path}" if doc_path else "文档=未找到PRD/README（使用默认任务模板）"
+        msg = f"[TASK] 项目启动完成: {project_name} | 新建任务={len(created_ids)}\n{doc_hint}\n可用命令: @orchestrator 项目状态"
+        ack = send_group_message(args.group_id, args.account_id, msg, args.mode)
+        ok = all(c.get("apply", {}).get("ok") and c.get("publish", {}).get("ok") for c in created) and bool(ack.get("ok")) and bool(kickoff.get("ok"))
+        print(
+            json.dumps(
+                {
+                    "ok": ok,
+                    "handled": True,
+                    "intent": "start_project",
+                    "projectPath": project_path,
+                    "projectName": project_name,
+                    "projectDoc": doc_path,
+                    "createdCount": len(created_ids),
+                    "createdTaskIds": created_ids,
+                    "created": created,
+                    "bootstrap": kickoff,
+                    "ack": ack,
+                },
+                ensure_ascii=True,
+            )
+        )
+        return 0 if ok else 1
+
+    if re.match(r"^(?:项目状态|project\s+status)$", cmd_body, flags=re.IGNORECASE):
+        cmd_body = "status"
 
     # Command: @orchestrator create project <name>: task1; task2
     m = re.match(r"^create\s+project\s+(.+)$", cmd_body, flags=re.IGNORECASE)

@@ -108,6 +108,10 @@ Prefix command text with `@agent-name` to attach routing metadata:
 
 ## Feishu Orchestrator Commands (MVP)
 
+- `@orchestrator 帮助`
+- `@orchestrator 开始项目 <absolute-path>`
+- `@orchestrator 项目状态`（等价 `status`）
+- `@orchestrator 自动推进 开 [N] | 关 | 状态`
 - `@orchestrator create project <name>: <task1>; <task2>; ...`
 - `@orchestrator run [taskId]`
 - `@orchestrator autopilot [N]`
