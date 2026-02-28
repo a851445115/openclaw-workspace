@@ -6,6 +6,7 @@ import re
 import shlex
 import subprocess
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -66,6 +67,22 @@ RECOVERY_AGENT_CHAIN = ("debugger", "invest-analyst", "coder")
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def now_ts() -> int:
+    return int(time.time())
+
+
+def parse_iso_ts(value: Any) -> int:
+    s = str(value or "").strip()
+    if not s:
+        return 0
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        return int(datetime.fromisoformat(s).timestamp())
+    except Exception:
+        return 0
 
 
 def clip(text: Optional[str], limit: int = 160) -> str:
@@ -1465,6 +1482,7 @@ def cmd_scheduler_run(args: argparse.Namespace) -> int:
             "reasonCode": "scheduler_paused",
             "governance": governance,
         }
+        append_observability_event(args.root, "scheduler_cycle", args.actor, result)
         print(json.dumps(result, ensure_ascii=True))
         return 1
 
@@ -1484,6 +1502,7 @@ def cmd_scheduler_run(args: argparse.Namespace) -> int:
             "retryAfterSec": retry_after,
             "lastRunTs": last_run_ts,
         }
+        append_observability_event(args.root, "scheduler_cycle", args.actor, result)
         print(json.dumps(result, ensure_ascii=True))
         return 1
 
@@ -1506,6 +1525,7 @@ def cmd_scheduler_run(args: argparse.Namespace) -> int:
             "windowSec": window_sec,
             "maxRuns": max_runs,
         }
+        append_observability_event(args.root, "scheduler_cycle", args.actor, result)
         print(json.dumps(result, ensure_ascii=True))
         return 1
 
@@ -1540,6 +1560,12 @@ def cmd_scheduler_run(args: argparse.Namespace) -> int:
                     },
                     ensure_ascii=True,
                 )
+            )
+            append_observability_event(
+                args.root,
+                "scheduler_cycle",
+                args.actor,
+                {"ok": False, "handled": True, "intent": "scheduler_run", "reasonCode": "invalid_spawn_output_seq", "error": str(err)},
             )
             return 1
 
@@ -1628,6 +1654,40 @@ def cmd_scheduler_run(args: argparse.Namespace) -> int:
             "manualCount": sum(parse_int(((c.get("autopilot") or {}).get("summary") or {}).get("manual", 0), 0) for c in cycles_out),
         },
     }
+
+    recovery_attempts = 0
+    recovered_tasks = 0
+    for cycle in cycles_out:
+        auto = cycle.get("autopilot") if isinstance(cycle.get("autopilot"), dict) else {}
+        for step in auto.get("steps", []) if isinstance(auto.get("steps"), list) else []:
+            dispatch = step.get("dispatch") if isinstance(step.get("dispatch"), dict) else {}
+            recovery = dispatch.get("recovery") if isinstance(dispatch.get("recovery"), dict) else {}
+            attempts = recovery.get("attempts")
+            if isinstance(attempts, list):
+                recovery_attempts += len(attempts)
+            if bool(recovery.get("applied")):
+                recovered_tasks += 1
+    result["costTelemetry"]["recoveryAttempts"] = recovery_attempts
+    result["costTelemetry"]["recoveredTasks"] = recovered_tasks
+
+    append_observability_event(
+        args.root,
+        "scheduler_cycle",
+        args.actor,
+        {
+            "ok": bool(result.get("ok")),
+            "reasonCode": str(result.get("reasonCode") or ""),
+            "stopReason": str(result.get("stopReason") or ""),
+            "elapsedSec": parse_float(result.get("elapsedSec", 0), 0.0),
+            "cyclesRun": parse_int(result.get("cyclesRun", 0), 0),
+            "dispatches": parse_int(result.get("costTelemetry", {}).get("dispatches", 0), 0),
+            "doneCount": parse_int(result.get("costTelemetry", {}).get("doneCount", 0), 0),
+            "blockedCount": parse_int(result.get("costTelemetry", {}).get("blockedCount", 0), 0),
+            "manualCount": parse_int(result.get("costTelemetry", {}).get("manualCount", 0), 0),
+            "recoveryAttempts": recovery_attempts,
+            "recoveredTasks": recovered_tasks,
+        },
+    )
     print(json.dumps(result, ensure_ascii=True))
     return 0 if ok else 1
 
@@ -1678,7 +1738,19 @@ def cmd_govern(args: argparse.Namespace) -> int:
     state = normalize_governance_state(state)
     if changed:
         save_governance_state(args.root, state)
-    result = {"ok": True, "handled": True, "intent": "govern", "action": action, "changed": changed, "state": state}
+    audit = append_observability_event(
+        args.root,
+        "governance_action",
+        args.actor,
+        {
+            "action": action,
+            "changed": changed,
+            "taskId": str(getattr(args, "task_id", "") or ""),
+            "reason": clip(str(getattr(args, "reason", "") or ""), 200),
+            "state": {"paused": bool(state.get("paused")), "frozenTaskIds": state.get("frozenTaskIds", [])},
+        },
+    )
+    result = {"ok": True, "handled": True, "intent": "govern", "action": action, "changed": changed, "state": state, "audit": audit}
     print(json.dumps(result, ensure_ascii=True))
     return 0
 
@@ -1940,6 +2012,69 @@ def cmd_decompose_goal(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_observability_report(args: argparse.Namespace) -> int:
+    window_sec = max(0, parse_int(getattr(args, "window_sec", 604800), 604800))
+    report = build_observability_report_data(args.root, window_sec)
+    result = {
+        "ok": True,
+        "handled": True,
+        "intent": "observability_report",
+        "windowSec": window_sec,
+        "metrics": report.get("metrics"),
+        "sources": report.get("sources"),
+    }
+    print(json.dumps(result, ensure_ascii=True))
+    return 0
+
+
+def cmd_observability_timeline(args: argparse.Namespace) -> int:
+    window_sec = max(0, parse_int(getattr(args, "window_sec", 604800), 604800))
+    limit = max(1, min(500, parse_int(getattr(args, "limit", 50), 50)))
+    timeline = build_observability_timeline_data(args.root, window_sec, limit)
+    result = {
+        "ok": True,
+        "handled": True,
+        "intent": "observability_timeline",
+        "windowSec": window_sec,
+        "limit": limit,
+        "count": len(timeline),
+        "timeline": timeline,
+    }
+    print(json.dumps(result, ensure_ascii=True))
+    return 0
+
+
+def cmd_observability_export(args: argparse.Namespace) -> int:
+    window_sec = max(0, parse_int(getattr(args, "window_sec", 604800), 604800))
+    limit = max(1, min(500, parse_int(getattr(args, "limit", 50), 50)))
+    out_path = str(getattr(args, "output", "") or "").strip()
+    if not out_path:
+        print(json.dumps({"ok": False, "error": "--output is required"}))
+        return 1
+    report = build_observability_report_data(args.root, window_sec)
+    timeline = build_observability_timeline_data(args.root, window_sec, limit)
+    payload = {
+        "generatedAt": now_iso(),
+        "windowSec": window_sec,
+        "report": report,
+        "timeline": timeline,
+    }
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=True, indent=2)
+        f.write("\n")
+    result = {
+        "ok": True,
+        "handled": True,
+        "intent": "observability_export",
+        "output": out_path,
+        "reportMetrics": report.get("metrics"),
+        "timelineCount": len(timeline),
+    }
+    print(json.dumps(result, ensure_ascii=True))
+    return 0
+
+
 def load_json_file(path: str, default_obj: Dict[str, Any]) -> Dict[str, Any]:
     if not os.path.exists(path):
         return default_obj
@@ -1964,6 +2099,46 @@ def scheduler_state_path(root: str) -> str:
 
 def routing_state_path(root: str) -> str:
     return os.path.join(root, "state", "task-routing.json")
+
+
+def observability_events_path(root: str) -> str:
+    return os.path.join(root, "state", "observability.events.jsonl")
+
+
+def append_jsonl_event(path: str, event: Dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(event, ensure_ascii=True) + "\n")
+
+
+def load_jsonl_events(path: str) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    if not os.path.exists(path):
+        return rows
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            s = line.strip()
+            if not s:
+                continue
+            try:
+                obj = json.loads(s)
+            except Exception:
+                continue
+            if isinstance(obj, dict):
+                rows.append(obj)
+    return rows
+
+
+def append_observability_event(root: str, event_type: str, actor: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    event = {
+        "eventId": str(uuid.uuid4()),
+        "type": event_type,
+        "actor": actor,
+        "at": now_iso(),
+        "payload": payload or {},
+    }
+    append_jsonl_event(observability_events_path(root), event)
+    return event
 
 
 def normalize_governance_state(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -2017,6 +2192,106 @@ def parse_float(value: Any, default: float) -> float:
         return float(value)
     except Exception:
         return default
+
+
+def within_window(event_at: Any, window_sec: int) -> bool:
+    if window_sec <= 0:
+        return True
+    ts = parse_iso_ts(event_at)
+    if ts <= 0:
+        return False
+    return ts >= (now_ts() - window_sec)
+
+
+def build_observability_report_data(root: str, window_sec: int) -> Dict[str, Any]:
+    task_jsonl, _ = ensure_state(root)
+    task_events = [e for e in load_jsonl_events(task_jsonl) if within_window(e.get("at"), window_sec)]
+    obs_events = [e for e in load_jsonl_events(observability_events_path(root)) if within_window(e.get("at"), window_sec)]
+
+    done_events = [e for e in task_events if str(e.get("type") or "") == "task_done"]
+    blocked_events = [e for e in task_events if str(e.get("type") or "") == "task_blocked"]
+    block_reasons: Dict[str, int] = {}
+    for event in blocked_events:
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        reason = clip(str(payload.get("reason") or "unspecified"), 80)
+        block_reasons[reason] = block_reasons.get(reason, 0) + 1
+
+    cycle_events = [e for e in obs_events if str(e.get("type") or "") == "scheduler_cycle"]
+    cycle_total = len(cycle_events)
+    cycle_success = 0
+    cycle_time_sum = 0.0
+    cycle_time_count = 0
+    recovery_attempts = 0
+    recovered_tasks = 0
+    dispatches = 0
+    for event in cycle_events:
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if bool(payload.get("ok")):
+            cycle_success += 1
+        elapsed = parse_float(payload.get("elapsedSec", 0), 0.0)
+        if elapsed >= 0:
+            cycle_time_sum += elapsed
+            cycle_time_count += 1
+        dispatches += max(0, parse_int(payload.get("dispatches", 0), 0))
+        recovery_attempts += max(0, parse_int(payload.get("recoveryAttempts", 0), 0))
+        recovered_tasks += max(0, parse_int(payload.get("recoveredTasks", 0), 0))
+
+    cycle_success_rate = (cycle_success / cycle_total) if cycle_total > 0 else 0.0
+    mean_cycle_time_sec = (cycle_time_sum / cycle_time_count) if cycle_time_count > 0 else 0.0
+    recovery_rate = (recovered_tasks / recovery_attempts) if recovery_attempts > 0 else 0.0
+
+    metrics = {
+        "throughputDone": len(done_events),
+        "blockedCount": len(blocked_events),
+        "blockReasons": block_reasons,
+        "meanCycleTimeSec": round(mean_cycle_time_sec, 3),
+        "cycleSuccessRate": round(cycle_success_rate, 4),
+        "recoveryRate": round(recovery_rate, 4),
+        "cycles": cycle_total,
+        "dispatches": dispatches,
+        "recoveryAttempts": recovery_attempts,
+        "recoveredTasks": recovered_tasks,
+    }
+    return {
+        "windowSec": window_sec,
+        "metrics": metrics,
+        "sources": {
+            "taskEvents": len(task_events),
+            "observabilityEvents": len(obs_events),
+            "cycleEvents": cycle_total,
+        },
+    }
+
+
+def build_observability_timeline_data(root: str, window_sec: int, limit: int) -> List[Dict[str, Any]]:
+    task_jsonl, _ = ensure_state(root)
+    task_events = [e for e in load_jsonl_events(task_jsonl) if within_window(e.get("at"), window_sec)]
+    obs_events = [e for e in load_jsonl_events(observability_events_path(root)) if within_window(e.get("at"), window_sec)]
+    rows: List[Dict[str, Any]] = []
+    for e in task_events:
+        rows.append(
+            {
+                "at": str(e.get("at") or ""),
+                "source": "task_board",
+                "type": str(e.get("type") or ""),
+                "taskId": str(e.get("taskId") or ""),
+                "actor": str(e.get("actor") or ""),
+                "payload": e.get("payload") if isinstance(e.get("payload"), dict) else {},
+            }
+        )
+    for e in obs_events:
+        rows.append(
+            {
+                "at": str(e.get("at") or ""),
+                "source": "orchestrator",
+                "type": str(e.get("type") or ""),
+                "taskId": str((e.get("payload") or {}).get("taskId") or ""),
+                "actor": str(e.get("actor") or ""),
+                "payload": e.get("payload") if isinstance(e.get("payload"), dict) else {},
+            }
+        )
+    rows.sort(key=lambda x: (parse_iso_ts(x.get("at")), str(x.get("at") or "")), reverse=True)
+    return rows[: max(1, limit)]
 
 
 def ensure_spawn_output_seq_queue(args: argparse.Namespace) -> List[str]:
@@ -3027,6 +3302,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_decompose.add_argument("--force-apply", action="store_true")
     p_decompose.add_argument("--decompose-output", default="")
     p_decompose.set_defaults(func=cmd_decompose_goal)
+
+    p_obs_report = sub.add_parser("observability-report")
+    p_obs_report.add_argument("--root", required=True)
+    p_obs_report.add_argument("--window-sec", type=int, default=604800)
+    p_obs_report.set_defaults(func=cmd_observability_report)
+
+    p_obs_timeline = sub.add_parser("observability-timeline")
+    p_obs_timeline.add_argument("--root", required=True)
+    p_obs_timeline.add_argument("--window-sec", type=int, default=604800)
+    p_obs_timeline.add_argument("--limit", type=int, default=50)
+    p_obs_timeline.set_defaults(func=cmd_observability_timeline)
+
+    p_obs_export = sub.add_parser("observability-export")
+    p_obs_export.add_argument("--root", required=True)
+    p_obs_export.add_argument("--window-sec", type=int, default=604800)
+    p_obs_export.add_argument("--limit", type=int, default=50)
+    p_obs_export.add_argument("--output", required=True)
+    p_obs_export.set_defaults(func=cmd_observability_export)
 
     p_clarify = sub.add_parser("clarify")
     p_clarify.add_argument("--root", required=True)

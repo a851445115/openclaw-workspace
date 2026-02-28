@@ -1289,6 +1289,121 @@ class RuntimeTests(unittest.TestCase):
         snapshot = json.loads((self.root / "state" / "tasks.snapshot.json").read_text(encoding="utf-8"))
         self.assertEqual(len(snapshot.get("tasks", {})), 0, snapshot)
 
+    def test_observability_report_includes_core_metrics(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-120: obs one",
+        ])
+        run_json([
+            "python3",
+            str(MILE),
+            "scheduler-run",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--mode",
+            "dry-run",
+            "--cycles",
+            "1",
+            "--autopilot-steps",
+            "1",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/obs.log","pytest passed"]}',
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "observability-report",
+            "--root",
+            str(self.root),
+            "--window-sec",
+            "86400",
+        ])
+        self.assertTrue(out["ok"], out)
+        metrics = out.get("metrics", {})
+        self.assertIn("throughputDone", metrics, out)
+        self.assertIn("cycleSuccessRate", metrics, out)
+        self.assertIn("meanCycleTimeSec", metrics, out)
+        self.assertIn("recoveryRate", metrics, out)
+        self.assertIn("blockReasons", metrics, out)
+
+    def test_observability_timeline_lists_interventions(self):
+        run_json([
+            "python3",
+            str(MILE),
+            "govern",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--action",
+            "pause",
+            "--reason",
+            "ops-check",
+        ])
+        run_json([
+            "python3",
+            str(MILE),
+            "govern",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--action",
+            "resume",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "observability-timeline",
+            "--root",
+            str(self.root),
+            "--limit",
+            "20",
+        ])
+        self.assertTrue(out["ok"], out)
+        timeline = out.get("timeline", [])
+        self.assertTrue(any(str(x.get("type")) == "governance_action" for x in timeline), out)
+
+    def test_observability_export_writes_file(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-121: obs export",
+        ])
+        out_file = self.root / "state" / "observability.export.json"
+        out = run_json([
+            "python3",
+            str(MILE),
+            "observability-export",
+            "--root",
+            str(self.root),
+            "--output",
+            str(out_file),
+            "--limit",
+            "10",
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertTrue(out_file.exists(), out)
+        payload = json.loads(out_file.read_text(encoding="utf-8"))
+        self.assertIn("report", payload, payload)
+        self.assertIn("timeline", payload, payload)
+
 
 if __name__ == "__main__":
     unittest.main()
