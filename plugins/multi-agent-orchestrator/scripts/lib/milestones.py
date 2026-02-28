@@ -941,6 +941,12 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
         print(json.dumps({"ok": True, "handled": True, "intent": "ignored_loop", "reason": "bot milestone echo"}))
         return 0
 
+    # A+1 default: do NOT spawn subagents on dispatch/run/verify unless explicitly enabled.
+    dispatch_spawn = bool(getattr(args, "dispatch_spawn", False))
+    # Back-compat: --dispatch-manual existed previously; manual is now the default.
+    if bool(getattr(args, "dispatch_manual", False)):
+        dispatch_spawn = False
+
     cmd_body = norm
     if norm.lower().startswith("@orchestrator"):
         cmd_body = norm[len("@orchestrator") :].strip()
@@ -1010,7 +1016,7 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             account_id=args.account_id,
             mode=args.mode,
             timeout_sec=args.timeout_sec,
-            spawn=not args.dispatch_manual,
+            spawn=dispatch_spawn,
             spawn_cmd=args.spawn_cmd,
             spawn_output=args.spawn_output,
         )
@@ -1071,7 +1077,7 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             account_id=args.account_id,
             mode=args.mode,
             timeout_sec=args.timeout_sec,
-            spawn=not args.dispatch_manual,
+            spawn=dispatch_spawn,
             spawn_cmd=args.spawn_cmd,
             spawn_output=args.spawn_output,
         )
@@ -1175,7 +1181,7 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             account_id=args.account_id,
             mode=args.mode,
             timeout_sec=args.timeout_sec,
-            spawn=not args.dispatch_manual,
+            spawn=dispatch_spawn,
             spawn_cmd=args.spawn_cmd,
             spawn_output=args.spawn_output,
         )
@@ -1211,7 +1217,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_dispatch.add_argument("--account-id", default=DEFAULT_ACCOUNT_ID)
     p_dispatch.add_argument("--mode", choices=["send", "dry-run"], default="send")
     p_dispatch.add_argument("--timeout-sec", type=int, default=120)
-    p_dispatch.add_argument("--spawn", dest="spawn", action="store_true", default=True)
+    # A+1 default: manual dispatch (send [CLAIM]/[TASK]) and wait for report.
+    # Enable spawn only when explicitly requested.
+    p_dispatch.add_argument("--spawn", dest="spawn", action="store_true", default=False)
     p_dispatch.add_argument("--no-spawn", dest="spawn", action="store_false")
     p_dispatch.add_argument("--spawn-cmd", default="")
     p_dispatch.add_argument("--spawn-output", default="")
@@ -1240,6 +1248,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_feishu.add_argument("--mode", choices=["send", "dry-run", "off"], default="send")
     p_feishu.add_argument("--session-id", default="")
     p_feishu.add_argument("--timeout-sec", type=int, default=120)
+    p_feishu.add_argument("--dispatch-spawn", action="store_true")
     p_feishu.add_argument("--dispatch-manual", action="store_true")
     p_feishu.add_argument("--spawn-cmd", default="")
     p_feishu.add_argument("--spawn-output", default="")
