@@ -12,7 +12,7 @@ Use local scripts as stable interfaces for task board operations.
 - Treat `state/tasks.jsonl` as append-only.
 - Treat `state/tasks.snapshot.json` as derived state.
 - Keep `@agent` override as routing metadata only in Milestone B.
-- Keep execution internal (`/subagents spawn`); Feishu group is for concise visibility only.
+- Keep execution internal (`dispatch` triggers spawn closed-loop by default); Feishu group remains concise milestone visibility.
 - Default broadcast authority: `orchestrator` only (optionally `broadcaster`).
 - Do not let non-orchestrator roles initiate proactive cross-bot mentions.
 
@@ -39,6 +39,4 @@ Use local scripts as stable interfaces for task board operations.
 
 ## Milestone C Follow-up
 
-- Strong lock ownership + stale lock recovery.
 - `[REVIEW]` event authoring and reviewer assignment workflow.
-- Replay/compaction tooling for large event logs.

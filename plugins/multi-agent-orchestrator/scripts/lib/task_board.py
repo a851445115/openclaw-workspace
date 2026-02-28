@@ -89,7 +89,10 @@ def acquire_board_lock(root: str, owner: str):
             "owner": owner,
             "pid": os.getpid(),
             "createdAt": now_iso(),
+            "createdAtTs": current_ts,
             "expiresAtTs": current_ts + LOCK_TTL_SEC,
+            "sessionId": os.environ.get("OPENCLAW_SESSION_ID", ""),
+            "host": os.uname().nodename,
         }
         try:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)

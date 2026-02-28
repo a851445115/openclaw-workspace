@@ -30,3 +30,6 @@ The scaffold exposes a minimal schema in `openclaw.plugin.json`.
 - Orchestrator workspace instructions should call `scripts/feishu-inbound-router` on inbound Feishu mention wrappers.
 - `feishu-inbound-router` extracts group/sender/text and forwards to `scripts/orchestrator-router`.
 - Keep `channel.groupId` aligned with bound Feishu group for correct milestone routing.
+
+- `feishu-router` now supports group command intents through orchestrator entry: create/claim/done/block/status/synthesize/escalate/dispatch/clarify.
+- Runtime guardrails include bot-to-bot milestone echo suppression and clarify global cooldown throttle.

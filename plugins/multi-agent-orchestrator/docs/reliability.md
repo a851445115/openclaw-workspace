@@ -84,9 +84,13 @@ Validation checks during replay:
 - keep last 7 snapshots with timestamp suffix for quick restore.
 - alert on replay mismatch and repeated lock contention.
 
-## 5) Related Stubs
+## 5) Implemented Tooling
 
 - `scripts/recover-stale-locks`
+  - dry-run/apply both supported
+  - stale判断基于 `expiresAtTs + grace` 与 `pid` 存活
+  - apply 模式写入 `state/locks/recovery.audit.jsonl` 审计记录
 - `scripts/rebuild-snapshot`
-
-Both scripts are intentionally dry-run first and ready for TODO-driven completion in Milestone C implementation.
+  - 回放 `tasks.jsonl` 重建 snapshot（含错误统计与 diff 摘要）
+  - apply 模式原子写出 rebuilt snapshot
+  - 可选 `--compact-jsonl` 输出去重压缩后的事件流

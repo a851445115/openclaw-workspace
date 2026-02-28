@@ -1,55 +1,162 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import signal
+import time
+from datetime import datetime, timezone
+from typing import Any, Dict, List
 
-ROOT=""
-TTL_SECONDS=30
-GRACE_SECONDS=15
-MODE="dry-run"
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --root)
-      ROOT="${2:-}"
-      shift 2
-      ;;
-    --ttl-seconds)
-      TTL_SECONDS="${2:-30}"
-      shift 2
-      ;;
-    --grace-seconds)
-      GRACE_SECONDS="${2:-15}"
-      shift 2
-      ;;
-    --apply)
-      MODE="apply"
-      shift
-      ;;
-    --dry-run)
-      MODE="dry-run"
-      shift
-      ;;
-    *)
-      echo "unknown argument: $1" >&2
-      exit 2
-      ;;
-  esac
-done
+def now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
-if [[ -z "$ROOT" ]]; then
-  echo "usage: recover-stale-locks --root <path> [--ttl-seconds <n>] [--grace-seconds <n>] [--dry-run|--apply]" >&2
-  exit 2
-fi
 
-LOCK_DIR="$ROOT/state/locks"
-if [[ ! -d "$LOCK_DIR" ]]; then
-  echo "{\"ok\": true, \"mode\": \"$MODE\", \"message\": \"no lock directory\", \"lockDir\": \"$LOCK_DIR\"}"
-  exit 0
-fi
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser()
+    p.add_argument('--root', required=True)
+    p.add_argument('--ttl-seconds', type=int, default=30)
+    p.add_argument('--grace-seconds', type=int, default=15)
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument('--apply', dest='mode', action='store_const', const='apply')
+    mode.add_argument('--dry-run', dest='mode', action='store_const', const='dry-run')
+    p.set_defaults(mode='dry-run')
+    return p.parse_args()
 
-# TODO (Milestone C implementation):
-# 1) Parse lock metadata JSON files.
-# 2) Determine stale locks by expiresAt + grace and optional owner pid liveness.
-# 3) In dry-run, print candidates only.
-# 4) In apply mode, remove only stale candidates and emit audit entries.
 
-echo "{\"ok\": true, \"mode\": \"$MODE\", \"lockDir\": \"$LOCK_DIR\", \"ttlSeconds\": $TTL_SECONDS, \"graceSeconds\": $GRACE_SECONDS, \"todo\": \"stale lock detection and recovery not implemented yet\"}"
+def read_json(path: str) -> Dict[str, Any]:
+    with open(path, 'r', encoding='utf-8') as f:
+        obj = json.load(f)
+    if isinstance(obj, dict):
+        return obj
+    return {}
+
+
+def pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def is_stale(meta: Dict[str, Any], ttl: int, grace: int, now_ts: int) -> Dict[str, Any]:
+    created = int(meta.get('createdAtTs') or 0)
+    expires_at = int(meta.get('expiresAtTs') or 0)
+    pid = int(meta.get('pid') or 0)
+
+    if expires_at <= 0 and created > 0:
+        expires_at = created + ttl
+
+    stale_by_ttl = expires_at > 0 and (now_ts > expires_at + grace)
+    owner_dead = pid > 0 and not pid_alive(pid)
+    stale_by_owner = owner_dead and (expires_at <= 0 or now_ts > expires_at)
+
+    stale = bool(stale_by_ttl or stale_by_owner)
+    reason = 'fresh'
+    if stale_by_ttl:
+        reason = 'expired'
+    elif stale_by_owner:
+        reason = 'owner-dead'
+
+    return {
+        'stale': stale,
+        'reason': reason,
+        'ownerDead': owner_dead,
+        'expiresAtTs': expires_at,
+    }
+
+
+def main() -> int:
+    args = parse_args()
+    lock_dir = os.path.join(args.root, 'state', 'locks')
+    now_ts = int(time.time())
+
+    if not os.path.isdir(lock_dir):
+        print(json.dumps({'ok': True, 'mode': args.mode, 'message': 'no lock directory', 'lockDir': lock_dir}))
+        return 0
+
+    scanned = 0
+    reclaimed = []
+    candidates = []
+    errors = []
+
+    for name in sorted(os.listdir(lock_dir)):
+        if not name.endswith('.lock'):
+            continue
+        scanned += 1
+        path = os.path.join(lock_dir, name)
+        try:
+            meta = read_json(path)
+        except Exception as err:
+            rec = {
+                'path': path,
+                'stale': True,
+                'reason': 'invalid-json',
+                'error': str(err),
+            }
+            candidates.append(rec)
+            if args.mode == 'apply':
+                try:
+                    os.remove(path)
+                    reclaimed.append(rec)
+                except Exception as rm_err:
+                    errors.append({'path': path, 'error': f'remove failed: {rm_err}'})
+            continue
+
+        check = is_stale(meta, args.ttl_seconds, args.grace_seconds, now_ts)
+        rec = {
+            'path': path,
+            'owner': meta.get('owner'),
+            'pid': meta.get('pid'),
+            'createdAt': meta.get('createdAt'),
+            'expiresAtTs': check['expiresAtTs'],
+            'stale': check['stale'],
+            'reason': check['reason'],
+            'ownerDead': check['ownerDead'],
+        }
+        if not check['stale']:
+            continue
+
+        candidates.append(rec)
+        if args.mode == 'apply':
+            try:
+                os.remove(path)
+                reclaimed.append(rec)
+            except Exception as rm_err:
+                errors.append({'path': path, 'error': f'remove failed: {rm_err}'})
+
+    audit = {}
+    if args.mode == 'apply' and reclaimed:
+        audit_path = os.path.join(args.root, 'state', 'locks', 'recovery.audit.jsonl')
+        with open(audit_path, 'a', encoding='utf-8') as f:
+            for rec in reclaimed:
+                row = {'at': now_iso(), 'action': 'reclaim_lock', **rec}
+                f.write(json.dumps(row, ensure_ascii=True) + '\n')
+        audit = {'path': audit_path, 'entries': len(reclaimed)}
+
+    ok = not errors
+    out = {
+        'ok': ok,
+        'mode': args.mode,
+        'lockDir': lock_dir,
+        'ttlSeconds': args.ttl_seconds,
+        'graceSeconds': args.grace_seconds,
+        'scanned': scanned,
+        'candidates': candidates,
+        'reclaimed': reclaimed,
+        'errors': errors,
+        'audit': audit,
+    }
+    print(json.dumps(out, ensure_ascii=True))
+    return 0 if ok else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

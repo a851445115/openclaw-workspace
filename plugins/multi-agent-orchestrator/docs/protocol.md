@@ -60,9 +60,9 @@ Prefix command text with `@agent-name` to attach routing metadata:
 ## Visibility vs Execution
 
 - Source of truth remains local task board files (`tasks.jsonl` + snapshot).
-- Default execution is manual dispatch: orchestrator sends `[CLAIM]`/`[TASK]` and waits for report-based completion.
-- Subagent execution is deferred for a later phase; v1 keeps manual dispatch only.
-- Group messages are milestone summaries for human observability; they are not task state.
+- Default execution is dispatch spawn closed-loop: orchestrator sends `[CLAIM]`/`[TASK]`, then parses spawn output and auto-writes `done`/`blocked`.
+- `--dispatch-manual` keeps backward-compatible manual mode (wait for report-based completion).
+- Group messages remain milestone summaries for human observability; task state source of truth is local board files.
 
 ## Broadcast Guardrails
 
@@ -91,9 +91,12 @@ Prefix command text with `@agent-name` to attach routing metadata:
 - `@orchestrator status [taskId]`
   - 无 taskId: 返回中文摘要（状态计数 + 阻塞Top + 待推进Top）
   - `status all` / `status full`: 返回扩展列表（仍有上限）
+- `@orchestrator create task ...` / `claim ...` / `done ...` / `block ...` / `escalate ...` / `synthesize [taskId]`
+- `@orchestrator dispatch <taskId> <role>: <task>`
+- `@orchestrator clarify <taskId> <role>: <question>`（带全局+角色节流）
 
 Wake-up v1: team members report progress/completion with `@orchestrator` (include task id like `T-001`).
-`@orchestrator run [taskId]` 默认只做认领+派发，不会自动完结。成员回报后由 orchestrator 更新为 `[DONE]` / `[BLOCKED]`。
+`@orchestrator run [taskId]` 默认执行认领+派发+spawn 闭环（自动完结为 `[DONE]` / `[BLOCKED]`）；需要人工回报模式时可启用 `--dispatch-manual`。
 bot->bot 派发模板会带 Feishu API mention 标签（如 `<at user_id="...">orchestrator</at>`），以便在 Feishu 中形成真实@提醒与 mention gating。
 人工用户仍通过 Feishu UI 直接输入 `@orchestrator` 即可，无需手写 mention 标签。
 若指定已完成任务（`done`），会返回幂等提示：`[DONE] T-xxx 已完成，无需重复执行`，且不改状态。

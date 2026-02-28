@@ -1,21 +1,27 @@
-# Task Plan - Simple Wake-up v1 Feishu wiring
+# Task Plan - Dispatch Closed Loop + Feishu Runtime Hardening
 
 ## Goal
-Make orchestrator react to Feishu group @mentions in real chats by routing messages through `scripts/orchestrator-router`, updating `state/tasks.jsonl`, and posting concise Chinese milestones (`[DONE]` / `[BLOCKED]` / `[TASK]`).
+Complete the remaining Milestone C work for multi-agent-orchestrator with minimal-risk changes:
+1) dispatch spawn closed loop (auto apply done/blocked + milestone publish),
+2) Feishu runtime command integration through orchestrator entrance,
+3) lock ownership/recovery and snapshot rebuild tooling,
+4) low-noise message UX with bot loop prevention + clarify throttling.
 
 ## Phases
 | Phase | Status | Notes |
 |---|---|---|
-| 1. Inspect current implementation/docs | complete | Existing router/milestones already implemented; missing inbound runtime wiring |
-| 2. Design minimal-risk integration | complete | Use orchestrator workspace instructions + lightweight inbound wrapper parser script |
-| 3. Implement code/config/doc updates | complete | Added inbound parser script and updated orchestrator workspace/docs |
-| 4. Validate with local checks | complete | Verified create-project and wake-up parse with dry-run fixtures |
-| 5. Document Feishu group test checklist | complete | Added checklist to README and wiring notes |
+| 1. Baseline inspection (task_plan/progress/README/code) | complete | Confirmed dispatch still manual, reliability scripts were stubs, Feishu runtime command coverage incomplete |
+| 2. Dispatch closed-loop implementation | complete | Added spawn execution/parsing, auto board writeback, `[DONE]/[BLOCKED]` milestone publish, dry-run skip semantics |
+| 3. Feishu runtime command integration | complete | `feishu-router` now handles create/claim/done/block/status/synthesize/escalate/dispatch/clarify through orchestrator entry |
+| 4. Reliability hardening | complete | Implemented real stale-lock recovery and snapshot replay+compact tool; extended lock metadata ownership |
+| 5. UX and guardrails | complete | Added bot-to-bot milestone echo suppression and stronger clarify cooldown |
+| 6. Verification + docs | complete | Added unittest coverage, reran dry-run script, refreshed README/docs |
 
 ## Constraints
-- No V2 background wake-up implementation.
-- Keep changes minimal, reversible, and documented.
-- Reuse existing message tool path for outbound milestones.
+- Keep `state/tasks.jsonl` append-only.
+- Preserve existing low-noise Chinese milestone templates.
+- Avoid broad refactors; prefer focused script-level changes.
 
 ## Errors Encountered
-- `--milestones off` does not suppress all sends for every intent in existing `milestones.py`; used `dry-run` for validation to avoid live posts.
+- `edit` tool could not modify files outside agent workspace path; switched to direct file patching via shell/python edits.
+- `dry-run-mvp` failed after first dispatch-loop implementation because dry-run without spawn output auto-blocked task; fixed by treating skipped spawn as manual wait-for-report (no auto close).

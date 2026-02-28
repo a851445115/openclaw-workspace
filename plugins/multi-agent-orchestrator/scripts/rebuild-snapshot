@@ -1,64 +1,268 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import tempfile
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Set, Tuple
 
-ROOT=""
-MODE="dry-run"
-INPUT_JSONL=""
-OUTPUT_SNAPSHOT=""
+ALLOWED_STATUS = {"pending", "claimed", "in_progress", "review", "done", "blocked", "failed"}
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --root)
-      ROOT="${2:-}"
-      shift 2
-      ;;
-    --input)
-      INPUT_JSONL="${2:-}"
-      shift 2
-      ;;
-    --output)
-      OUTPUT_SNAPSHOT="${2:-}"
-      shift 2
-      ;;
-    --apply)
-      MODE="apply"
-      shift
-      ;;
-    --dry-run)
-      MODE="dry-run"
-      shift
-      ;;
-    *)
-      echo "unknown argument: $1" >&2
-      exit 2
-      ;;
-  esac
-done
 
-if [[ -z "$ROOT" ]]; then
-  echo "usage: rebuild-snapshot --root <path> [--input <tasks.jsonl>] [--output <tasks.snapshot.json>] [--dry-run|--apply]" >&2
-  exit 2
-fi
+def now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
-if [[ -z "$INPUT_JSONL" ]]; then
-  INPUT_JSONL="$ROOT/state/tasks.jsonl"
-fi
 
-if [[ -z "$OUTPUT_SNAPSHOT" ]]; then
-  OUTPUT_SNAPSHOT="$ROOT/state/tasks.snapshot.rebuilt.json"
-fi
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser()
+    p.add_argument('--root', required=True)
+    p.add_argument('--input', default='')
+    p.add_argument('--output', default='')
+    p.add_argument('--compact-jsonl', default='')
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument('--apply', dest='mode', action='store_const', const='apply')
+    mode.add_argument('--dry-run', dest='mode', action='store_const', const='dry-run')
+    p.set_defaults(mode='dry-run')
+    return p.parse_args()
 
-if [[ ! -f "$INPUT_JSONL" ]]; then
-  echo "{\"ok\": false, \"error\": \"missing input jsonl\", \"input\": \"$INPUT_JSONL\"}" >&2
-  exit 1
-fi
 
-# TODO (Milestone C implementation):
-# 1) Replay all events from tasks.jsonl using deterministic reducer.
-# 2) Build canonical snapshot object.
-# 3) Compare rebuilt snapshot with live snapshot hash.
-# 4) In dry-run, report diff summary only.
-# 5) In apply mode, write output snapshot atomically.
+def default_task(task_id: str) -> Dict[str, Any]:
+    return {
+        'taskId': task_id,
+        'title': 'untitled',
+        'status': 'pending',
+        'owner': None,
+        'assigneeHint': None,
+        'createdBy': None,
+        'createdAt': None,
+        'updatedAt': None,
+        'blockedReason': None,
+        'result': None,
+        'review': None,
+        'relatedTo': None,
+        'projectId': None,
+        'history': [],
+    }
 
-LINE_COUNT=$(wc -l < "$INPUT_JSONL" | tr -d ' ')
-echo "{\"ok\": true, \"mode\": \"$MODE\", \"input\": \"$INPUT_JSONL\", \"output\": \"$OUTPUT_SNAPSHOT\", \"events\": $LINE_COUNT, \"todo\": \"replay reducer not implemented yet\"}"
+
+def read_events(path: str) -> Tuple[List[Dict[str, Any]], List[str]]:
+    events: List[Dict[str, Any]] = []
+    errors: List[str] = []
+    seen: Set[str] = set()
+    with open(path, 'r', encoding='utf-8') as f:
+        for idx, line in enumerate(f, start=1):
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                obj = json.loads(raw)
+            except Exception as err:
+                errors.append(f'line {idx}: invalid json: {err}')
+                continue
+            if not isinstance(obj, dict):
+                errors.append(f'line {idx}: event is not object')
+                continue
+            event_id = str(obj.get('eventId') or '').strip()
+            task_id = str(obj.get('taskId') or '').strip()
+            event_type = str(obj.get('type') or '').strip()
+            if not event_id or not task_id or not event_type:
+                errors.append(f'line {idx}: missing required keys')
+                continue
+            if event_id in seen:
+                errors.append(f'line {idx}: duplicate eventId {event_id}')
+                continue
+            seen.add(event_id)
+            events.append(obj)
+    return events, errors
+
+
+def replay(events: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], List[str]]:
+    tasks: Dict[str, Dict[str, Any]] = {}
+    errors: List[str] = []
+
+    def get_task(task_id: str) -> Dict[str, Any]:
+        if task_id not in tasks:
+            tasks[task_id] = default_task(task_id)
+        return tasks[task_id]
+
+    for event in events:
+        task_id = str(event.get('taskId'))
+        event_type = str(event.get('type'))
+        payload = event.get('payload') if isinstance(event.get('payload'), dict) else {}
+        at = str(event.get('at') or now_iso())
+        actor = str(event.get('actor') or '')
+        task = get_task(task_id)
+        task['history'].append(event.get('eventId'))
+        task['updatedAt'] = at
+
+        if event_type in {'task_created', 'diag_task_created'}:
+            if task['createdAt'] is None:
+                task['createdAt'] = at
+            if task['createdBy'] is None:
+                task['createdBy'] = actor or 'orchestrator'
+            task['title'] = str(payload.get('title') or task['title'] or 'untitled')
+            task['assigneeHint'] = payload.get('assigneeHint', task.get('assigneeHint'))
+            if event_type == 'diag_task_created':
+                task['relatedTo'] = payload.get('relatedTo', task.get('relatedTo'))
+                task['status'] = 'pending'
+            continue
+
+        if task['createdAt'] is None:
+            task['createdAt'] = at
+            task['createdBy'] = actor or 'orchestrator'
+
+        if event_type == 'task_claimed':
+            to_status = str(payload.get('to') or 'claimed')
+            task['status'] = to_status if to_status in ALLOWED_STATUS else 'claimed'
+            task['owner'] = payload.get('owner', task.get('owner'))
+            continue
+
+        if event_type == 'task_done':
+            task['status'] = 'done'
+            if payload.get('result'):
+                task['result'] = payload.get('result')
+            continue
+
+        if event_type == 'task_blocked':
+            task['status'] = 'blocked'
+            if payload.get('reason'):
+                task['blockedReason'] = payload.get('reason')
+            continue
+
+        errors.append(f"unknown event type: {event_type} ({task_id})")
+
+    snapshot = {
+        'tasks': tasks,
+        'meta': {
+            'version': 2,
+            'updatedAt': events[-1].get('at') if events else now_iso(),
+            'rebuild': {
+                'events': len(events),
+                'generatedAt': now_iso(),
+                'errors': len(errors),
+            },
+        },
+    }
+    return snapshot, errors
+
+
+def compact_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    compacted: List[Dict[str, Any]] = []
+    seen_keys: Set[str] = set()
+    for event in reversed(events):
+        task_id = str(event.get('taskId') or '')
+        event_type = str(event.get('type') or '')
+        payload = event.get('payload') if isinstance(event.get('payload'), dict) else {}
+        payload_key = json.dumps(payload, sort_keys=True, ensure_ascii=True)
+        key = f"{task_id}:{event_type}:{payload_key}"
+        if key in seen_keys and event_type not in {'task_created', 'diag_task_created'}:
+            continue
+        seen_keys.add(key)
+        compacted.append(event)
+    compacted.reverse()
+    return compacted
+
+
+def write_json_atomic(path: str, obj: Dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix='.rebuild.', suffix='.json', dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(obj, f, ensure_ascii=True, indent=2)
+            f.write('\n')
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def write_jsonl_atomic(path: str, rows: List[Dict[str, Any]]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix='.compact.', suffix='.jsonl', dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            for row in rows:
+                f.write(json.dumps(row, ensure_ascii=True) + '\n')
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def load_snapshot(path: str) -> Dict[str, Any]:
+    if not os.path.exists(path):
+        return {'tasks': {}, 'meta': {}}
+    with open(path, 'r', encoding='utf-8') as f:
+        obj = json.load(f)
+    return obj if isinstance(obj, dict) else {'tasks': {}, 'meta': {}}
+
+
+def diff_summary(live: Dict[str, Any], rebuilt: Dict[str, Any]) -> Dict[str, Any]:
+    live_tasks = live.get('tasks', {}) if isinstance(live.get('tasks'), dict) else {}
+    new_tasks = rebuilt.get('tasks', {}) if isinstance(rebuilt.get('tasks'), dict) else {}
+    live_ids = set(live_tasks.keys())
+    new_ids = set(new_tasks.keys())
+
+    changed = 0
+    for tid in sorted(live_ids & new_ids):
+        lhs = json.dumps(live_tasks.get(tid), sort_keys=True, ensure_ascii=True)
+        rhs = json.dumps(new_tasks.get(tid), sort_keys=True, ensure_ascii=True)
+        if lhs != rhs:
+            changed += 1
+
+    return {
+        'liveTaskCount': len(live_ids),
+        'rebuiltTaskCount': len(new_ids),
+        'addedTasks': len(new_ids - live_ids),
+        'removedTasks': len(live_ids - new_ids),
+        'changedTasks': changed,
+    }
+
+
+def main() -> int:
+    args = parse_args()
+    input_jsonl = args.input or os.path.join(args.root, 'state', 'tasks.jsonl')
+    output_snapshot = args.output or os.path.join(args.root, 'state', 'tasks.snapshot.rebuilt.json')
+    live_snapshot_path = os.path.join(args.root, 'state', 'tasks.snapshot.json')
+
+    if not os.path.isfile(input_jsonl):
+        print(json.dumps({'ok': False, 'error': 'missing input jsonl', 'input': input_jsonl}, ensure_ascii=True))
+        return 1
+
+    events, parse_errors = read_events(input_jsonl)
+    rebuilt, replay_errors = replay(events)
+    compacted = compact_events(events)
+    live = load_snapshot(live_snapshot_path)
+    diff = diff_summary(live, rebuilt)
+
+    apply_errors: List[str] = []
+    if args.mode == 'apply':
+        try:
+            write_json_atomic(output_snapshot, rebuilt)
+        except Exception as err:
+            apply_errors.append(f'write snapshot failed: {err}')
+        if args.compact_jsonl:
+            try:
+                write_jsonl_atomic(args.compact_jsonl, compacted)
+            except Exception as err:
+                apply_errors.append(f'write compact jsonl failed: {err}')
+
+    ok = not parse_errors and not replay_errors and not apply_errors
+    out = {
+        'ok': ok,
+        'mode': args.mode,
+        'input': input_jsonl,
+        'output': output_snapshot,
+        'events': len(events),
+        'compactedEvents': len(compacted),
+        'errors': parse_errors + replay_errors + apply_errors,
+        'diff': diff,
+    }
+    if args.compact_jsonl:
+        out['compactJsonl'] = args.compact_jsonl
+    print(json.dumps(out, ensure_ascii=True))
+    return 0 if ok else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

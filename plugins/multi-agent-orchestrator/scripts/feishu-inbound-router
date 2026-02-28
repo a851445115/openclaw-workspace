@@ -44,6 +44,19 @@ def resolve_actor(conv: Dict[str, Any], sender: Dict[str, Any]) -> str:
     return "unknown"
 
 
+def is_bot_sender(actor: str, sender: Dict[str, Any]) -> bool:
+    actor_norm = (actor or "").strip().lower()
+    if actor_norm in {"orchestrator", "coder", "debugger", "invest-analyst", "broadcaster"}:
+        return True
+    for key in ("is_bot", "isBot"):
+        if bool(sender.get(key)):
+            return True
+    sender_type = str(sender.get("sender_type") or sender.get("type") or "").strip().lower()
+    if "bot" in sender_type:
+        return True
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True)
@@ -69,6 +82,23 @@ def main() -> int:
     was_mentioned = bool(conv.get("was_mentioned"))
     if was_mentioned and "@orchestrator" not in text.lower():
         text = f"@orchestrator {text}".strip()
+
+    if is_bot_sender(actor, sender):
+        stripped = text.strip()
+        if actor.lower() == args.account_id.lower() or stripped.startswith(("[TASK]", "[CLAIM]", "[DONE]", "[BLOCKED]", "[DIAG]", "[REVIEW]")):
+            out = {
+                "ok": True,
+                "handled": True,
+                "actor": actor,
+                "groupId": group_id,
+                "text": text,
+                "routerExitCode": 0,
+                "router": {"ok": True, "handled": True, "intent": "ignored_loop"},
+                "routerStdout": "",
+                "routerStderr": "",
+            }
+            print(json.dumps(out, ensure_ascii=True))
+            return 0
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     router = os.path.join(script_dir, "orchestrator-router")

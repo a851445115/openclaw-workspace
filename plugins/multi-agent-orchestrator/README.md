@@ -12,11 +12,11 @@ Implemented in this MVP:
   - `@orchestrator status` (默认短摘要，含计数 + 阻塞Top + 待推进Top，目标<500字)
   - `@orchestrator status all` / `@orchestrator status full` (扩展调试视图)
 - Simple Wake-up v1:
-  - 默认手动派发（manual dispatch）：orchestrator 发布 `[CLAIM]` + `[TASK]` 分配任务
-  - 被指派成员执行后，需通过 `@orchestrator` 汇报进展/完成/阻塞
-  - bot 对 bot 汇报会自动插入 Feishu API mention 标签（`<at user_id="...">name</at>`），确保真实@到 orchestrator
-  - orchestrator 根据汇报更新看板并发布中文里程碑消息
-- 子代理自动派发在 v1 中默认关闭（后续版本再引入），当前避免 `/subagents spawn ...` 链路风险。
+  - `@orchestrator run` / `dispatch` 会发布 `[CLAIM]` + `[TASK]`，并执行 spawn 闭环（默认开启）
+  - spawn 完成后自动解析子代理输出，回写看板为 `done` / `blocked`，并发布 `[DONE]` / `[BLOCKED]` 中文里程碑
+  - 被指派成员也可通过 `@orchestrator` 主动汇报完成/阻塞，仍会更新看板并发布低噪里程碑
+  - bot 对 bot 派发模板自动插入 Feishu API mention 标签（`<at user_id="...">name</at>`），确保真实@到 orchestrator
+  - 内置 bot 回环保护与 clarify 节流，避免群内噪声和循环触发。
 - Feishu inbound wiring helper for orchestrator agent:
   - `scripts/feishu-inbound-router` parses OpenClaw Feishu wrapper text
   - routes `@orchestrator` mentions into `scripts/orchestrator-router`
@@ -26,7 +26,7 @@ Implemented in this MVP:
 
 - `openclaw.plugin.json`: plugin manifest and config schema.
 - `scripts/lib/task_board.py`: board engine (route/apply/status) with lock discipline.
-- `scripts/lib/milestones.py`: Feishu parser, wake-up flow, milestone publishing, manual dispatch logic.
+- `scripts/lib/milestones.py`: Feishu parser, wake-up flow, milestone publishing, dispatch spawn 闭环。
 - `scripts/orchestrator-router`: unified command entrypoint.
 - `scripts/feishu-inbound-router`: parse Feishu inbound wrapper and call router.
 - `scripts/dispatch-task`: direct dispatch/clarify wrapper.
@@ -85,8 +85,8 @@ cat inbound.txt | ./scripts/feishu-inbound-router --root .
    - bot 回报应使用 API mention 标签（由调度模板自动生成），Feishu UI 中 orchestrator 会被高亮@到
 5. Send blocked report:
    - `@orchestrator T-001 阻塞，错误日志在 tmp/error.log`
-6. 子代理自动派发暂未启用（Simple Wake-up v1 采用手动派发 + 汇报闭环）。
-6. Validate chat output style:
+6. 验证派发闭环（默认 `run` 会自动 spawn + 回写看板，`--dispatch-manual` 可退回手动模式）。
+7. Validate chat output style:
    - `@orchestrator status` returns compact Chinese board summary (counts + blocked/pending top items)
    - `@orchestrator status full` returns a longer but capped list for debugging
    - milestone messages remain concise with `[TASK]`, `[DONE]`, `[BLOCKED]` (no raw CLI logs)
@@ -97,7 +97,7 @@ Run `python3 examples/hello_world.py`.
 
 ## Coder Auto-Task Autopilot (Simulation)
 
-Simple Wake-up v1 still uses manual dispatch by orchestrator, but coder can auto-start when it receives a clear `[TASK]` assignment.
+Simple Wake-up v1 默认使用 dispatch spawn 闭环；如需兼容旧流程，可用 `--dispatch-manual` 仅发布 `[TASK]` 模板。
 
 Local simulation command:
 

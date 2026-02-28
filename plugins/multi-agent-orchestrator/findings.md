@@ -1,9 +1,8 @@
 # Findings
 
 ## 2026-02-28
-- Session started; pending repository inspection.
-- `scripts/lib/milestones.py` already supports command parsing + wake-up + Chinese milestones; runtime gap was inbound wrapper wiring at orchestrator workspace level.
-- Added `scripts/feishu-inbound-router` to extract group/sender/message from OpenClaw Feishu wrapper and forward to `scripts/orchestrator-router`.
-- Updated orchestrator workspace `AGENTS.md` + `BOOTSTRAP.md` so runtime behavior routes mentions before free-form replies.
-- Existing behavior note: `create_project` / `status` paths in `milestones.py` still call `send_group_message` even when `--milestones off`; use `dry-run` (not `off`) for safe testing.
-
+- `cmd_dispatch` previously only sent `[CLAIM]/[TASK]` and waited for report; no spawn result ingestion or board writeback.
+- `feishu-router` only handled create/run/status + wake-up report; explicit command intents (`claim/done/block/synthesize/escalate/dispatch/clarify`) were not wired from group messages.
+- `recover-stale-locks` and `rebuild-snapshot` were pure TODO stubs.
+- Dry-run semantics required special handling: when spawn is skipped in dry-run, dispatch should remain manual (wait-for-report) instead of auto-blocking.
+- Bot loop risk exists when orchestrator/bot milestones are re-ingested from Feishu wrappers; guard needed before routing.
