@@ -20,6 +20,13 @@ DONE_HINTS = ("[DONE]", " done", "completed", "finish", "完成", "已完成", "
 BLOCKED_HINTS = ("[BLOCKED]", "blocked", "failed", "error", "exception", "失败", "阻塞", "卡住", "无法")
 EVIDENCE_HINTS = ("/", ".py", ".md", "http", "截图", "日志", "log", "输出", "result", "测试")
 STAGE_ONLY_HINTS = ("接下来", "下一步", "准备", "我先", "随后", "稍后", "计划", "will", "next", "going to", "plan to")
+HARD_EVIDENCE_PATTERNS = (
+    r"https?://",
+    r"\b[\w./-]+\.(?:py|md|json|yaml|yml|log|txt|csv|png|jpg|jpeg|webp)\b",
+    r"\blogs?/[\w./-]+\b",
+    r"\bpytest\b.*\b(pass|passed|failed)\b",
+    r"\btest(?:s)?\b.*\b(pass|passed|failed)\b",
+)
 BOT_OPENID_CONFIG_CANDIDATES = (
     os.path.join("config", "feishu-bot-openids.json"),
     os.path.join("state", "feishu-bot-openids.json"),
@@ -312,6 +319,103 @@ def normalize_string_list(value: Any, limit: int = 6, item_limit: int = 180) -> 
     return out[:limit]
 
 
+def looks_like_hard_evidence(text: str) -> bool:
+    s = (text or "").strip()
+    if not s:
+        return False
+    lower = s.lower()
+    for pat in HARD_EVIDENCE_PATTERNS:
+        if re.search(pat, lower, flags=re.IGNORECASE):
+            return True
+    return False
+
+
+def count_hard_evidence(items: List[str]) -> int:
+    return sum(1 for item in items if looks_like_hard_evidence(item))
+
+
+def normalize_verify_commands(value: Any, limit: int = 6) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    if isinstance(value, str):
+        cmd = clip(value, 500)
+        if cmd:
+            out.append({"cmd": cmd, "expectedExit": 0, "cwd": "", "timeoutSec": 45})
+        return out
+    if not isinstance(value, list):
+        return out
+    for item in value:
+        if isinstance(item, str):
+            cmd = clip(item, 500)
+            if cmd:
+                out.append({"cmd": cmd, "expectedExit": 0, "cwd": "", "timeoutSec": 45})
+        elif isinstance(item, dict):
+            cmd = clip(str(item.get("cmd") or item.get("command") or ""), 500)
+            if not cmd:
+                continue
+            out.append(
+                {
+                    "cmd": cmd,
+                    "expectedExit": parse_int(item.get("expectedExit", 0), 0),
+                    "cwd": clip(str(item.get("cwd") or ""), 200),
+                    "timeoutSec": max(1, min(120, parse_int(item.get("timeoutSec", 45), 45))),
+                }
+            )
+        if len(out) >= limit:
+            break
+    return out
+
+
+def run_verify_commands(root: str, commands: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    results: List[Dict[str, Any]] = []
+    for item in commands:
+        cmd_text = str(item.get("cmd") or "").strip()
+        expected_exit = parse_int(item.get("expectedExit", 0), 0)
+        cwd_hint = str(item.get("cwd") or "").strip()
+        timeout_sec = max(1, min(120, parse_int(item.get("timeoutSec", 45), 45)))
+        if not cmd_text:
+            continue
+        cwd = root
+        if cwd_hint:
+            candidate = cwd_hint if os.path.isabs(cwd_hint) else os.path.join(root, cwd_hint)
+            if os.path.isdir(candidate):
+                cwd = candidate
+        try:
+            proc = subprocess.run(
+                shlex.split(cmd_text),
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout_sec,
+            )
+            exit_code = int(proc.returncode)
+            ok = exit_code == expected_exit
+            results.append(
+                {
+                    "cmd": cmd_text,
+                    "cwd": cwd,
+                    "expectedExit": expected_exit,
+                    "exitCode": exit_code,
+                    "ok": ok,
+                    "stdout": clip(proc.stdout or "", 260),
+                    "stderr": clip(proc.stderr or "", 260),
+                }
+            )
+        except Exception as err:
+            results.append(
+                {
+                    "cmd": cmd_text,
+                    "cwd": cwd,
+                    "expectedExit": expected_exit,
+                    "exitCode": -1,
+                    "ok": False,
+                    "stdout": "",
+                    "stderr": clip(str(err), 260),
+                }
+            )
+    return results
+
+
 def compact_event_payload(payload: Any) -> Any:
     if not isinstance(payload, dict):
         return clip(str(payload), 120)
@@ -433,6 +537,7 @@ def build_structured_output_schema(task_id: str, agent: str) -> Dict[str, Any]:
         "summary": "一句话结果摘要",
         "changes": [{"path": "文件路径", "summary": "改动说明"}],
         "evidence": ["日志/命令输出/截图路径/链接"],
+        "verifyCommands": [{"cmd": "pytest -q", "expectedExit": 0, "cwd": ".", "timeoutSec": 60}],
         "risks": ["潜在风险或注意事项"],
         "nextActions": ["下一步建议（可为空）"],
     }
@@ -478,7 +583,8 @@ def build_agent_prompt(root: str, task: Dict[str, Any], agent: str, dispatch_tas
             "1. Return one valid JSON object only (no markdown fence, no extra text).",
             "2. Keep taskId and agent fields consistent with TASK_CONTEXT.",
             "3. status=done must include concrete evidence entries.",
-            "4. If blocked, summary must state blocker cause clearly.",
+            "4. verifyCommands is optional; if provided, each command must pass expectedExit.",
+            "5. If blocked, summary must state blocker cause clearly.",
         ]
     )
     prompt = "\n".join(lines)
@@ -742,12 +848,15 @@ def normalize_spawn_report(task_id: str, role: str, spawn_obj: Dict[str, Any], f
     if isinstance(spawn_obj.get("report"), dict):
         base = spawn_obj.get("report")
 
+    source_task_id = str(base.get("taskId") or spawn_obj.get("taskId") or "").strip()
+    source_agent = str(base.get("agent") or spawn_obj.get("agent") or "").strip()
     status_hint = str(base.get("status") or spawn_obj.get("status") or base.get("taskStatus") or "").strip().lower()
     summary = clip(
         str(base.get("summary") or base.get("message") or base.get("result") or base.get("output") or ""),
         260,
     )
     evidence = normalize_string_list(base.get("evidence"))
+    verify_commands = normalize_verify_commands(base.get("verifyCommands") or base.get("verify"))
     risks = normalize_string_list(base.get("risks"))
     next_actions = normalize_string_list(base.get("nextActions") or base.get("next"))
 
@@ -792,14 +901,17 @@ def normalize_spawn_report(task_id: str, role: str, spawn_obj: Dict[str, Any], f
 
     structured = bool(
         isinstance(base, dict)
-        and any(k in base for k in ("summary", "evidence", "changes", "nextActions", "risks", "status"))
+        and any(k in base for k in ("summary", "evidence", "changes", "nextActions", "risks", "status", "verifyCommands"))
     )
     return {
         "taskId": task_id,
         "agent": role,
+        "sourceTaskId": source_task_id,
+        "sourceAgent": source_agent,
         "status": status_hint,
         "summary": summary,
         "evidence": evidence,
+        "verifyCommands": verify_commands,
         "changes": changes,
         "risks": risks,
         "nextActions": next_actions,
@@ -840,7 +952,7 @@ def classify_spawn_result(root: str, task_id: str, role: str, spawn_obj: Dict[st
         "succeeded",
     } or kind == "done"
     if maybe_done:
-        accepted = evaluate_acceptance(root, role, text or detail)
+        accepted = evaluate_acceptance(root, role, text or detail, report=report, task_id=task_id)
         if accepted.get("ok"):
             return {
                 "decision": "done",
@@ -848,13 +960,15 @@ def classify_spawn_result(root: str, task_id: str, role: str, spawn_obj: Dict[st
                 "reasonCode": "done_with_evidence",
                 "report": report,
             }
+        reject_code = str(accepted.get("reasonCode") or "incomplete_output")
         return {
             "decision": "blocked",
             "detail": clip(
                 f"{detail or text or f'{task_id} 子代理结果未通过验收'} | {accepted.get('reason') or '未通过验收策略'}",
                 200,
             ),
-            "reasonCode": "incomplete_output",
+            "reasonCode": reject_code,
+            "acceptance": accepted,
             "report": report,
         }
 
@@ -1071,7 +1185,18 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
             and not str(getattr(args, "spawn_output", "") or "").strip()
             and not str(getattr(args, "spawn_output_seq", "") or "").strip()
             and spawn.get("decision") == "blocked"
-            and str(spawn.get("reasonCode") or "") in {"incomplete_output", "missing_evidence", "stage_only", "role_policy_missing_keyword"}
+            and str(spawn.get("reasonCode") or "")
+            in {
+                "incomplete_output",
+                "missing_evidence",
+                "missing_hard_evidence",
+                "stage_only",
+                "role_policy_missing_keyword",
+                "schema_task_mismatch",
+                "schema_agent_mismatch",
+                "schema_status_invalid",
+                "schema_missing_summary",
+            }
         ):
             retry_prompt = clip(
                 agent_prompt
@@ -1204,10 +1329,13 @@ def run_autopilot(args: argparse.Namespace) -> Dict[str, Any]:
     if args.actor != "orchestrator":
         return {"ok": False, "error": "autopilot is restricted to actor=orchestrator", "handled": True, "intent": "autopilot"}
     max_steps = max(1, parse_int(getattr(args, "max_steps", 1), 1))
+    step_time_budget_sec = parse_int(getattr(args, "step_time_budget_sec", -1), -1)
     steps: List[Dict[str, Any]] = []
     summary = {"done": 0, "blocked": 0, "manual": 0}
     stop_reason = "no_runnable_task"
+    reason_code = "no_runnable_task"
     ok = True
+    started_at = time.time()
 
     shared_seq: Optional[List[str]] = None
     if str(getattr(args, "spawn_output_seq", "") or "").strip():
@@ -1222,6 +1350,7 @@ def run_autopilot(args: argparse.Namespace) -> Dict[str, Any]:
                 "stepsRun": 0,
                 "summary": summary,
                 "stopReason": "invalid_spawn_output_seq",
+                "reasonCode": "invalid_spawn_output_seq",
                 "error": str(err),
                 "visibilityMode": str(getattr(args, "visibility_mode", VISIBILITY_MODES[0])),
                 "steps": [],
@@ -1231,10 +1360,12 @@ def run_autopilot(args: argparse.Namespace) -> Dict[str, Any]:
         task = choose_task_for_run(args.root, "")
         if not isinstance(task, dict):
             stop_reason = "no_runnable_task"
+            reason_code = "no_runnable_task"
             break
         task_id = str(task.get("taskId") or "").strip()
         if not task_id:
             stop_reason = "invalid_task"
+            reason_code = "invalid_task"
             ok = False
             break
 
@@ -1263,12 +1394,29 @@ def run_autopilot(args: argparse.Namespace) -> Dict[str, Any]:
         )
         if shared_seq is not None:
             d_args._spawn_output_seq_queue = shared_seq
+        step_started = time.time()
         dispatch_result = dispatch_once(d_args)
-        steps.append({"index": idx + 1, "taskId": task_id, "agent": agent, "dispatch": dispatch_result})
+        step_elapsed_sec = round(time.time() - step_started, 3)
+        steps.append(
+            {
+                "index": idx + 1,
+                "taskId": task_id,
+                "agent": agent,
+                "stepElapsedSec": step_elapsed_sec,
+                "dispatch": dispatch_result,
+            }
+        )
+
+        if step_time_budget_sec >= 0 and step_elapsed_sec > step_time_budget_sec:
+            ok = False
+            stop_reason = "task_time_budget_exceeded"
+            reason_code = "task_time_budget_exceeded"
+            break
 
         if not dispatch_result.get("ok"):
             ok = False
             stop_reason = "dispatch_failed"
+            reason_code = str((dispatch_result.get("spawn") or {}).get("reasonCode") or "dispatch_failed")
             break
 
         if dispatch_result.get("autoClose"):
@@ -1279,15 +1427,19 @@ def run_autopilot(args: argparse.Namespace) -> Dict[str, Any]:
         else:
             summary["manual"] += 1
         stop_reason = "max_steps_reached"
+        reason_code = "max_steps_reached"
 
     return {
         "ok": ok,
         "handled": True,
         "intent": "autopilot",
         "maxSteps": max_steps,
+        "stepTimeBudgetSec": step_time_budget_sec,
         "stepsRun": len(steps),
         "summary": summary,
         "stopReason": stop_reason,
+        "reasonCode": reason_code,
+        "elapsedSec": round(time.time() - started_at, 3),
         "visibilityMode": str(getattr(args, "visibility_mode", VISIBILITY_MODES[0])),
         "steps": steps,
     }
@@ -1359,9 +1511,18 @@ def cmd_scheduler_run(args: argparse.Namespace) -> int:
 
     cycles = max(1, parse_int(getattr(args, "cycles", 1), 1))
     autopilot_steps = max(1, parse_int(getattr(args, "autopilot_steps", 1), 1))
+    task_time_budget_sec = parse_int(getattr(args, "task_time_budget_sec", -1), -1)
+    cycle_time_budget_sec = parse_int(getattr(args, "cycle_time_budget_sec", -1), -1)
+    budget_degrade = str(getattr(args, "budget_degrade", "stop_run") or "stop_run").strip().lower()
+    if budget_degrade not in {"stop_run", "manual_handoff", "reduced_context"}:
+        budget_degrade = "stop_run"
     cycles_out: List[Dict[str, Any]] = []
     ok = True
     stop_reason = "completed"
+    reason_code = "completed"
+    started_at = time.time()
+    degrade_applied = ""
+    spawn_enabled = bool(getattr(args, "spawn", True))
 
     shared_seq: Optional[List[str]] = None
     if str(getattr(args, "spawn_output_seq", "") or "").strip():
@@ -1382,7 +1543,26 @@ def cmd_scheduler_run(args: argparse.Namespace) -> int:
             )
             return 1
 
+    def budget_exhausted() -> bool:
+        return cycle_time_budget_sec >= 0 and (time.time() - started_at) >= cycle_time_budget_sec
+
     for idx in range(cycles):
+        if budget_exhausted():
+            if budget_degrade == "stop_run":
+                ok = False
+                stop_reason = "budget_cycle_exhausted"
+                reason_code = "budget_cycle_exhausted"
+                break
+            if not degrade_applied:
+                degrade_applied = budget_degrade
+            if budget_degrade == "manual_handoff":
+                spawn_enabled = False
+                stop_reason = "budget_degraded_manual_handoff"
+                reason_code = "budget_degraded_manual_handoff"
+            elif budget_degrade == "reduced_context":
+                stop_reason = "budget_degraded_reduced_context"
+                reason_code = "budget_degraded_reduced_context"
+
         a_args = argparse.Namespace(
             root=args.root,
             actor="orchestrator",
@@ -1391,15 +1571,18 @@ def cmd_scheduler_run(args: argparse.Namespace) -> int:
             account_id=getattr(args, "account_id", DEFAULT_ACCOUNT_ID),
             mode=getattr(args, "mode", "send"),
             timeout_sec=parse_int(getattr(args, "timeout_sec", 120), 120),
-            spawn=bool(getattr(args, "spawn", True)),
+            spawn=spawn_enabled,
             spawn_cmd=str(getattr(args, "spawn_cmd", "") or ""),
             spawn_output=str(getattr(args, "spawn_output", "") or ""),
             spawn_output_seq=str(getattr(args, "spawn_output_seq", "") or ""),
             auto_recover=bool(getattr(args, "auto_recover", False)),
             recovery_max_attempts=parse_int(getattr(args, "recovery_max_attempts", 2), 2),
             max_steps=autopilot_steps,
+            step_time_budget_sec=task_time_budget_sec,
             visibility_mode=str(getattr(args, "visibility_mode", VISIBILITY_MODES[0]) or VISIBILITY_MODES[0]),
         )
+        if degrade_applied == "reduced_context":
+            a_args.visibility_mode = VISIBILITY_MODES[0]
         if shared_seq is not None:
             a_args._spawn_output_seq_queue = shared_seq
         auto_result = run_autopilot(a_args)
@@ -1407,9 +1590,11 @@ def cmd_scheduler_run(args: argparse.Namespace) -> int:
         if not auto_result.get("ok"):
             ok = False
             stop_reason = "autopilot_failed"
+            reason_code = str(auto_result.get("reasonCode") or "autopilot_failed")
             break
         if parse_int(auto_result.get("stepsRun", 0), 0) <= 0:
             stop_reason = "idle"
+            reason_code = "idle"
             break
 
     state["lastRunTs"] = now_ts
@@ -1426,8 +1611,22 @@ def cmd_scheduler_run(args: argparse.Namespace) -> int:
         "cyclesRun": len(cycles_out),
         "cycles": cycles_out,
         "stopReason": stop_reason,
+        "reasonCode": reason_code,
+        "elapsedSec": round(time.time() - started_at, 3),
         "stateFile": state_file,
         "governance": governance,
+        "budget": {
+            "cycleTimeBudgetSec": cycle_time_budget_sec,
+            "taskTimeBudgetSec": task_time_budget_sec,
+            "degradePolicy": budget_degrade,
+            "degradeApplied": degrade_applied,
+        },
+        "costTelemetry": {
+            "dispatches": sum(parse_int((c.get("autopilot") or {}).get("stepsRun", 0), 0) for c in cycles_out),
+            "doneCount": sum(parse_int(((c.get("autopilot") or {}).get("summary") or {}).get("done", 0), 0) for c in cycles_out),
+            "blockedCount": sum(parse_int(((c.get("autopilot") or {}).get("summary") or {}).get("blocked", 0), 0) for c in cycles_out),
+            "manualCount": sum(parse_int(((c.get("autopilot") or {}).get("summary") or {}).get("manual", 0), 0) for c in cycles_out),
+        },
     }
     print(json.dumps(result, ensure_ascii=True))
     return 0 if ok else 1
@@ -1798,7 +1997,47 @@ def load_acceptance_policy(root: str) -> Dict[str, Any]:
     return policy
 
 
-def evaluate_acceptance(root: str, role: str, text: str) -> Dict[str, Any]:
+def validate_structured_report(expected_task_id: str, expected_role: str, report: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(report, dict):
+        return {"ok": True, "reasonCode": "accepted"}
+    if not bool(report.get("structured")):
+        return {"ok": True, "reasonCode": "accepted"}
+
+    status = str(report.get("status") or "").strip().lower()
+    if status and status not in {"done", "blocked", "progress"}:
+        return {
+            "ok": False,
+            "reasonCode": "schema_status_invalid",
+            "reason": "结构化回报 status 必须是 done|blocked|progress。",
+        }
+
+    source_task_id = str(report.get("sourceTaskId") or "").strip()
+    if source_task_id and source_task_id != expected_task_id:
+        return {
+            "ok": False,
+            "reasonCode": "schema_task_mismatch",
+            "reason": f"结构化回报 taskId={source_task_id} 与任务 {expected_task_id} 不一致。",
+        }
+
+    source_agent = str(report.get("sourceAgent") or "").strip().lower()
+    if source_agent and source_agent != expected_role.lower():
+        return {
+            "ok": False,
+            "reasonCode": "schema_agent_mismatch",
+            "reason": f"结构化回报 agent={source_agent} 与执行角色 {expected_role} 不一致。",
+        }
+
+    if status == "done" and not str(report.get("summary") or "").strip():
+        return {
+            "ok": False,
+            "reasonCode": "schema_missing_summary",
+            "reason": "status=done 时 summary 不能为空。",
+        }
+
+    return {"ok": True, "reasonCode": "accepted"}
+
+
+def evaluate_acceptance(root: str, role: str, text: str, report: Optional[Dict[str, Any]] = None, task_id: str = "") -> Dict[str, Any]:
     note = (text or "").strip()
     policy = load_acceptance_policy(root)
     global_conf = policy.get("global") if isinstance(policy, dict) else {}
@@ -1808,12 +2047,42 @@ def evaluate_acceptance(root: str, role: str, text: str) -> Dict[str, Any]:
     if not isinstance(role_conf, dict):
         role_conf = {}
 
+    if task_id:
+        schema_check = validate_structured_report(task_id, role, report)
+        if not schema_check.get("ok"):
+            return schema_check
+
+    verify_commands = normalize_verify_commands((report or {}).get("verifyCommands"))
+    if verify_commands:
+        verify_results = run_verify_commands(root, verify_commands)
+        failed = [x for x in verify_results if not bool(x.get("ok"))]
+        if failed:
+            return {
+                "ok": False,
+                "reasonCode": "verify_command_failed",
+                "reason": f"验证命令失败: {clip(str(failed[0].get('cmd') or ''), 120)}",
+                "verifyResults": verify_results,
+            }
+
+    evidence_entries: List[str] = []
+    if isinstance(report, dict):
+        evidence_entries.extend(normalize_string_list(report.get("evidence"), limit=8, item_limit=240))
+    if has_evidence(note):
+        evidence_entries.append(clip(note, 240))
+    hard_evidence_count = count_hard_evidence(evidence_entries)
+
     require_evidence = bool(global_conf.get("requireEvidence", True))
-    if require_evidence and not has_evidence(note):
+    if require_evidence and not evidence_entries:
         return {
             "ok": False,
             "reasonCode": "missing_evidence",
             "reason": "缺少可验证证据（文件/日志/链接/命令输出）。",
+        }
+    if require_evidence and hard_evidence_count <= 0:
+        return {
+            "ok": False,
+            "reasonCode": "missing_hard_evidence",
+            "reason": "证据存在但缺少硬证据（文件路径/日志/URL/测试输出）。",
         }
 
     if looks_stage_only(note):
@@ -1825,7 +2094,7 @@ def evaluate_acceptance(root: str, role: str, text: str) -> Dict[str, Any]:
 
     required_any = role_conf.get("requireAny")
     if isinstance(required_any, list) and required_any:
-        lower = note.lower()
+        lower = "\n".join([note] + evidence_entries).lower()
         wanted = [str(x).strip() for x in required_any if str(x).strip()]
         matched = [kw for kw in wanted if kw.lower() in lower]
         if not matched:
@@ -1835,7 +2104,13 @@ def evaluate_acceptance(root: str, role: str, text: str) -> Dict[str, Any]:
                 "reason": f"{role} 交付缺少验收关键词（至少包含其一：{', '.join(wanted[:6])}）。",
             }
 
-    return {"ok": True, "reasonCode": "accepted", "reason": "通过验收策略"}
+    return {
+        "ok": True,
+        "reasonCode": "accepted",
+        "reason": "通过验收策略",
+        "hardEvidenceCount": hard_evidence_count,
+        "verifyCommandsRun": len(verify_commands),
+    }
 
 
 def find_task_id(text: str) -> str:
@@ -2287,6 +2562,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_autopilot.add_argument("--auto-recover", action="store_true", default=False)
     p_autopilot.add_argument("--recovery-max-attempts", type=int, default=2)
     p_autopilot.add_argument("--max-steps", type=int, default=3)
+    p_autopilot.add_argument("--step-time-budget-sec", type=int, default=-1)
     p_autopilot.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=VISIBILITY_MODES[0])
     p_autopilot.set_defaults(func=cmd_autopilot)
 
@@ -2308,6 +2584,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_scheduler.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=VISIBILITY_MODES[0])
     p_scheduler.add_argument("--cycles", type=int, default=1)
     p_scheduler.add_argument("--autopilot-steps", type=int, default=1)
+    p_scheduler.add_argument("--task-time-budget-sec", type=int, default=-1)
+    p_scheduler.add_argument("--cycle-time-budget-sec", type=int, default=-1)
+    p_scheduler.add_argument("--budget-degrade", choices=["stop_run", "manual_handoff", "reduced_context"], default="stop_run")
     p_scheduler.add_argument("--debounce-sec", type=int, default=0)
     p_scheduler.add_argument("--window-sec", type=int, default=3600)
     p_scheduler.add_argument("--max-runs", type=int, default=24)

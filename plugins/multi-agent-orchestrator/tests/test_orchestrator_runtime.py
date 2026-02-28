@@ -113,7 +113,7 @@ class RuntimeTests(unittest.TestCase):
         ])
         self.assertTrue(dispatch["ok"], dispatch)
         self.assertEqual(dispatch["spawn"]["decision"], "blocked", dispatch)
-        self.assertEqual(dispatch["spawn"]["reasonCode"], "incomplete_output", dispatch)
+        self.assertEqual(dispatch["spawn"]["reasonCode"], "missing_evidence", dispatch)
 
         status = run_json([
             "python3",
@@ -613,7 +613,7 @@ class RuntimeTests(unittest.TestCase):
         ])
         self.assertTrue(out["ok"], out)
         self.assertEqual(out["spawn"]["decision"], "blocked", out)
-        self.assertEqual(out["spawn"]["reasonCode"], "incomplete_output", out)
+        self.assertEqual(out["spawn"]["reasonCode"], "missing_evidence", out)
         status = run_json([
             "python3",
             str(BOARD),
@@ -894,6 +894,276 @@ class RuntimeTests(unittest.TestCase):
         ])
         self.assertTrue(out["ok"], out)
         self.assertEqual(out["cycles"][0]["autopilot"]["stepsRun"], 0, out)
+
+    def test_quality_gate_rejects_failed_verify_command(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-090: verify command fail",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-090",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/t090.log"],"verifyCommands":[{"cmd":"python3 -c \\"import sys; sys.exit(2)\\"","expectedExit":0}]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["spawn"]["decision"], "blocked", out)
+        self.assertEqual(out["spawn"]["reasonCode"], "verify_command_failed", out)
+
+    def test_quality_gate_accepts_successful_verify_command(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-091: verify command pass",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-091",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/t091.log"],"verifyCommands":[{"cmd":"python3 -c \\"print(123)\\"","expectedExit":0}]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["spawn"]["decision"], "done", out)
+
+    def test_quality_gate_rejects_weak_evidence_only(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-092: weak evidence",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-092",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["all good"]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["spawn"]["decision"], "blocked", out)
+        self.assertEqual(out["spawn"]["reasonCode"], "missing_hard_evidence", out)
+
+    def test_quality_gate_rejects_structured_schema_mismatch(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-093: schema mismatch",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-093",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","taskId":"T-XXX","agent":"coder","summary":"完成","evidence":["logs/t093.log"]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["spawn"]["decision"], "blocked", out)
+        self.assertEqual(out["spawn"]["reasonCode"], "schema_task_mismatch", out)
+
+    def test_autopilot_respects_step_time_budget(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-094: step budget",
+        ])
+        proc = subprocess.run(
+            [
+                "python3",
+                str(MILE),
+                "autopilot",
+                "--root",
+                str(self.root),
+                "--actor",
+                "orchestrator",
+                "--mode",
+                "dry-run",
+                "--spawn",
+                "--max-steps",
+                "1",
+                "--step-time-budget-sec",
+                "0",
+                "--spawn-output",
+                '{"status":"done","summary":"ok","evidence":["logs/t094.log","pytest passed"]}',
+            ],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        payload = json.loads(proc.stdout.strip())
+        self.assertEqual(payload.get("reasonCode"), "task_time_budget_exceeded", payload)
+
+    def test_scheduler_budget_stop_run_enforces_cycle_cap(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-095: cycle budget one",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-096: cycle budget two",
+        ])
+        proc = subprocess.run(
+            [
+                "python3",
+                str(MILE),
+                "scheduler-run",
+                "--root",
+                str(self.root),
+                "--actor",
+                "orchestrator",
+                "--mode",
+                "dry-run",
+                "--cycles",
+                "2",
+                "--autopilot-steps",
+                "1",
+                "--cycle-time-budget-sec",
+                "0",
+                "--budget-degrade",
+                "stop_run",
+                "--spawn-output",
+                '{"status":"done","summary":"ok","evidence":["logs/t095.log","pytest passed"]}',
+                "--spawn",
+            ],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        payload = json.loads(proc.stdout.strip())
+        self.assertEqual(payload.get("reasonCode"), "budget_cycle_exhausted", payload)
+
+    def test_scheduler_budget_manual_handoff_degrades(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-097: degrade one",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-098: degrade two",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "scheduler-run",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--mode",
+            "dry-run",
+            "--cycles",
+            "2",
+            "--autopilot-steps",
+            "1",
+            "--cycle-time-budget-sec",
+            "0",
+            "--budget-degrade",
+            "manual_handoff",
+            "--spawn-output",
+            '{"status":"done","summary":"ok","evidence":["logs/t097.log","pytest passed"]}',
+            "--spawn",
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["budget"]["degradeApplied"], "manual_handoff", out)
 
 
 if __name__ == "__main__":
