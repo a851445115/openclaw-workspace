@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+import importlib.util
 from pathlib import Path
 
 
@@ -15,6 +16,15 @@ INIT = SCRIPTS / "init-task-board"
 REBUILD = SCRIPTS / "rebuild-snapshot"
 RECOVER = SCRIPTS / "recover-stale-locks"
 INBOUND = SCRIPTS / "feishu-inbound-router"
+
+
+def load_milestone_module():
+    spec = importlib.util.spec_from_file_location("milestones_module_for_test", str(MILE))
+    if spec is None or spec.loader is None:
+        raise AssertionError("failed to load milestones module for tests")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def run_json(cmd, cwd=REPO):
@@ -1063,6 +1073,124 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(any("推进一次" in t for t in titles), out)
         self.assertTrue(any("查看阻塞" in t for t in titles), out)
         self.assertTrue(any("验收摘要" in t for t in titles), out)
+
+    def test_send_group_card_prefers_direct_feishu_api_before_text_fallback(self):
+        module = load_milestone_module()
+        real_run = module.subprocess.run
+        text_calls = {"count": 0}
+
+        class FakeProc:
+            def __init__(self, returncode: int, stdout: str, stderr: str = ""):
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = stderr
+
+        def fake_run(cmd, capture_output, text, check, timeout):
+            if "--card" in cmd:
+                return FakeProc(0, '{"payload":{"result":{}}}')
+            if "--message" in cmd:
+                text_calls["count"] += 1
+                return FakeProc(0, '{"payload":{"result":{"messageId":"om_text_fallback"}}}')
+            return FakeProc(1, "", "unexpected command")
+
+        try:
+            module.subprocess.run = fake_run
+            module.send_group_card_via_feishu_api = lambda *args, **kwargs: {
+                "ok": True,
+                "messageId": "om_direct_card",
+            }
+            out = module.send_group_card(
+                "oc_test_group",
+                "orchestrator",
+                {"schema": "2.0", "body": {"elements": []}},
+                "send",
+                fallback_text="[TASK] fallback text",
+            )
+        finally:
+            module.subprocess.run = real_run
+
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(out.get("recoveredBy"), "direct_feishu_api", out)
+        self.assertEqual(text_calls["count"], 0, out)
+
+    def test_send_group_card_via_feishu_api_treats_code_zero_as_success(self):
+        module = load_milestone_module()
+        real_load = module.load_openclaw_feishu_credentials
+        real_post = module.feishu_post_json
+        calls = {"count": 0}
+
+        def fake_post_json(url, payload, headers=None, timeout_sec=20):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return {"code": 0, "msg": "ok", "tenant_access_token": "tok"}
+            return {"code": 0, "msg": "success", "data": {"message_id": "om_card_ok"}}
+
+        try:
+            module.load_openclaw_feishu_credentials = lambda account_id: {
+                "appId": "app_x",
+                "appSecret": "sec_x",
+                "host": "open.feishu.cn",
+            }
+            module.feishu_post_json = fake_post_json
+            out = module.send_group_card_via_feishu_api(
+                "oc_test_group",
+                "orchestrator",
+                {"schema": "2.0", "body": {"elements": []}},
+            )
+        finally:
+            module.load_openclaw_feishu_credentials = real_load
+            module.feishu_post_json = real_post
+
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(out.get("messageId"), "om_card_ok", out)
+
+    def test_send_group_card_via_feishu_api_converts_adaptive_card_to_feishu_card_format(self):
+        module = load_milestone_module()
+        real_load = module.load_openclaw_feishu_credentials
+        real_post = module.feishu_post_json
+        sent_payload = {"content": None}
+        calls = {"count": 0}
+
+        def fake_post_json(url, payload, headers=None, timeout_sec=20):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return {"code": 0, "msg": "ok", "tenant_access_token": "tok"}
+            sent_payload["content"] = payload.get("content")
+            return {"code": 0, "msg": "success", "data": {"message_id": "om_card_ok"}}
+
+        try:
+            module.load_openclaw_feishu_credentials = lambda account_id: {
+                "appId": "app_x",
+                "appSecret": "sec_x",
+                "host": "open.feishu.cn",
+            }
+            module.feishu_post_json = fake_post_json
+            out = module.send_group_card_via_feishu_api(
+                "oc_test_group",
+                "orchestrator",
+                {
+                    "type": "AdaptiveCard",
+                    "version": "1.4",
+                    "body": [
+                        {"type": "TextBlock", "text": "Orchestrator 控制台"},
+                    ],
+                    "actions": [
+                        {
+                            "type": "Action.Submit",
+                            "title": "推进一次",
+                            "data": {"command": "@orchestrator 推进一次"},
+                        }
+                    ],
+                },
+            )
+        finally:
+            module.load_openclaw_feishu_credentials = real_load
+            module.feishu_post_json = real_post
+
+        self.assertTrue(out.get("ok"), out)
+        content = json.loads(sent_payload["content"] or "{}")
+        self.assertNotEqual(content.get("type"), "AdaptiveCard", content)
+        self.assertTrue(isinstance(content.get("elements"), list), content)
 
 
 if __name__ == "__main__":

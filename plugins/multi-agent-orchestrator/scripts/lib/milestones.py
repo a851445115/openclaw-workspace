@@ -6,6 +6,9 @@ import re
 import shlex
 import subprocess
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -549,6 +552,219 @@ def send_group_message(group_id: str, account_id: str, text: str, mode: str) -> 
     return out
 
 
+def resolve_feishu_openapi_host(domain: str) -> str:
+    raw = (domain or "").strip()
+    norm = raw.lower()
+    if norm in {"", "feishu"}:
+        return "open.feishu.cn"
+    if norm == "lark":
+        return "open.larksuite.com"
+    if "://" in raw:
+        parsed = urllib.parse.urlparse(raw)
+        host = parsed.netloc.strip()
+    else:
+        host = raw.strip().strip("/")
+    return host or "open.feishu.cn"
+
+
+def load_openclaw_feishu_credentials(account_id: str) -> Optional[Dict[str, str]]:
+    candidates: List[str] = []
+    env_cfg = os.environ.get("OPENCLAW_CONFIG", "").strip()
+    if env_cfg:
+        candidates.append(env_cfg)
+    env_home = os.environ.get("OPENCLAW_HOME", "").strip()
+    if env_home:
+        candidates.append(os.path.join(env_home, "openclaw.json"))
+    candidates.append(os.path.expanduser("~/.openclaw/openclaw.json"))
+
+    seen: set = set()
+    for path in candidates:
+        if not path or path in seen or not os.path.isfile(path):
+            continue
+        seen.add(path)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception:
+            continue
+
+        channels = cfg.get("channels")
+        if not isinstance(channels, dict):
+            continue
+        feishu = channels.get("feishu")
+        if not isinstance(feishu, dict):
+            continue
+
+        account_cfg: Dict[str, Any] = {}
+        accounts = feishu.get("accounts")
+        if isinstance(accounts, dict):
+            raw_account = accounts.get(account_id)
+            if isinstance(raw_account, dict):
+                account_cfg = raw_account
+
+        merged = dict(feishu)
+        merged.pop("accounts", None)
+        merged.update(account_cfg)
+
+        app_id = str(merged.get("appId") or "").strip()
+        app_secret = str(merged.get("appSecret") or "").strip()
+        if not app_id or not app_secret:
+            continue
+        if merged.get("enabled", True) is False:
+            continue
+
+        return {
+            "appId": app_id,
+            "appSecret": app_secret,
+            "host": resolve_feishu_openapi_host(str(merged.get("domain") or "feishu")),
+        }
+
+    return None
+
+
+def feishu_post_json(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, str]] = None, timeout_sec: int = 20) -> Dict[str, Any]:
+    req_headers = {"Content-Type": "application/json"}
+    if headers:
+        req_headers.update(headers)
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers=req_headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            text = resp.read().decode("utf-8", errors="replace")
+        return parse_json_loose(text or "{}")
+    except urllib.error.HTTPError as err:
+        detail = err.read().decode("utf-8", errors="replace")
+        try:
+            obj = parse_json_loose(detail or "{}")
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+        return {"code": -1, "msg": f"http {err.code}: {clip(detail, 200)}"}
+    except Exception as err:
+        return {"code": -1, "msg": clip(str(err), 200)}
+
+
+def normalize_card_for_feishu_interactive(card: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(card, dict):
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {"title": {"tag": "plain_text", "content": "Orchestrator 控制台"}},
+            "elements": [{"tag": "markdown", "content": "控制台"}],
+        }
+
+    schema = str(card.get("schema") or "").strip()
+    if schema == "2.0":
+        return card
+
+    card_type = str(card.get("type") or "").strip().lower()
+    if card_type != "adaptivecard":
+        return card
+
+    body = card.get("body")
+    lines: List[str] = []
+    if isinstance(body, list):
+        for item in body:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("type") or "").strip().lower() != "textblock":
+                continue
+            text = str(item.get("text") or "").strip()
+            if text:
+                lines.append(text)
+
+    elements: List[Dict[str, Any]] = []
+    text_md = "\n".join(lines).strip() or "Orchestrator 控制台"
+    elements.append({"tag": "markdown", "content": text_md})
+
+    buttons: List[Dict[str, Any]] = []
+    raw_actions = card.get("actions")
+    if isinstance(raw_actions, list):
+        for action in raw_actions:
+            if not isinstance(action, dict):
+                continue
+            if str(action.get("type") or "").strip().lower() != "action.submit":
+                continue
+            title = clip(str(action.get("title") or "执行"), 24)
+            button: Dict[str, Any] = {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": title},
+                "type": "default",
+            }
+            data = action.get("data")
+            if isinstance(data, dict):
+                command = str(data.get("command") or "").strip()
+                if command:
+                    button["value"] = {"command": command}
+            buttons.append(button)
+
+    for i in range(0, len(buttons), 3):
+        elements.append({"tag": "action", "actions": buttons[i : i + 3]})
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {"title": {"tag": "plain_text", "content": "Orchestrator 控制台"}},
+        "elements": elements,
+    }
+
+
+def send_group_card_via_feishu_api(group_id: str, account_id: str, card: Dict[str, Any]) -> Dict[str, Any]:
+    creds = load_openclaw_feishu_credentials(account_id)
+    if not creds:
+        return {"ok": False, "error": f"feishu credentials unavailable for account={account_id}"}
+
+    host = creds.get("host") or "open.feishu.cn"
+    token_url = f"https://{host}/open-apis/auth/v3/tenant_access_token/internal"
+    token_obj = feishu_post_json(
+        token_url,
+        {"app_id": creds.get("appId"), "app_secret": creds.get("appSecret")},
+    )
+    raw_token_code = token_obj.get("code")
+    try:
+        token_code = int(raw_token_code) if raw_token_code is not None else -1
+    except Exception:
+        token_code = -1
+    if token_code != 0:
+        return {
+            "ok": False,
+            "stage": "token",
+            "host": host,
+            "code": token_code,
+            "msg": clip(str(token_obj.get("msg") or ""), 200),
+        }
+
+    token = str(token_obj.get("tenant_access_token") or "").strip()
+    if not token:
+        return {"ok": False, "stage": "token", "host": host, "error": "missing tenant_access_token"}
+
+    send_url = f"https://{host}/open-apis/im/v1/messages?receive_id_type=chat_id"
+    card_payload = normalize_card_for_feishu_interactive(card)
+    send_obj = feishu_post_json(
+        send_url,
+        {
+            "receive_id": group_id,
+            "msg_type": "interactive",
+            "content": json.dumps(card_payload, ensure_ascii=False),
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    raw_send_code = send_obj.get("code")
+    try:
+        send_code = int(raw_send_code) if raw_send_code is not None else -1
+    except Exception:
+        send_code = -1
+    data = send_obj.get("data") if isinstance(send_obj.get("data"), dict) else {}
+    message_id = str(data.get("message_id") or "").strip()
+    return {
+        "ok": send_code == 0 and bool(message_id),
+        "stage": "send",
+        "host": host,
+        "code": send_code,
+        "msg": clip(str(send_obj.get("msg") or ""), 200),
+        "messageId": message_id,
+    }
+
+
 def send_group_card(group_id: str, account_id: str, card: Dict[str, Any], mode: str, fallback_text: str = "") -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "channel": "feishu",
@@ -587,6 +803,14 @@ def send_group_card(group_id: str, account_id: str, card: Dict[str, Any], mode: 
             "stderr": clip(stderr, 500),
             "payload": payload,
         }
+        direct = send_group_card_via_feishu_api(group_id, account_id, card)
+        out["directCard"] = direct
+        if direct.get("ok"):
+            out["ok"] = True
+            out["error"] = ""
+            out["recoveredBy"] = "direct_feishu_api"
+            out["deliveryMessageId"] = str(direct.get("messageId") or "")
+            return out
         if fallback_text:
             fallback = send_group_message(group_id, account_id, fallback_text, mode)
             out["fallback"] = fallback
@@ -617,13 +841,20 @@ def send_group_card(group_id: str, account_id: str, card: Dict[str, Any], mode: 
                 message_id = str(nested.get("messageId") or "").strip()
         if not message_id:
             message_id = str(result_obj.get("messageId") or "").strip()
-    if not message_id and fallback_text:
-        fallback = send_group_message(group_id, account_id, fallback_text, mode)
-        out["fallback"] = fallback
-        out["degradedToText"] = True
-        out["ok"] = bool(fallback.get("ok"))
-        if not out["ok"]:
-            out["error"] = "card send missing delivery ack and text fallback failed"
+    if not message_id:
+        direct = send_group_card_via_feishu_api(group_id, account_id, card)
+        out["directCard"] = direct
+        if direct.get("ok"):
+            out["ok"] = True
+            out["recoveredBy"] = "direct_feishu_api"
+            out["deliveryMessageId"] = str(direct.get("messageId") or "")
+        elif fallback_text:
+            fallback = send_group_message(group_id, account_id, fallback_text, mode)
+            out["fallback"] = fallback
+            out["degradedToText"] = True
+            out["ok"] = bool(fallback.get("ok"))
+            if not out["ok"]:
+                out["error"] = "card send missing delivery ack and all fallbacks failed"
 
     return out
 
