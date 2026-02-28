@@ -59,6 +59,11 @@ DEFAULT_PROJECT_BOOTSTRAP_TASKS = (
 )
 TASK_CONTEXT_STATE_FILE = "task-context-map.json"
 DEFAULT_CODER_WORKSPACE = os.path.expanduser("~/.openclaw/agents/coder/workspace")
+SCHEDULER_STATE_FILE = "scheduler.kernel.json"
+SCHEDULER_DEFAULT_INTERVAL_SEC = 300
+SCHEDULER_MIN_INTERVAL_SEC = 60
+SCHEDULER_MAX_INTERVAL_SEC = 86400
+SCHEDULER_DEFAULT_MAX_STEPS = 1
 
 
 def now_iso() -> str:
@@ -1285,6 +1290,92 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
+def scheduler_run_once(args: argparse.Namespace) -> Dict[str, Any]:
+    if args.actor != "orchestrator":
+        return {"ok": False, "error": "scheduler-run is restricted to actor=orchestrator"}
+
+    action = str(getattr(args, "action", "tick") or "tick").strip().lower()
+    if action not in {"enable", "disable", "status", "tick"}:
+        action = "tick"
+
+    state = load_scheduler_state(args.root)
+    now_ts = int(time.time())
+
+    interval_arg = getattr(args, "interval_sec", None)
+    max_steps_arg = getattr(args, "max_steps", None)
+    has_interval_update = interval_arg not in (None, "", 0, "0")
+    has_max_steps_update = max_steps_arg not in (None, "", 0, "0")
+
+    if action == "enable":
+        interval_sec = normalize_interval_sec(
+            interval_arg if has_interval_update else state.get("intervalSec", SCHEDULER_DEFAULT_INTERVAL_SEC),
+            SCHEDULER_DEFAULT_INTERVAL_SEC,
+        )
+        state["enabled"] = True
+        state["intervalSec"] = interval_sec
+        if has_max_steps_update:
+            state["maxSteps"] = normalize_steps(max_steps_arg, state.get("maxSteps", SCHEDULER_DEFAULT_MAX_STEPS))
+    elif action == "disable":
+        state["enabled"] = False
+        state["nextDueTs"] = 0
+    else:
+        if has_interval_update:
+            state["intervalSec"] = normalize_interval_sec(interval_arg, state.get("intervalSec", SCHEDULER_DEFAULT_INTERVAL_SEC))
+        if has_max_steps_update:
+            state["maxSteps"] = normalize_steps(max_steps_arg, state.get("maxSteps", SCHEDULER_DEFAULT_MAX_STEPS))
+
+    force = bool(getattr(args, "force", False))
+    should_tick = action in {"enable", "tick"}
+
+    run_result: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "status_only"}
+    if should_tick:
+        if not state.get("enabled") and not force:
+            run_result = {"ok": True, "skipped": True, "reason": "disabled"}
+        elif not force and int(state.get("nextDueTs") or 0) > now_ts:
+            run_result = {"ok": True, "skipped": True, "reason": "not_due"}
+        else:
+            a_args = argparse.Namespace(
+                root=args.root,
+                actor="orchestrator",
+                session_id=getattr(args, "session_id", ""),
+                group_id=args.group_id,
+                account_id=args.account_id,
+                mode=args.mode,
+                timeout_sec=args.timeout_sec,
+                spawn=args.spawn,
+                spawn_cmd=args.spawn_cmd,
+                spawn_output=args.spawn_output,
+                max_steps=int(state.get("maxSteps") or SCHEDULER_DEFAULT_MAX_STEPS),
+                visibility_mode=args.visibility_mode,
+            )
+            auto = autopilot_once(a_args)
+            run_result = dict(auto)
+            run_result["skipped"] = False
+            if auto.get("ok"):
+                state["lastRunTs"] = now_ts
+                state["lastRunAt"] = now_iso()
+                state["nextDueTs"] = now_ts + int(state.get("intervalSec") or SCHEDULER_DEFAULT_INTERVAL_SEC)
+
+    state = save_scheduler_state(args.root, state)
+    ok = bool(run_result.get("ok"))
+    return {
+        "ok": ok,
+        "handled": True,
+        "intent": "scheduler_run",
+        "action": action,
+        "state": state,
+        "run": run_result,
+        "skipped": bool(run_result.get("skipped")),
+        "reason": str(run_result.get("reason") or ""),
+    }
+
+
+def cmd_scheduler_run(args: argparse.Namespace) -> int:
+    result = scheduler_run_once(args)
+    print(json.dumps(result, ensure_ascii=True))
+    return 0 if result.get("ok") else 1
+
+
 def load_json_file(path: str, default_obj: Dict[str, Any]) -> Dict[str, Any]:
     if not os.path.exists(path):
         return default_obj
@@ -1502,6 +1593,58 @@ def save_auto_progress_state(root: str, enabled: bool, max_steps: int) -> Dict[s
     }
     save_json_file(auto_progress_state_path(root), state)
     return state
+
+
+def scheduler_state_path(root: str) -> str:
+    return os.path.join(root, "state", SCHEDULER_STATE_FILE)
+
+
+def normalize_interval_sec(value: Any, default_interval: int = SCHEDULER_DEFAULT_INTERVAL_SEC) -> int:
+    try:
+        n = int(value)
+    except Exception:
+        n = int(default_interval)
+    n = max(SCHEDULER_MIN_INTERVAL_SEC, n)
+    return min(SCHEDULER_MAX_INTERVAL_SEC, n)
+
+
+def load_scheduler_state(root: str) -> Dict[str, Any]:
+    path = scheduler_state_path(root)
+    data = load_json_file(
+        path,
+        {
+            "enabled": False,
+            "intervalSec": SCHEDULER_DEFAULT_INTERVAL_SEC,
+            "maxSteps": SCHEDULER_DEFAULT_MAX_STEPS,
+            "lastRunTs": 0,
+            "lastRunAt": "",
+            "nextDueTs": 0,
+            "updatedAt": "",
+        },
+    )
+    return {
+        "enabled": bool(data.get("enabled")),
+        "intervalSec": normalize_interval_sec(data.get("intervalSec"), SCHEDULER_DEFAULT_INTERVAL_SEC),
+        "maxSteps": normalize_steps(data.get("maxSteps"), SCHEDULER_DEFAULT_MAX_STEPS),
+        "lastRunTs": int(data.get("lastRunTs") or 0),
+        "lastRunAt": str(data.get("lastRunAt") or ""),
+        "nextDueTs": int(data.get("nextDueTs") or 0),
+        "updatedAt": str(data.get("updatedAt") or ""),
+    }
+
+
+def save_scheduler_state(root: str, state: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = {
+        "enabled": bool(state.get("enabled")),
+        "intervalSec": normalize_interval_sec(state.get("intervalSec"), SCHEDULER_DEFAULT_INTERVAL_SEC),
+        "maxSteps": normalize_steps(state.get("maxSteps"), SCHEDULER_DEFAULT_MAX_STEPS),
+        "lastRunTs": int(state.get("lastRunTs") or 0),
+        "lastRunAt": str(state.get("lastRunAt") or ""),
+        "nextDueTs": int(state.get("nextDueTs") or 0),
+        "updatedAt": now_iso(),
+    }
+    save_json_file(scheduler_state_path(root), normalized)
+    return normalized
 
 
 def build_user_help_message() -> str:
@@ -1900,6 +2043,79 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
                     "action": action,
                     "state": state,
                     "kickoff": kick,
+                    "send": out,
+                },
+                ensure_ascii=True,
+            )
+        )
+        return 0 if ok else 1
+
+    # Command: @orchestrator 调度 开 [分钟] | 关 | 状态
+    m = re.match(
+        r"^(?:调度|scheduler)(?:\s+(开|关|状态|on|off|status)(?:\s+(\d+))?)?$",
+        cmd_body,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        raw_action = (m.group(1) or "状态").strip().lower()
+        raw_interval_minutes = (m.group(2) or "").strip()
+        if raw_action in {"on", "开"}:
+            action = "enable"
+        elif raw_action in {"off", "关"}:
+            action = "disable"
+        else:
+            action = "status"
+
+        interval_sec = 0
+        if raw_interval_minutes:
+            try:
+                interval_sec = int(raw_interval_minutes) * 60
+            except Exception:
+                interval_sec = 0
+
+        spawn_enabled = True
+        if bool(getattr(args, "dispatch_manual", False)):
+            spawn_enabled = False
+        if bool(getattr(args, "dispatch_spawn", False)):
+            spawn_enabled = True
+
+        s_args = argparse.Namespace(
+            root=args.root,
+            actor="orchestrator",
+            action=action,
+            interval_sec=interval_sec,
+            max_steps=None,
+            force=False,
+            group_id=args.group_id,
+            account_id=args.account_id,
+            mode=args.mode,
+            session_id=args.session_id,
+            timeout_sec=args.timeout_sec,
+            spawn=spawn_enabled,
+            spawn_cmd=args.spawn_cmd,
+            spawn_output=args.spawn_output,
+            visibility_mode=visibility_mode,
+        )
+        scheduled = scheduler_run_once(s_args)
+        state = scheduled.get("state") or {}
+        status_text = "开启" if state.get("enabled") else "关闭"
+        msg = (
+            f"[TASK] 调度已{status_text} | intervalSec={state.get('intervalSec')} | "
+            f"maxSteps={state.get('maxSteps')} | reason={scheduled.get('reason') or '-'}"
+        )
+        out = send_group_message(args.group_id, args.account_id, msg, args.mode)
+        ok = bool(scheduled.get("ok")) and bool(out.get("ok"))
+        print(
+            json.dumps(
+                {
+                    "ok": ok,
+                    "handled": True,
+                    "intent": "scheduler_control",
+                    "action": action,
+                    "state": state,
+                    "run": scheduled.get("run"),
+                    "skipped": bool(scheduled.get("skipped")),
+                    "reason": str(scheduled.get("reason") or ""),
                     "send": out,
                 },
                 ensure_ascii=True,
@@ -2355,6 +2571,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_autopilot.add_argument("--max-steps", type=int, default=3)
     p_autopilot.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=VISIBILITY_MODES[0])
     p_autopilot.set_defaults(func=cmd_autopilot)
+
+    p_scheduler = sub.add_parser("scheduler-run")
+    p_scheduler.add_argument("--root", required=True)
+    p_scheduler.add_argument("--actor", default="orchestrator")
+    p_scheduler.add_argument("--action", choices=["enable", "disable", "status", "tick"], default="tick")
+    p_scheduler.add_argument("--interval-sec", type=int, default=None)
+    p_scheduler.add_argument("--max-steps", type=int, default=None)
+    p_scheduler.add_argument("--force", action="store_true")
+    p_scheduler.add_argument("--group-id", default=DEFAULT_GROUP_ID)
+    p_scheduler.add_argument("--account-id", default=DEFAULT_ACCOUNT_ID)
+    p_scheduler.add_argument("--mode", choices=["send", "dry-run"], default="send")
+    p_scheduler.add_argument("--session-id", default="")
+    p_scheduler.add_argument("--timeout-sec", type=int, default=120)
+    p_scheduler.add_argument("--spawn", dest="spawn", action="store_true", default=True)
+    p_scheduler.add_argument("--no-spawn", dest="spawn", action="store_false")
+    p_scheduler.add_argument("--spawn-cmd", default="")
+    p_scheduler.add_argument("--spawn-output", default="")
+    p_scheduler.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=VISIBILITY_MODES[0])
+    p_scheduler.set_defaults(func=cmd_scheduler_run)
 
     p_clarify = sub.add_parser("clarify")
     p_clarify.add_argument("--root", required=True)

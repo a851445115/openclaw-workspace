@@ -846,6 +846,109 @@ class RuntimeTests(unittest.TestCase):
         spawn = out.get("spawn") or {}
         self.assertEqual(spawn.get("executor"), "openclaw_agent", out)
 
+    def test_scheduler_run_updates_state_and_executes_autopilot(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-070: scheduler 内核测试",
+        ])
+
+        first = run_json([
+            "python3",
+            str(MILE),
+            "scheduler-run",
+            "--root",
+            str(self.root),
+            "--action",
+            "enable",
+            "--interval-sec",
+            "60",
+            "--max-steps",
+            "1",
+            "--spawn",
+            "--mode",
+            "dry-run",
+            "--spawn-output",
+            '{"status":"done","summary":"scheduler-done","evidence":["logs/scheduler.log"]}',
+        ])
+        self.assertTrue(first["ok"], first)
+        self.assertEqual(first.get("intent"), "scheduler_run", first)
+        self.assertTrue((first.get("state") or {}).get("enabled"), first)
+        self.assertFalse(first.get("skipped"), first)
+        self.assertEqual((first.get("run") or {}).get("stepsRun"), 1, first)
+
+        second = run_json([
+            "python3",
+            str(MILE),
+            "scheduler-run",
+            "--root",
+            str(self.root),
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(second["ok"], second)
+        self.assertTrue(second.get("skipped"), second)
+        self.assertEqual(second.get("reason"), "not_due", second)
+
+    def test_feishu_router_scheduler_control_commands(self):
+        enabled = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@orchestrator 调度 开 1",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(enabled["ok"], enabled)
+        self.assertEqual(enabled.get("intent"), "scheduler_control", enabled)
+        self.assertTrue((enabled.get("state") or {}).get("enabled"), enabled)
+        self.assertEqual((enabled.get("state") or {}).get("intervalSec"), 60, enabled)
+
+        status = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@orchestrator 调度 状态",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(status["ok"], status)
+        self.assertEqual(status.get("intent"), "scheduler_control", status)
+        self.assertTrue((status.get("state") or {}).get("enabled"), status)
+
+        disabled = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@orchestrator 调度 关",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(disabled["ok"], disabled)
+        self.assertEqual(disabled.get("intent"), "scheduler_control", disabled)
+        self.assertFalse((disabled.get("state") or {}).get("enabled"), disabled)
+
 
 if __name__ == "__main__":
     unittest.main()
