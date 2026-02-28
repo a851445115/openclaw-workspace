@@ -1,0 +1,25 @@
+{
+  "id": "knowledge-preflight-router",
+  "name": "Knowledge Preflight Router",
+  "description": "Hard preflight router config for Claude/Codex/OpenClaw.",
+  "skills": ["."],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabledPlatforms": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["claude-code", "codex", "openclaw"]
+      },
+      "hardMode": { "type": "boolean", "default": true },
+      "onFailure": { "type": "string", "enum": ["block", "warn", "fallback"], "default": "block" },
+      "taskType": { "type": "string", "default": "auto" },
+      "topK": { "type": "integer", "minimum": 1, "default": 5 },
+      "fallbackK": { "type": "integer", "minimum": 0, "default": 2 },
+      "minPrimaryHits": { "type": "integer", "minimum": 1, "default": 2 },
+      "maxTotalChars": { "type": "integer", "minimum": 300, "default": 1600 },
+      "autoMarkUsed": { "type": "boolean", "default": true }
+    }
+  }
+}

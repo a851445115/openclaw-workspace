@@ -1,0 +1,11 @@
+{
+  "enabledPlatforms": ["claude-code", "codex", "openclaw"],
+  "hardMode": true,
+  "onFailure": "block",
+  "taskType": "auto",
+  "topK": 5,
+  "fallbackK": 2,
+  "minPrimaryHits": 2,
+  "maxTotalChars": 1600,
+  "autoMarkUsed": true
+}
