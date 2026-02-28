@@ -1165,6 +1165,130 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(out["ok"], out)
         self.assertEqual(out["budget"]["degradeApplied"], "manual_handoff", out)
 
+    def test_decompose_goal_creates_tasks_with_dependencies(self):
+        decompose_output = json.dumps(
+            {
+                "confidence": 0.92,
+                "tasks": [
+                    {
+                        "id": "analysis",
+                        "title": "分析需求并拆分里程碑",
+                        "ownerHint": "invest-analyst",
+                        "priority": 95,
+                    },
+                    {
+                        "id": "implement",
+                        "title": "实现核心能力",
+                        "ownerHint": "coder",
+                        "dependsOn": ["analysis"],
+                        "priority": 85,
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        )
+        out = run_json([
+            "python3",
+            str(MILE),
+            "decompose-goal",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--mode",
+            "dry-run",
+            "--goal",
+            "完成一次可上线交付",
+            "--decompose-output",
+            decompose_output,
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertFalse(out["pendingApproval"], out)
+        self.assertEqual(out["createdCount"], 2, out)
+        self.assertEqual(out["mergedCount"], 0, out)
+        mapping = {item["planId"]: item["taskId"] for item in out["planTaskMap"]}
+        routing_path = self.root / "state" / "task-routing.json"
+        routing = json.loads(routing_path.read_text(encoding="utf-8"))
+        self.assertEqual(routing["dependsOn"][mapping["implement"]], [mapping["analysis"]], routing)
+
+    def test_decompose_goal_dedupes_existing_tasks(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-110: 实现核心能力",
+        ])
+        decompose_output = json.dumps(
+            {
+                "confidence": 0.88,
+                "tasks": [
+                    {"id": "impl", "title": "实现核心能力", "ownerHint": "coder", "priority": 80},
+                    {"id": "verify", "title": "增加回归测试", "ownerHint": "debugger", "priority": 75},
+                ],
+            },
+            ensure_ascii=False,
+        )
+        out = run_json([
+            "python3",
+            str(MILE),
+            "decompose-goal",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--mode",
+            "dry-run",
+            "--goal",
+            "完成核心能力并回归",
+            "--decompose-output",
+            decompose_output,
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["mergedCount"], 1, out)
+        self.assertEqual(out["createdCount"], 1, out)
+        snapshot = json.loads((self.root / "state" / "tasks.snapshot.json").read_text(encoding="utf-8"))
+        titles = [str(t.get("title") or "") for t in snapshot.get("tasks", {}).values()]
+        self.assertEqual(sum(1 for x in titles if x == "实现核心能力"), 1, snapshot)
+
+    def test_decompose_goal_low_confidence_requires_approval(self):
+        decompose_output = json.dumps(
+            {
+                "confidence": 0.30,
+                "tasks": [
+                    {"id": "t1", "title": "先做探索", "ownerHint": "invest-analyst"},
+                    {"id": "t2", "title": "再做实现", "ownerHint": "coder", "dependsOn": ["t1"]},
+                ],
+            },
+            ensure_ascii=False,
+        )
+        out = run_json([
+            "python3",
+            str(MILE),
+            "decompose-goal",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--mode",
+            "dry-run",
+            "--goal",
+            "新项目探索与实现",
+            "--decompose-output",
+            decompose_output,
+            "--min-confidence",
+            "0.6",
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertTrue(out["pendingApproval"], out)
+        self.assertEqual(out["reasonCode"], "needs_approval", out)
+        snapshot = json.loads((self.root / "state" / "tasks.snapshot.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(snapshot.get("tasks", {})), 0, snapshot)
+
 
 if __name__ == "__main__":
     unittest.main()

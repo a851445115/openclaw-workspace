@@ -1683,6 +1683,263 @@ def cmd_govern(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_decompose_goal(args: argparse.Namespace) -> int:
+    if args.actor != "orchestrator":
+        print(json.dumps({"ok": False, "error": "decompose-goal is restricted to actor=orchestrator"}))
+        return 1
+
+    goal = clip(str(getattr(args, "goal", "") or ""), 400)
+    if not goal:
+        print(json.dumps({"ok": False, "error": "goal cannot be empty"}))
+        return 1
+
+    max_tasks = max(1, min(20, parse_int(getattr(args, "max_tasks", 6), 6)))
+    min_confidence = clamp_float(parse_float(getattr(args, "min_confidence", 0.6), 0.6), 0.0, 1.0)
+    decompose_output = str(getattr(args, "decompose_output", "") or "")
+
+    try:
+        plan = build_goal_decomposition(goal, max_tasks=max_tasks, decompose_output=decompose_output)
+    except Exception as err:
+        print(json.dumps({"ok": False, "error": f"failed to decompose goal: {err}"}))
+        return 1
+
+    confidence = clamp_float(parse_float(plan.get("confidence", 0.0), 0.0), 0.0, 1.0)
+    plan_tasks_raw = plan.get("tasks")
+    plan_tasks: List[Dict[str, Any]] = []
+    if isinstance(plan_tasks_raw, list):
+        used_plan_ids = set()
+        for idx, item in enumerate(plan_tasks_raw[:max_tasks], start=1):
+            if not isinstance(item, dict):
+                continue
+            plan_id = str(item.get("id") or f"task{idx}").strip() or f"task{idx}"
+            if plan_id in used_plan_ids:
+                plan_id = f"{plan_id}_{idx}"
+            used_plan_ids.add(plan_id)
+            deps_raw = item.get("dependsOn") or []
+            deps: List[str] = []
+            if isinstance(deps_raw, list):
+                deps = [str(x).strip() for x in deps_raw if str(x).strip()]
+            elif isinstance(deps_raw, str) and deps_raw.strip():
+                deps = [deps_raw.strip()]
+            plan_tasks.append(
+                {
+                    "id": plan_id,
+                    "index": idx,
+                    "title": clip(str(item.get("title") or ""), 120),
+                    "ownerHint": str(item.get("ownerHint") or suggest_agent_from_title(str(item.get("title") or ""))),
+                    "dependsOn": deps,
+                    "priority": max(0, min(100, parse_int(item.get("priority", 70), 70))),
+                    "impact": max(0, min(100, parse_int(item.get("impact", 70), 70))),
+                }
+            )
+
+    proposal = [
+        {
+            "planId": item["id"],
+            "index": item["index"],
+            "title": item["title"],
+            "ownerHint": item["ownerHint"],
+            "dependsOn": item["dependsOn"],
+            "priority": item["priority"],
+            "impact": item["impact"],
+        }
+        for item in plan_tasks
+    ]
+
+    require_approval = bool(getattr(args, "require_approval", False))
+    force_apply = bool(getattr(args, "force_apply", False))
+    pending_approval = (require_approval or confidence < min_confidence) and not force_apply
+    approval_reason = "manual_approval_required" if require_approval else "low_confidence"
+
+    if pending_approval:
+        review_text = "\n".join(
+            [
+                f"[REVIEW] 目标拆解待确认 | confidence={confidence:.2f} | min={min_confidence:.2f}",
+                f"目标: {goal}",
+                f"建议任务数: {len(proposal)}",
+            ]
+        )
+        sent = send_group_message(
+            str(getattr(args, "group_id", DEFAULT_GROUP_ID)),
+            str(getattr(args, "account_id", DEFAULT_ACCOUNT_ID)),
+            review_text,
+            str(getattr(args, "mode", "send")),
+        )
+        result = {
+            "ok": True,
+            "handled": True,
+            "intent": "decompose_goal",
+            "goal": goal,
+            "confidence": confidence,
+            "minConfidence": min_confidence,
+            "pendingApproval": True,
+            "reasonCode": "needs_approval",
+            "approvalReason": approval_reason,
+            "proposal": proposal,
+            "createdCount": 0,
+            "mergedCount": 0,
+            "planTaskMap": [],
+            "send": sent,
+        }
+        print(json.dumps(result, ensure_ascii=True))
+        return 0
+
+    snapshot = load_snapshot(args.root)
+    existing_tasks = snapshot.get("tasks", {})
+    existing_title_map: Dict[str, str] = {}
+    existing_status_map: Dict[str, str] = {}
+    for task_id, task in existing_tasks.items():
+        if not isinstance(task, dict):
+            continue
+        title_key = normalize_title_key(str(task.get("title") or ""))
+        if not title_key:
+            continue
+        status = str(task.get("status") or "")
+        prev_task_id = existing_title_map.get(title_key)
+        prev_status = existing_status_map.get(title_key, "")
+        prefer_new = False
+        if not prev_task_id:
+            prefer_new = True
+        elif prev_status == "done" and status != "done":
+            prefer_new = True
+        if prefer_new:
+            existing_title_map[title_key] = str(task_id)
+            existing_status_map[title_key] = status
+
+    plan_to_task: Dict[str, str] = {}
+    created: List[Dict[str, Any]] = []
+    merged: List[Dict[str, Any]] = []
+    apply_results: List[Dict[str, Any]] = []
+    errors: List[str] = []
+    plan_task_map: List[Dict[str, Any]] = []
+
+    for item in plan_tasks:
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        owner_hint = str(item.get("ownerHint") or "coder")
+        if owner_hint not in BOT_ROLES:
+            owner_hint = suggest_agent_from_title(title)
+        title_key = normalize_title_key(title)
+        plan_id = str(item.get("id") or "")
+        existing_task_id = existing_title_map.get(title_key) if title_key else ""
+
+        if existing_task_id:
+            plan_to_task[plan_id] = existing_task_id
+            merged_item = {"planId": plan_id, "taskId": existing_task_id, "title": title, "ownerHint": owner_hint}
+            merged.append(merged_item)
+            plan_task_map.append({**merged_item, "action": "merged"})
+            continue
+
+        apply_obj = board_apply(args.root, "orchestrator", f"@{owner_hint} create task: {title}")
+        apply_results.append(apply_obj)
+        if not bool(apply_obj.get("ok")):
+            errors.append(f"create task failed for {plan_id}: {apply_obj.get('error') or 'unknown'}")
+            continue
+        task_id = str(apply_obj.get("taskId") or "")
+        if not task_id:
+            errors.append(f"missing taskId for created task {plan_id}")
+            continue
+        plan_to_task[plan_id] = task_id
+        if title_key:
+            existing_title_map[title_key] = task_id
+        created_item = {"planId": plan_id, "taskId": task_id, "title": title, "ownerHint": owner_hint}
+        created.append(created_item)
+        plan_task_map.append({**created_item, "action": "created"})
+
+    routing = load_task_routing(args.root)
+    priorities = dict(routing.get("priorities") or {})
+    depends_on = dict(routing.get("dependsOn") or {})
+    title_to_task_id: Dict[str, str] = {}
+    for task_id, task in existing_tasks.items():
+        if not isinstance(task, dict):
+            continue
+        key = normalize_title_key(str(task.get("title") or ""))
+        if key:
+            title_to_task_id[key] = str(task_id)
+    for item in plan_task_map:
+        key = normalize_title_key(str(item.get("title") or ""))
+        if key:
+            title_to_task_id[key] = str(item.get("taskId") or "")
+
+    plan_id_order = [str(item.get("id") or "") for item in plan_tasks]
+    plan_index_to_id = {str(idx + 1): pid for idx, pid in enumerate(plan_id_order) if pid}
+    known_task_ids = set(str(k) for k in existing_tasks.keys()) | set(plan_to_task.values())
+
+    def resolve_dep(ref: str) -> str:
+        dep_ref = str(ref or "").strip()
+        if not dep_ref:
+            return ""
+        if dep_ref in plan_to_task:
+            return str(plan_to_task.get(dep_ref) or "")
+        if dep_ref in plan_index_to_id:
+            mapped = plan_to_task.get(plan_index_to_id[dep_ref], "")
+            return str(mapped or "")
+        dep_upper = dep_ref.upper()
+        if dep_upper in known_task_ids:
+            return dep_upper
+        key = normalize_title_key(dep_ref)
+        if key:
+            return str(title_to_task_id.get(key) or "")
+        return ""
+
+    for item in plan_tasks:
+        plan_id = str(item.get("id") or "")
+        task_id = str(plan_to_task.get(plan_id) or "")
+        if not task_id:
+            continue
+        priorities[task_id] = max(0, min(100, parse_int(item.get("priority", 70), 70)))
+        raw_deps = item.get("dependsOn") or []
+        dep_ids: List[str] = []
+        for dep_ref in raw_deps:
+            dep_task_id = resolve_dep(str(dep_ref))
+            if dep_task_id and dep_task_id != task_id and dep_task_id not in dep_ids:
+                dep_ids.append(dep_task_id)
+        if dep_ids:
+            depends_on[task_id] = dep_ids
+
+    routing_path = routing_state_path(args.root)
+    save_json_file(routing_path, {"priorities": priorities, "dependsOn": depends_on})
+
+    summary_text = "\n".join(
+        [
+            f"[TASK] 目标拆解完成 | confidence={confidence:.2f}",
+            f"目标: {goal}",
+            f"新增{len(created)}，合并{len(merged)}，总计划{len(plan_tasks)}",
+        ]
+    )
+    sent = send_group_message(
+        str(getattr(args, "group_id", DEFAULT_GROUP_ID)),
+        str(getattr(args, "account_id", DEFAULT_ACCOUNT_ID)),
+        summary_text,
+        str(getattr(args, "mode", "send")),
+    )
+
+    ok = not errors
+    result = {
+        "ok": ok,
+        "handled": True,
+        "intent": "decompose_goal",
+        "goal": goal,
+        "confidence": confidence,
+        "minConfidence": min_confidence,
+        "pendingApproval": False,
+        "reasonCode": "applied" if ok else "partial_apply_failed",
+        "proposal": proposal,
+        "createdCount": len(created),
+        "mergedCount": len(merged),
+        "created": created,
+        "merged": merged,
+        "planTaskMap": plan_task_map,
+        "routing": {"path": routing_path, "updatedTaskCount": len(plan_to_task)},
+        "errors": errors,
+        "send": sent,
+        "source": plan.get("source"),
+    }
+    print(json.dumps(result, ensure_ascii=True))
+    return 0 if ok else 1
+
+
 def load_json_file(path: str, default_obj: Dict[str, Any]) -> Dict[str, Any]:
     if not os.path.exists(path):
         return default_obj
@@ -1751,6 +2008,13 @@ def load_task_routing(root: str) -> Dict[str, Any]:
 def parse_int(value: Any, default: int) -> int:
     try:
         return int(value)
+    except Exception:
+        return default
+
+
+def parse_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
     except Exception:
         return default
 
@@ -1879,6 +2143,137 @@ def parse_project_tasks(payload: str) -> Tuple[str, List[str]]:
     if not parts:
         parts = [f"项目启动: {project_name}"]
     return project_name, parts
+
+
+def normalize_title_key(title: str) -> str:
+    s = str(title or "").strip().lower()
+    s = re.sub(r"\s+", "", s)
+    s = re.sub(r"[^0-9a-z_\u4e00-\u9fff]+", "", s)
+    return s
+
+
+def clamp_float(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
+def heuristic_decompose_goal(goal: str, max_tasks: int) -> Dict[str, Any]:
+    raw_goal = clip(goal, 200)
+    segments = [clip(x.strip(" -"), 120) for x in re.split(r"[;\n。]+", raw_goal) if x.strip(" -")]
+    tasks: List[Dict[str, Any]] = []
+    if len(segments) >= 2:
+        for idx, seg in enumerate(segments[:max_tasks], start=1):
+            plan_id = f"task{idx}"
+            deps = [f"task{idx-1}"] if idx > 1 else []
+            tasks.append(
+                {
+                    "id": plan_id,
+                    "title": seg,
+                    "ownerHint": suggest_agent_from_title(seg),
+                    "dependsOn": deps,
+                    "priority": max(10, 95 - idx * 8),
+                    "impact": max(10, 90 - idx * 5),
+                }
+            )
+        confidence = 0.68
+    else:
+        base = clip(raw_goal, 90)
+        tasks = [
+            {
+                "id": "task1",
+                "title": f"需求梳理: {base}",
+                "ownerHint": "invest-analyst",
+                "dependsOn": [],
+                "priority": 90,
+                "impact": 90,
+            },
+            {
+                "id": "task2",
+                "title": f"实现交付: {base}",
+                "ownerHint": "coder",
+                "dependsOn": ["task1"],
+                "priority": 80,
+                "impact": 80,
+            },
+            {
+                "id": "task3",
+                "title": f"验证回归: {base}",
+                "ownerHint": "debugger",
+                "dependsOn": ["task2"],
+                "priority": 75,
+                "impact": 70,
+            },
+        ][: max(1, max_tasks)]
+        confidence = 0.52
+    return {"confidence": confidence, "tasks": tasks, "source": "heuristic"}
+
+
+def normalize_decompose_tasks(raw_tasks: Any, max_tasks: int) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    if not isinstance(raw_tasks, list):
+        return out
+    for idx, item in enumerate(raw_tasks[: max(1, max_tasks)], start=1):
+        if isinstance(item, str):
+            title = clip(item, 120)
+            if not title:
+                continue
+            out.append(
+                {
+                    "id": f"task{idx}",
+                    "title": title,
+                    "ownerHint": suggest_agent_from_title(title),
+                    "dependsOn": [],
+                    "priority": max(10, 95 - idx * 8),
+                    "impact": max(10, 90 - idx * 5),
+                }
+            )
+            continue
+        if not isinstance(item, dict):
+            continue
+        title = clip(str(item.get("title") or item.get("task") or item.get("summary") or ""), 120)
+        if not title:
+            continue
+        plan_id = clip(str(item.get("id") or item.get("planId") or item.get("key") or f"task{idx}"), 40)
+        owner = str(
+            item.get("ownerHint") or item.get("owner") or item.get("assignee") or item.get("agent") or ""
+        ).strip()
+        if owner not in BOT_ROLES:
+            owner = suggest_agent_from_title(title)
+        deps_raw = item.get("dependsOn") or item.get("blockedBy") or item.get("dependencies") or []
+        deps: List[str] = []
+        if isinstance(deps_raw, list):
+            for dep in deps_raw[:8]:
+                dep_text = str(dep or "").strip()
+                if dep_text:
+                    deps.append(dep_text)
+        elif isinstance(deps_raw, str):
+            dep_text = deps_raw.strip()
+            if dep_text:
+                deps.append(dep_text)
+        out.append(
+            {
+                "id": plan_id or f"task{idx}",
+                "title": title,
+                "ownerHint": owner,
+                "dependsOn": deps,
+                "priority": max(0, min(100, parse_int(item.get("priority", 70), 70))),
+                "impact": max(0, min(100, parse_int(item.get("impact", 70), 70))),
+            }
+        )
+    return out
+
+
+def build_goal_decomposition(goal: str, max_tasks: int, decompose_output: str = "") -> Dict[str, Any]:
+    raw = str(decompose_output or "").strip()
+    if not raw:
+        return heuristic_decompose_goal(goal, max_tasks)
+    parsed = parse_json_loose(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("decompose output must be a JSON object")
+    tasks = normalize_decompose_tasks(parsed.get("tasks"), max_tasks)
+    if not tasks:
+        return heuristic_decompose_goal(goal, max_tasks)
+    confidence = clamp_float(parse_float(parsed.get("confidence", 0.65), 0.65), 0.0, 1.0)
+    return {"confidence": confidence, "tasks": tasks, "source": "provided"}
 
 
 def choose_task_for_run(root: str, requested: str) -> Optional[Dict[str, Any]]:
@@ -2209,6 +2604,24 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
         ok = all(c["apply"].get("ok") for c in created) and ack.get("ok")
         print(json.dumps({"ok": ok, "handled": True, "intent": "create_project", "created": created, "ack": ack}))
         return 0 if ok else 1
+
+    # Command: @orchestrator decompose [goal:] <text>
+    m = re.match(r"^decompose(?:\s+goal)?\s*:?\s+(.+)$", cmd_body, flags=re.IGNORECASE)
+    if m:
+        d_args = argparse.Namespace(
+            root=args.root,
+            actor="orchestrator",
+            goal=(m.group(1) or "").strip(),
+            mode=args.mode,
+            group_id=args.group_id,
+            account_id=args.account_id,
+            max_tasks=parse_int(getattr(args, "decompose_max_tasks", 6), 6),
+            min_confidence=parse_float(getattr(args, "decompose_min_confidence", 0.6), 0.6),
+            require_approval=bool(getattr(args, "decompose_require_approval", False)),
+            force_apply=False,
+            decompose_output=str(getattr(args, "decompose_output", "") or ""),
+        )
+        return cmd_decompose_goal(d_args)
 
     # Command: @orchestrator run [T-xxx]
     m = re.match(r"^run(?:\s+([A-Za-z0-9_-]+))?$", cmd_body, flags=re.IGNORECASE)
@@ -2601,6 +3014,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_govern.add_argument("--reason", default="")
     p_govern.set_defaults(func=cmd_govern)
 
+    p_decompose = sub.add_parser("decompose-goal")
+    p_decompose.add_argument("--root", required=True)
+    p_decompose.add_argument("--actor", default="orchestrator")
+    p_decompose.add_argument("--goal", required=True)
+    p_decompose.add_argument("--mode", choices=["send", "dry-run"], default="send")
+    p_decompose.add_argument("--group-id", default=DEFAULT_GROUP_ID)
+    p_decompose.add_argument("--account-id", default=DEFAULT_ACCOUNT_ID)
+    p_decompose.add_argument("--max-tasks", type=int, default=6)
+    p_decompose.add_argument("--min-confidence", type=float, default=0.6)
+    p_decompose.add_argument("--require-approval", action="store_true")
+    p_decompose.add_argument("--force-apply", action="store_true")
+    p_decompose.add_argument("--decompose-output", default="")
+    p_decompose.set_defaults(func=cmd_decompose_goal)
+
     p_clarify = sub.add_parser("clarify")
     p_clarify.add_argument("--root", required=True)
     p_clarify.add_argument("--task-id", required=True)
@@ -2633,6 +3060,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_feishu.add_argument("--spawn-output-seq", default="")
     p_feishu.add_argument("--auto-recover", action="store_true")
     p_feishu.add_argument("--recovery-max-attempts", type=int, default=2)
+    p_feishu.add_argument("--decompose-min-confidence", type=float, default=0.6)
+    p_feishu.add_argument("--decompose-require-approval", action="store_true")
+    p_feishu.add_argument("--decompose-max-tasks", type=int, default=6)
+    p_feishu.add_argument("--decompose-output", default="")
     p_feishu.add_argument("--clarify-cooldown-sec", type=int, default=300)
     p_feishu.add_argument("--clarify-state-file", default="")
     p_feishu.set_defaults(func=cmd_feishu_router)
