@@ -525,20 +525,21 @@
     "T-1001": {
       "taskId": "T-1001",
       "title": "DIAG T-1000: need diag",
-      "status": "in_progress",
+      "status": "done",
       "owner": "debugger",
       "assigneeHint": "debugger",
       "createdBy": "orchestrator",
       "createdAt": "2026-02-27T07:42:34Z",
-      "updatedAt": "2026-02-28T03:32:44Z",
+      "updatedAt": "2026-02-28T09:30:14Z",
       "blockedReason": null,
-      "result": null,
+      "result": "{\"status\":\"done\",\"message\":\"\u5df2\u5b8c\u6210\uff0c\u6d4b\u8bd5\u901a\u8fc7\uff0c\u8bc1\u636e: logs/prod-autopilot.log\"}",
       "review": null,
       "relatedTo": "T-1000",
       "history": [
         "6cf4bc6b-aba3-4390-bdc4-3fa70c570492",
         "3a291bd5-7150-432b-af97-dede4de34878",
-        "49780184-d4a0-4cfa-bea3-6fc4afedffcd"
+        "49780184-d4a0-4cfa-bea3-6fc4afedffcd",
+        "7c05f07f-1c2a-492a-9db7-979a795136dc"
       ]
     },
     "T-1002": {
@@ -562,18 +563,20 @@
     "T-1003": {
       "taskId": "T-1003",
       "title": "DIAG T-1002: need diag",
-      "status": "pending",
-      "owner": null,
+      "status": "done",
+      "owner": "debugger",
       "assigneeHint": "debugger",
       "createdBy": "orchestrator",
       "createdAt": "2026-02-27T07:56:14Z",
-      "updatedAt": "2026-02-27T07:56:14Z",
+      "updatedAt": "2026-02-28T09:30:25Z",
       "blockedReason": null,
-      "result": null,
+      "result": "{\"status\":\"done\",\"message\":\"\u5df2\u5b8c\u6210\uff0c\u6d4b\u8bd5\u901a\u8fc7\uff0c\u8bc1\u636e: logs/prod-autopilot.log\"}",
       "review": null,
       "relatedTo": "T-1002",
       "history": [
-        "0c05a915-bce8-44d9-9371-4813581440a9"
+        "0c05a915-bce8-44d9-9371-4813581440a9",
+        "158687e0-2bbc-4629-955d-8c8ebc90dafe",
+        "2813f148-b9c6-4a44-8800-c39f0976a0cd"
       ]
     },
     "T-1004": {
@@ -671,10 +674,90 @@
       "history": [
         "383036d6-eb85-42fb-a238-3c3e491343a5"
       ]
+    },
+    "T-990": {
+      "taskId": "T-990",
+      "title": "\u751f\u4ea7\u9a8c\u6536-\u53ef\u89c1\u4ea4\u63a5",
+      "status": "done",
+      "owner": "coder",
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-28T09:29:42Z",
+      "updatedAt": "2026-02-28T09:29:51Z",
+      "blockedReason": null,
+      "result": "{\"status\":\"done\",\"message\":\"\u5df2\u5b8c\u6210\uff0cpytest \u901a\u8fc7\uff0c\u8bc1\u636e: logs/prod-handoff.log\"}",
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "22c1c8bc-0f24-42a7-8570-656827d7f369",
+        "1f593224-8ff1-4f59-8c6a-ceb00d811e5a",
+        "e5722d7c-ed31-450a-9df7-815b263422ad"
+      ]
+    },
+    "T-991": {
+      "taskId": "T-991",
+      "title": "\u751f\u4ea7\u9a8c\u6536-\u9a8c\u6536\u95e8\u7981",
+      "status": "blocked",
+      "owner": "coder",
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-28T09:29:56Z",
+      "updatedAt": "2026-02-28T09:30:01Z",
+      "blockedReason": "\u5df2\u5b8c\u6210\uff0c\u8bc1\u636e: docs/protocol.md | coder \u4ea4\u4ed8\u7f3a\u5c11\u9a8c\u6536\u5173\u952e\u8bcd\uff08\u81f3\u5c11\u5305\u542b\u5176\u4e00\uff1atest, pytest, \u9a8c\u8bc1, \u901a\u8fc7, \u65e5\u5fd7, log\uff09\u3002",
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "2cd8c7d8-b815-4d58-ab1d-4b4cb6d47143",
+        "cf3fb364-3e9d-4e0d-8b76-1b5928463f77",
+        "b4dc007c-abde-45d9-926e-90419630214c"
+      ]
+    },
+    "T-992": {
+      "taskId": "T-992",
+      "title": "\u751f\u4ea7\u9a8c\u6536-autopilot-1",
+      "status": "done",
+      "owner": "coder",
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-28T09:30:04Z",
+      "updatedAt": "2026-02-28T09:32:10Z",
+      "blockedReason": null,
+      "result": "{\"status\":\"done\",\"message\":\"\u5df2\u5b8c\u6210\uff0cpytest \u901a\u8fc7\uff0c\u8bc1\u636e: logs/prod-followup.log\"}",
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "38f7ca7e-8675-471a-8638-1e6cdcd39bf4",
+        "fa3804d3-3cd1-4626-ae12-1ed121a637c7",
+        "aa306b30-376c-4d8b-817e-54001a4dbe6b"
+      ]
+    },
+    "T-993": {
+      "taskId": "T-993",
+      "title": "\u751f\u4ea7\u9a8c\u6536-autopilot-2",
+      "status": "done",
+      "owner": "coder",
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-28T09:30:06Z",
+      "updatedAt": "2026-02-28T09:32:21Z",
+      "blockedReason": null,
+      "result": "{\"status\":\"done\",\"message\":\"\u5df2\u5b8c\u6210\uff0cpytest \u901a\u8fc7\uff0c\u8bc1\u636e: logs/prod-followup.log\"}",
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "ffaa7ddf-cca6-4ebf-a81a-ace5f84a3c0a",
+        "8b7dea52-7568-4ac1-8495-f8ee2282fcb2",
+        "dc102478-59d9-418d-a669-c52160dd786c"
+      ]
     }
   },
   "meta": {
     "version": 2,
-    "updatedAt": "2026-02-28T03:32:44Z"
+    "updatedAt": "2026-02-28T09:32:21Z"
   }
 }

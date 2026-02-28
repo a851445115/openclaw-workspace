@@ -1,0 +1,1223 @@
+{
+  "ok": true,
+  "groupId": "oc_041146c92a9ccb403a7f4f48fb59701d",
+  "createdAt": 1772271030,
+  "steps": [
+    {
+      "name": "create_T990",
+      "cmd": [
+        "python3",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator/scripts/lib/milestones.py",
+        "feishu-router",
+        "--root",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator",
+        "--actor",
+        "orchestrator",
+        "--text",
+        "@orchestrator create task T-990: 生产验收-可见交接",
+        "--group-id",
+        "oc_041146c92a9ccb403a7f4f48fb59701d",
+        "--account-id",
+        "orchestrator",
+        "--mode",
+        "send"
+      ],
+      "returncode": 0,
+      "stdout": "{\"ok\": true, \"handled\": true, \"intent\": \"board_cmd\", \"acceptance\": null, \"apply\": {\"ok\": true, \"intent\": \"create_task\", \"taskId\": \"T-990\", \"assigneeHint\": \"orchestrator\"}, \"publish\": {\"ok\": true, \"count\": 1, \"results\": [{\"message\": {\"prefix\": \"[TASK]\", \"taskId\": \"T-990\", \"text\": \"[TASK] T-990 | \\u72b6\\u6001=\\u5f85\\u5904\\u7406 | \\u5efa\\u8bae\\u8d1f\\u8d23\\u4eba=orchestrator\\n\\u6807\\u9898: \\u751f\\u4ea7\\u9a8c\\u6536-\\u53ef\\u89c1\\u4ea4\\u63a5\"}, \"send\": {\"ok\": true, \"dryRun\": false, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"orchestrator\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[TASK] T-990 | \\u72b6\\u6001=\\u5f85\\u5904\\u7406 | \\u5efa\\u8bae\\u8d1f\\u8d23\\u4eba=orchestrator\\n\\u6807\\u9898: \\u751f\\u4ea7\\u9a8c\\u6536-\\u53ef\\u89c1\\u4ea4\\u63a5\", \"mode\": \"send\"}, \"result\": {\"action\": \"send\", \"channel\": \"feishu\", \"dryRun\": false, \"handledBy\": \"core\", \"payload\": {\"channel\": \"feishu\", \"to\": \"oc_041146c92a9ccb403a7f4f48fb59701d\", \"via\": \"direct\", \"mediaUrl\": null, \"result\": {\"channel\": \"feishu\", \"messageId\": \"om_x100b551f165ba4a0c38837fb6378be6\", \"chatId\": \"oc_041146c92a9ccb403a7f4f48fb59701d\"}}}}}]}}",
+      "stderr": "",
+      "json": {
+        "ok": true,
+        "handled": true,
+        "intent": "board_cmd",
+        "acceptance": null,
+        "apply": {
+          "ok": true,
+          "intent": "create_task",
+          "taskId": "T-990",
+          "assigneeHint": "orchestrator"
+        },
+        "publish": {
+          "ok": true,
+          "count": 1,
+          "results": [
+            {
+              "message": {
+                "prefix": "[TASK]",
+                "taskId": "T-990",
+                "text": "[TASK] T-990 | 状态=待处理 | 建议负责人=orchestrator\n标题: 生产验收-可见交接"
+              },
+              "send": {
+                "ok": true,
+                "dryRun": false,
+                "payload": {
+                  "channel": "feishu",
+                  "accountId": "orchestrator",
+                  "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+                  "text": "[TASK] T-990 | 状态=待处理 | 建议负责人=orchestrator\n标题: 生产验收-可见交接",
+                  "mode": "send"
+                },
+                "result": {
+                  "action": "send",
+                  "channel": "feishu",
+                  "dryRun": false,
+                  "handledBy": "core",
+                  "payload": {
+                    "channel": "feishu",
+                    "to": "oc_041146c92a9ccb403a7f4f48fb59701d",
+                    "via": "direct",
+                    "mediaUrl": null,
+                    "result": {
+                      "channel": "feishu",
+                      "messageId": "om_x100b551f165ba4a0c38837fb6378be6",
+                      "chatId": "oc_041146c92a9ccb403a7f4f48fb59701d"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "dispatch_T990_handoff_visible",
+      "cmd": [
+        "python3",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator/scripts/lib/milestones.py",
+        "dispatch",
+        "--root",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator",
+        "--task-id",
+        "T-990",
+        "--agent",
+        "coder",
+        "--task",
+        "T-990: 生产验收-可见交接",
+        "--actor",
+        "orchestrator",
+        "--group-id",
+        "oc_041146c92a9ccb403a7f4f48fb59701d",
+        "--account-id",
+        "orchestrator",
+        "--mode",
+        "send",
+        "--spawn",
+        "--visibility-mode",
+        "handoff_visible",
+        "--spawn-output",
+        "{\"status\":\"done\",\"message\":\"已完成，pytest 通过，证据: logs/prod-handoff.log\"}"
+      ],
+      "returncode": 0,
+      "stdout": "{\"ok\": true, \"handled\": true, \"intent\": \"dispatch\", \"taskId\": \"T-990\", \"agent\": \"coder\", \"dispatchMode\": \"spawn\", \"visibilityMode\": \"handoff_visible\", \"claim\": {\"ok\": true, \"intent\": \"claim_task\", \"taskId\": \"T-990\", \"owner\": \"coder\", \"status\": \"claimed\"}, \"claimSend\": {\"ok\": true, \"dryRun\": false, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"orchestrator\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[CLAIM] T-990 | \\u72b6\\u6001=\\u5df2\\u8ba4\\u9886 | \\u6307\\u6d3e=coder\\n\\u6807\\u9898: \\u751f\\u4ea7\\u9a8c\\u6536-\\u53ef\\u89c1\\u4ea4\\u63a5\\n\\u6d3e\\u53d1\\u6a21\\u5f0f: \\u81ea\\u52a8\\u6267\\u884c\\u95ed\\u73af\\uff08spawn\\u5e76\\u56de\\u5199\\u770b\\u677f\\uff09\", \"mode\": \"send\"}, \"result\": {\"action\": \"send\", \"channel\": \"feishu\", \"dryRun\": false, \"handledBy\": \"core\", \"payload\": {\"channel\": \"feishu\", \"to\": \"oc_041146c92a9ccb403a7f4f48fb59701d\", \"via\": \"direct\", \"mediaUrl\": null, \"result\": {\"channel\": \"feishu\", \"messageId\": \"om_x100b551f16080cbcc14d3a884febde5\", \"chatId\": \"oc_041146c92a9ccb403a7f4f48fb59701d\"}}}}, \"taskSend\": {\"ok\": true, \"dryRun\": false, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"orchestrator\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[TASK] T-990 | \\u8d1f\\u8d23\\u4eba=coder\\n\\u4efb\\u52a1: T-990: \\u751f\\u4ea7\\u9a8c\\u6536-\\u53ef\\u89c1\\u4ea4\\u63a5\\n\\u8bf7 <at user_id=\\\"ou_0991106b8c19b021e1c9af96e869f3fc\\\">coder</at> \\u6267\\u884c\\uff0c\\u5b8c\\u6210\\u540e\\u6309\\u6a21\\u677f\\u56de\\u62a5\\uff1a<at user_id=\\\"ou_f938eaffd79cf1837c3c7c6cd5089235\\\">orchestrator</at> T-990 \\u5df2\\u5b8c\\u6210\\uff0c\\u8bc1\\u636e: \\u65e5\\u5fd7/\\u622a\\u56fe/\\u94fe\\u63a5\\u3002\", \"mode\": \"send\"}, \"result\": {\"action\": \"send\", \"channel\": \"feishu\", \"dryRun\": false, \"handledBy\": \"core\", \"payload\": {\"channel\": \"feishu\", \"to\": \"oc_041146c92a9ccb403a7f4f48fb59701d\", \"via\": \"direct\", \"mediaUrl\": null, \"result\": {\"channel\": \"feishu\", \"messageId\": \"om_x100b551f162318acc2a3c107061531d\", \"chatId\": \"oc_041146c92a9ccb403a7f4f48fb59701d\"}}}}, \"spawn\": {\"ok\": true, \"simulated\": true, \"stdout\": \"{\\\"status\\\":\\\"done\\\",\\\"message\\\":\\\"\\u5df2\\u5b8c\\u6210\\uff0cpytest \\u901a\\u8fc7\\uff0c\\u8bc1\\u636e: logs/prod-handoff.log\\\"}\", \"stderr\": \"\", \"command\": [\"--spawn-output\"], \"spawnResult\": {\"status\": \"done\", \"message\": \"\\u5df2\\u5b8c\\u6210\\uff0cpytest \\u901a\\u8fc7\\uff0c\\u8bc1\\u636e: logs/prod-handoff.log\"}, \"decision\": \"done\", \"detail\": \"{\\\"status\\\":\\\"done\\\",\\\"message\\\":\\\"\\u5df2\\u5b8c\\u6210\\uff0cpytest \\u901a\\u8fc7\\uff0c\\u8bc1\\u636e: logs/prod-handoff.log\\\"}\", \"reasonCode\": \"done_with_evidence\"}, \"closeApply\": {\"ok\": true, \"intent\": \"mark_done\", \"taskId\": \"T-990\", \"status\": \"done\"}, \"closePublish\": {\"ok\": true, \"count\": 1, \"results\": [{\"message\": {\"prefix\": \"[DONE]\", \"taskId\": \"T-990\", \"text\": \"[DONE] T-990 | \\u72b6\\u6001=\\u5df2\\u5b8c\\u6210 | \\u8d1f\\u8d23\\u4eba=coder\\n\\u7ed3\\u679c: {\\\"status\\\":\\\"done\\\",\\\"message\\\":\\\"\\u5df2\\u5b8c\\u6210\\uff0cpytest \\u901a\\u8fc7\\uff0c\\u8bc1\\u636e: logs/prod-handoff.log\\\"}\"}, \"send\": {\"ok\": true, \"dryRun\": false, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"orchestrator\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[DONE] T-990 | \\u72b6\\u6001=\\u5df2\\u5b8c\\u6210 | \\u8d1f\\u8d23\\u4eba=coder\\n\\u7ed3\\u679c: {\\\"status\\\":\\\"done\\\",\\\"message\\\":\\\"\\u5df2\\u5b8c\\u6210\\uff0cpytest \\u901a\\u8fc7\\uff0c\\u8bc1\\u636e: logs/prod-handoff.log\\\"}\", \"mode\": \"send\"}, \"result\": {\"action\": \"send\", \"channel\": \"feishu\", \"dryRun\": false, \"handledBy\": \"core\", \"payload\": {\"channel\": \"feishu\", \"to\": \"oc_041146c92a9ccb403a7f4f48fb59701d\", \"via\": \"direct\", \"mediaUrl\": null, \"result\": {\"channel\": \"feishu\", \"messageId\": \"om_x100b551f17d5c0a4c362387e5e2c8ae\", \"chatId\": \"oc_041146c92a9ccb403a7f4f48fb59701d\"}}}}}]}, \"workerReport\": {\"ok\": true, \"skipped\": false, \"visibilityMode\": \"handoff_visible\", \"send\": {\"ok\": true, \"dryRun\": false, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"coder\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[TASK] T-990 | \\u4ea4\\u63a5\\u4eba=coder\\n<at user_id=\\\"ou_f938eaffd79cf1837c3c7c6cd5089235\\\">orchestrator</at> T-990 \\u5df2\\u5b8c\\u6210\\uff0c\\u7ed3\\u679c: {\\\"status\\\":\\\"done\\\",\\\"message\\\":\\\"\\u5df2\\u5b8c\\u6210\\uff0cpytest \\u901a\\u8fc7\\uff0c\\u8bc1\\u636e: logs/prod-handoff.log\\\"}\", \"mode\": \"send\"}, \"result\": {\"action\": \"send\", \"channel\": \"feishu\", \"dryRun\": false, \"handledBy\": \"core\", \"payload\": {\"channel\": \"feishu\", \"to\": \"oc_041146c92a9ccb403a7f4f48fb59701d\", \"via\": \"direct\", \"mediaUrl\": null, \"result\": {\"channel\": \"feishu\", \"messageId\": \"om_x100b551f178ca8a0c2df43376940a9f\", \"chatId\": \"oc_041146c92a9ccb403a7f4f48fb59701d\"}}}}}, \"waitForReport\": false, \"autoClose\": true, \"reportTemplate\": \"<at user_id=\\\"ou_f938eaffd79cf1837c3c7c6cd5089235\\\">orchestrator</at> T-990 \\u5df2\\u5b8c\\u6210\\uff0c\\u8bc1\\u636e: \\u65e5\\u5fd7/\\u622a\\u56fe/\\u94fe\\u63a5\"}",
+      "stderr": "",
+      "json": {
+        "ok": true,
+        "handled": true,
+        "intent": "dispatch",
+        "taskId": "T-990",
+        "agent": "coder",
+        "dispatchMode": "spawn",
+        "visibilityMode": "handoff_visible",
+        "claim": {
+          "ok": true,
+          "intent": "claim_task",
+          "taskId": "T-990",
+          "owner": "coder",
+          "status": "claimed"
+        },
+        "claimSend": {
+          "ok": true,
+          "dryRun": false,
+          "payload": {
+            "channel": "feishu",
+            "accountId": "orchestrator",
+            "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+            "text": "[CLAIM] T-990 | 状态=已认领 | 指派=coder\n标题: 生产验收-可见交接\n派发模式: 自动执行闭环（spawn并回写看板）",
+            "mode": "send"
+          },
+          "result": {
+            "action": "send",
+            "channel": "feishu",
+            "dryRun": false,
+            "handledBy": "core",
+            "payload": {
+              "channel": "feishu",
+              "to": "oc_041146c92a9ccb403a7f4f48fb59701d",
+              "via": "direct",
+              "mediaUrl": null,
+              "result": {
+                "channel": "feishu",
+                "messageId": "om_x100b551f16080cbcc14d3a884febde5",
+                "chatId": "oc_041146c92a9ccb403a7f4f48fb59701d"
+              }
+            }
+          }
+        },
+        "taskSend": {
+          "ok": true,
+          "dryRun": false,
+          "payload": {
+            "channel": "feishu",
+            "accountId": "orchestrator",
+            "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+            "text": "[TASK] T-990 | 负责人=coder\n任务: T-990: 生产验收-可见交接\n请 <at user_id=\"ou_0991106b8c19b021e1c9af96e869f3fc\">coder</at> 执行，完成后按模板回报：<at user_id=\"ou_f938eaffd79cf1837c3c7c6cd5089235\">orchestrator</at> T-990 已完成，证据: 日志/截图/链接。",
+            "mode": "send"
+          },
+          "result": {
+            "action": "send",
+            "channel": "feishu",
+            "dryRun": false,
+            "handledBy": "core",
+            "payload": {
+              "channel": "feishu",
+              "to": "oc_041146c92a9ccb403a7f4f48fb59701d",
+              "via": "direct",
+              "mediaUrl": null,
+              "result": {
+                "channel": "feishu",
+                "messageId": "om_x100b551f162318acc2a3c107061531d",
+                "chatId": "oc_041146c92a9ccb403a7f4f48fb59701d"
+              }
+            }
+          }
+        },
+        "spawn": {
+          "ok": true,
+          "simulated": true,
+          "stdout": "{\"status\":\"done\",\"message\":\"已完成，pytest 通过，证据: logs/prod-handoff.log\"}",
+          "stderr": "",
+          "command": [
+            "--spawn-output"
+          ],
+          "spawnResult": {
+            "status": "done",
+            "message": "已完成，pytest 通过，证据: logs/prod-handoff.log"
+          },
+          "decision": "done",
+          "detail": "{\"status\":\"done\",\"message\":\"已完成，pytest 通过，证据: logs/prod-handoff.log\"}",
+          "reasonCode": "done_with_evidence"
+        },
+        "closeApply": {
+          "ok": true,
+          "intent": "mark_done",
+          "taskId": "T-990",
+          "status": "done"
+        },
+        "closePublish": {
+          "ok": true,
+          "count": 1,
+          "results": [
+            {
+              "message": {
+                "prefix": "[DONE]",
+                "taskId": "T-990",
+                "text": "[DONE] T-990 | 状态=已完成 | 负责人=coder\n结果: {\"status\":\"done\",\"message\":\"已完成，pytest 通过，证据: logs/prod-handoff.log\"}"
+              },
+              "send": {
+                "ok": true,
+                "dryRun": false,
+                "payload": {
+                  "channel": "feishu",
+                  "accountId": "orchestrator",
+                  "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+                  "text": "[DONE] T-990 | 状态=已完成 | 负责人=coder\n结果: {\"status\":\"done\",\"message\":\"已完成，pytest 通过，证据: logs/prod-handoff.log\"}",
+                  "mode": "send"
+                },
+                "result": {
+                  "action": "send",
+                  "channel": "feishu",
+                  "dryRun": false,
+                  "handledBy": "core",
+                  "payload": {
+                    "channel": "feishu",
+                    "to": "oc_041146c92a9ccb403a7f4f48fb59701d",
+                    "via": "direct",
+                    "mediaUrl": null,
+                    "result": {
+                      "channel": "feishu",
+                      "messageId": "om_x100b551f17d5c0a4c362387e5e2c8ae",
+                      "chatId": "oc_041146c92a9ccb403a7f4f48fb59701d"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "workerReport": {
+          "ok": true,
+          "skipped": false,
+          "visibilityMode": "handoff_visible",
+          "send": {
+            "ok": true,
+            "dryRun": false,
+            "payload": {
+              "channel": "feishu",
+              "accountId": "coder",
+              "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+              "text": "[TASK] T-990 | 交接人=coder\n<at user_id=\"ou_f938eaffd79cf1837c3c7c6cd5089235\">orchestrator</at> T-990 已完成，结果: {\"status\":\"done\",\"message\":\"已完成，pytest 通过，证据: logs/prod-handoff.log\"}",
+              "mode": "send"
+            },
+            "result": {
+              "action": "send",
+              "channel": "feishu",
+              "dryRun": false,
+              "handledBy": "core",
+              "payload": {
+                "channel": "feishu",
+                "to": "oc_041146c92a9ccb403a7f4f48fb59701d",
+                "via": "direct",
+                "mediaUrl": null,
+                "result": {
+                  "channel": "feishu",
+                  "messageId": "om_x100b551f178ca8a0c2df43376940a9f",
+                  "chatId": "oc_041146c92a9ccb403a7f4f48fb59701d"
+                }
+              }
+            }
+          }
+        },
+        "waitForReport": false,
+        "autoClose": true,
+        "reportTemplate": "<at user_id=\"ou_f938eaffd79cf1837c3c7c6cd5089235\">orchestrator</at> T-990 已完成，证据: 日志/截图/链接"
+      }
+    },
+    {
+      "name": "create_T991",
+      "cmd": [
+        "python3",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator/scripts/lib/milestones.py",
+        "feishu-router",
+        "--root",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator",
+        "--actor",
+        "orchestrator",
+        "--text",
+        "@orchestrator create task T-991: 生产验收-验收门禁",
+        "--group-id",
+        "oc_041146c92a9ccb403a7f4f48fb59701d",
+        "--account-id",
+        "orchestrator",
+        "--mode",
+        "send"
+      ],
+      "returncode": 0,
+      "stdout": "{\"ok\": true, \"handled\": true, \"intent\": \"board_cmd\", \"acceptance\": null, \"apply\": {\"ok\": true, \"intent\": \"create_task\", \"taskId\": \"T-991\", \"assigneeHint\": \"orchestrator\"}, \"publish\": {\"ok\": true, \"count\": 1, \"results\": [{\"message\": {\"prefix\": \"[TASK]\", \"taskId\": \"T-991\", \"text\": \"[TASK] T-991 | \\u72b6\\u6001=\\u5f85\\u5904\\u7406 | \\u5efa\\u8bae\\u8d1f\\u8d23\\u4eba=orchestrator\\n\\u6807\\u9898: \\u751f\\u4ea7\\u9a8c\\u6536-\\u9a8c\\u6536\\u95e8\\u7981\"}, \"send\": {\"ok\": true, \"dryRun\": false, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"orchestrator\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[TASK] T-991 | \\u72b6\\u6001=\\u5f85\\u5904\\u7406 | \\u5efa\\u8bae\\u8d1f\\u8d23\\u4eba=orchestrator\\n\\u6807\\u9898: \\u751f\\u4ea7\\u9a8c\\u6536-\\u9a8c\\u6536\\u95e8\\u7981\", \"mode\": \"send\"}, \"result\": {\"action\": \"send\", \"channel\": \"feishu\", \"dryRun\": false, \"handledBy\": \"core\", \"payload\": {\"channel\": \"feishu\", \"to\": \"oc_041146c92a9ccb403a7f4f48fb59701d\", \"via\": \"direct\", \"mediaUrl\": null, \"result\": {\"channel\": \"feishu\", \"messageId\": \"om_x100b551f17a6fcacc4a95a18ce8d809\", \"chatId\": \"oc_041146c92a9ccb403a7f4f48fb59701d\"}}}}}]}}",
+      "stderr": "",
+      "json": {
+        "ok": true,
+        "handled": true,
+        "intent": "board_cmd",
+        "acceptance": null,
+        "apply": {
+          "ok": true,
+          "intent": "create_task",
+          "taskId": "T-991",
+          "assigneeHint": "orchestrator"
+        },
+        "publish": {
+          "ok": true,
+          "count": 1,
+          "results": [
+            {
+              "message": {
+                "prefix": "[TASK]",
+                "taskId": "T-991",
+                "text": "[TASK] T-991 | 状态=待处理 | 建议负责人=orchestrator\n标题: 生产验收-验收门禁"
+              },
+              "send": {
+                "ok": true,
+                "dryRun": false,
+                "payload": {
+                  "channel": "feishu",
+                  "accountId": "orchestrator",
+                  "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+                  "text": "[TASK] T-991 | 状态=待处理 | 建议负责人=orchestrator\n标题: 生产验收-验收门禁",
+                  "mode": "send"
+                },
+                "result": {
+                  "action": "send",
+                  "channel": "feishu",
+                  "dryRun": false,
+                  "handledBy": "core",
+                  "payload": {
+                    "channel": "feishu",
+                    "to": "oc_041146c92a9ccb403a7f4f48fb59701d",
+                    "via": "direct",
+                    "mediaUrl": null,
+                    "result": {
+                      "channel": "feishu",
+                      "messageId": "om_x100b551f17a6fcacc4a95a18ce8d809",
+                      "chatId": "oc_041146c92a9ccb403a7f4f48fb59701d"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "coder_claim_T991",
+      "cmd": [
+        "python3",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator/scripts/lib/milestones.py",
+        "feishu-router",
+        "--root",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator",
+        "--actor",
+        "coder",
+        "--text",
+        "@orchestrator claim T-991",
+        "--group-id",
+        "oc_041146c92a9ccb403a7f4f48fb59701d",
+        "--account-id",
+        "orchestrator",
+        "--mode",
+        "send"
+      ],
+      "returncode": 0,
+      "stdout": "{\"ok\": true, \"handled\": true, \"intent\": \"board_cmd\", \"acceptance\": null, \"apply\": {\"ok\": true, \"intent\": \"claim_task\", \"taskId\": \"T-991\", \"owner\": \"coder\", \"status\": \"claimed\"}, \"publish\": {\"ok\": true, \"count\": 1, \"results\": [{\"message\": {\"prefix\": \"[CLAIM]\", \"taskId\": \"T-991\", \"text\": \"[CLAIM] T-991 | \\u72b6\\u6001=\\u5df2\\u8ba4\\u9886 | \\u8d1f\\u8d23\\u4eba=coder\\n\\u6807\\u9898: \\u751f\\u4ea7\\u9a8c\\u6536-\\u9a8c\\u6536\\u95e8\\u7981\"}, \"send\": {\"ok\": true, \"dryRun\": false, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"orchestrator\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[CLAIM] T-991 | \\u72b6\\u6001=\\u5df2\\u8ba4\\u9886 | \\u8d1f\\u8d23\\u4eba=coder\\n\\u6807\\u9898: \\u751f\\u4ea7\\u9a8c\\u6536-\\u9a8c\\u6536\\u95e8\\u7981\", \"mode\": \"send\"}, \"result\": {\"action\": \"send\", \"channel\": \"feishu\", \"dryRun\": false, \"handledBy\": \"core\", \"payload\": {\"channel\": \"feishu\", \"to\": \"oc_041146c92a9ccb403a7f4f48fb59701d\", \"via\": \"direct\", \"mediaUrl\": null, \"result\": {\"channel\": \"feishu\", \"messageId\": \"om_x100b551f175e4480c37ace0662b732f\", \"chatId\": \"oc_041146c92a9ccb403a7f4f48fb59701d\"}}}}}]}}",
+      "stderr": "",
+      "json": {
+        "ok": true,
+        "handled": true,
+        "intent": "board_cmd",
+        "acceptance": null,
+        "apply": {
+          "ok": true,
+          "intent": "claim_task",
+          "taskId": "T-991",
+          "owner": "coder",
+          "status": "claimed"
+        },
+        "publish": {
+          "ok": true,
+          "count": 1,
+          "results": [
+            {
+              "message": {
+                "prefix": "[CLAIM]",
+                "taskId": "T-991",
+                "text": "[CLAIM] T-991 | 状态=已认领 | 负责人=coder\n标题: 生产验收-验收门禁"
+              },
+              "send": {
+                "ok": true,
+                "dryRun": false,
+                "payload": {
+                  "channel": "feishu",
+                  "accountId": "orchestrator",
+                  "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+                  "text": "[CLAIM] T-991 | 状态=已认领 | 负责人=coder\n标题: 生产验收-验收门禁",
+                  "mode": "send"
+                },
+                "result": {
+                  "action": "send",
+                  "channel": "feishu",
+                  "dryRun": false,
+                  "handledBy": "core",
+                  "payload": {
+                    "channel": "feishu",
+                    "to": "oc_041146c92a9ccb403a7f4f48fb59701d",
+                    "via": "direct",
+                    "mediaUrl": null,
+                    "result": {
+                      "channel": "feishu",
+                      "messageId": "om_x100b551f175e4480c37ace0662b732f",
+                      "chatId": "oc_041146c92a9ccb403a7f4f48fb59701d"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "coder_done_T991_weak",
+      "cmd": [
+        "python3",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator/scripts/lib/milestones.py",
+        "feishu-router",
+        "--root",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator",
+        "--actor",
+        "coder",
+        "--text",
+        "@orchestrator done T-991: 已完成，证据: docs/protocol.md",
+        "--group-id",
+        "oc_041146c92a9ccb403a7f4f48fb59701d",
+        "--account-id",
+        "orchestrator",
+        "--mode",
+        "send"
+      ],
+      "returncode": 0,
+      "stdout": "{\"ok\": true, \"handled\": true, \"intent\": \"board_cmd\", \"acceptance\": {\"ok\": false, \"reasonCode\": \"role_policy_missing_keyword\", \"reason\": \"coder \\u4ea4\\u4ed8\\u7f3a\\u5c11\\u9a8c\\u6536\\u5173\\u952e\\u8bcd\\uff08\\u81f3\\u5c11\\u5305\\u542b\\u5176\\u4e00\\uff1atest, pytest, \\u9a8c\\u8bc1, \\u901a\\u8fc7, \\u65e5\\u5fd7, log\\uff09\\u3002\"}, \"apply\": {\"ok\": true, \"intent\": \"block_task\", \"taskId\": \"T-991\", \"status\": \"blocked\"}, \"publish\": {\"ok\": true, \"count\": 1, \"results\": [{\"message\": {\"prefix\": \"[BLOCKED]\", \"taskId\": \"T-991\", \"text\": \"[BLOCKED] T-991 | \\u72b6\\u6001=\\u963b\\u585e | \\u8d1f\\u8d23\\u4eba=coder\\n\\u539f\\u56e0: \\u5df2\\u5b8c\\u6210\\uff0c\\u8bc1\\u636e: docs/protocol.md | coder \\u4ea4\\u4ed8\\u7f3a\\u5c11\\u9a8c\\u6536\\u5173\\u952e\\u8bcd\\uff08\\u81f3\\u5c11\\u5305\\u542b\\u5176\\u4e00\\uff1atest, pytest, \\u9a8c\\u8bc1, \\u901a\\u8fc7, \\u65e5\\u5fd7, log\\uff09\\u3002\"}, \"send\": {\"ok\": true, \"dryRun\": false, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"orchestrator\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[BLOCKED] T-991 | \\u72b6\\u6001=\\u963b\\u585e | \\u8d1f\\u8d23\\u4eba=coder\\n\\u539f\\u56e0: \\u5df2\\u5b8c\\u6210\\uff0c\\u8bc1\\u636e: docs/protocol.md | coder \\u4ea4\\u4ed8\\u7f3a\\u5c11\\u9a8c\\u6536\\u5173\\u952e\\u8bcd\\uff08\\u81f3\\u5c11\\u5305\\u542b\\u5176\\u4e00\\uff1atest, pytest, \\u9a8c\\u8bc1, \\u901a\\u8fc7, \\u65e5\\u5fd7, log\\uff09\\u3002\", \"mode\": \"send\"}, \"result\": {\"action\": \"send\", \"channel\": \"feishu\", \"dryRun\": false, \"handledBy\": \"core\", \"payload\": {\"channel\": \"feishu\", \"to\": \"oc_041146c92a9ccb403a7f4f48fb59701d\", \"via\": \"direct\", \"mediaUrl\": null, \"result\": {\"channel\": \"feishu\", \"messageId\": \"om_x100b551f177050b0c104627a6d49423\", \"chatId\": \"oc_041146c92a9ccb403a7f4f48fb59701d\"}}}}}]}}",
+      "stderr": "",
+      "json": {
+        "ok": true,
+        "handled": true,
+        "intent": "board_cmd",
+        "acceptance": {
+          "ok": false,
+          "reasonCode": "role_policy_missing_keyword",
+          "reason": "coder 交付缺少验收关键词（至少包含其一：test, pytest, 验证, 通过, 日志, log）。"
+        },
+        "apply": {
+          "ok": true,
+          "intent": "block_task",
+          "taskId": "T-991",
+          "status": "blocked"
+        },
+        "publish": {
+          "ok": true,
+          "count": 1,
+          "results": [
+            {
+              "message": {
+                "prefix": "[BLOCKED]",
+                "taskId": "T-991",
+                "text": "[BLOCKED] T-991 | 状态=阻塞 | 负责人=coder\n原因: 已完成，证据: docs/protocol.md | coder 交付缺少验收关键词（至少包含其一：test, pytest, 验证, 通过, 日志, log）。"
+              },
+              "send": {
+                "ok": true,
+                "dryRun": false,
+                "payload": {
+                  "channel": "feishu",
+                  "accountId": "orchestrator",
+                  "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+                  "text": "[BLOCKED] T-991 | 状态=阻塞 | 负责人=coder\n原因: 已完成，证据: docs/protocol.md | coder 交付缺少验收关键词（至少包含其一：test, pytest, 验证, 通过, 日志, log）。",
+                  "mode": "send"
+                },
+                "result": {
+                  "action": "send",
+                  "channel": "feishu",
+                  "dryRun": false,
+                  "handledBy": "core",
+                  "payload": {
+                    "channel": "feishu",
+                    "to": "oc_041146c92a9ccb403a7f4f48fb59701d",
+                    "via": "direct",
+                    "mediaUrl": null,
+                    "result": {
+                      "channel": "feishu",
+                      "messageId": "om_x100b551f177050b0c104627a6d49423",
+                      "chatId": "oc_041146c92a9ccb403a7f4f48fb59701d"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "create_T992",
+      "cmd": [
+        "python3",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator/scripts/lib/milestones.py",
+        "feishu-router",
+        "--root",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator",
+        "--actor",
+        "orchestrator",
+        "--text",
+        "@orchestrator create task T-992: 生产验收-autopilot-1",
+        "--group-id",
+        "oc_041146c92a9ccb403a7f4f48fb59701d",
+        "--account-id",
+        "orchestrator",
+        "--mode",
+        "send"
+      ],
+      "returncode": 0,
+      "stdout": "{\"ok\": true, \"handled\": true, \"intent\": \"board_cmd\", \"acceptance\": null, \"apply\": {\"ok\": true, \"intent\": \"create_task\", \"taskId\": \"T-992\", \"assigneeHint\": \"orchestrator\"}, \"publish\": {\"ok\": true, \"count\": 1, \"results\": [{\"message\": {\"prefix\": \"[TASK]\", \"taskId\": \"T-992\", \"text\": \"[TASK] T-992 | \\u72b6\\u6001=\\u5f85\\u5904\\u7406 | \\u5efa\\u8bae\\u8d1f\\u8d23\\u4eba=orchestrator\\n\\u6807\\u9898: \\u751f\\u4ea7\\u9a8c\\u6536-autopilot-1\"}, \"send\": {\"ok\": true, \"dryRun\": false, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"orchestrator\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[TASK] T-992 | \\u72b6\\u6001=\\u5f85\\u5904\\u7406 | \\u5efa\\u8bae\\u8d1f\\u8d23\\u4eba=orchestrator\\n\\u6807\\u9898: \\u751f\\u4ea7\\u9a8c\\u6536-autopilot-1\", \"mode\": \"send\"}, \"result\": {\"action\": \"send\", \"channel\": \"feishu\", \"dryRun\": false, \"handledBy\": \"core\", \"payload\": {\"channel\": \"feishu\", \"to\": \"oc_041146c92a9ccb403a7f4f48fb59701d\", \"via\": \"direct\", \"mediaUrl\": null, \"result\": {\"channel\": \"feishu\", \"messageId\": \"om_x100b551f172790a4c3238e62b631c5a\", \"chatId\": \"oc_041146c92a9ccb403a7f4f48fb59701d\"}}}}}]}}",
+      "stderr": "",
+      "json": {
+        "ok": true,
+        "handled": true,
+        "intent": "board_cmd",
+        "acceptance": null,
+        "apply": {
+          "ok": true,
+          "intent": "create_task",
+          "taskId": "T-992",
+          "assigneeHint": "orchestrator"
+        },
+        "publish": {
+          "ok": true,
+          "count": 1,
+          "results": [
+            {
+              "message": {
+                "prefix": "[TASK]",
+                "taskId": "T-992",
+                "text": "[TASK] T-992 | 状态=待处理 | 建议负责人=orchestrator\n标题: 生产验收-autopilot-1"
+              },
+              "send": {
+                "ok": true,
+                "dryRun": false,
+                "payload": {
+                  "channel": "feishu",
+                  "accountId": "orchestrator",
+                  "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+                  "text": "[TASK] T-992 | 状态=待处理 | 建议负责人=orchestrator\n标题: 生产验收-autopilot-1",
+                  "mode": "send"
+                },
+                "result": {
+                  "action": "send",
+                  "channel": "feishu",
+                  "dryRun": false,
+                  "handledBy": "core",
+                  "payload": {
+                    "channel": "feishu",
+                    "to": "oc_041146c92a9ccb403a7f4f48fb59701d",
+                    "via": "direct",
+                    "mediaUrl": null,
+                    "result": {
+                      "channel": "feishu",
+                      "messageId": "om_x100b551f172790a4c3238e62b631c5a",
+                      "chatId": "oc_041146c92a9ccb403a7f4f48fb59701d"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "create_T993",
+      "cmd": [
+        "python3",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator/scripts/lib/milestones.py",
+        "feishu-router",
+        "--root",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator",
+        "--actor",
+        "orchestrator",
+        "--text",
+        "@orchestrator create task T-993: 生产验收-autopilot-2",
+        "--group-id",
+        "oc_041146c92a9ccb403a7f4f48fb59701d",
+        "--account-id",
+        "orchestrator",
+        "--mode",
+        "send"
+      ],
+      "returncode": 0,
+      "stdout": "{\"ok\": true, \"handled\": true, \"intent\": \"board_cmd\", \"acceptance\": null, \"apply\": {\"ok\": true, \"intent\": \"create_task\", \"taskId\": \"T-993\", \"assigneeHint\": \"orchestrator\"}, \"publish\": {\"ok\": true, \"count\": 1, \"results\": [{\"message\": {\"prefix\": \"[TASK]\", \"taskId\": \"T-993\", \"text\": \"[TASK] T-993 | \\u72b6\\u6001=\\u5f85\\u5904\\u7406 | \\u5efa\\u8bae\\u8d1f\\u8d23\\u4eba=orchestrator\\n\\u6807\\u9898: \\u751f\\u4ea7\\u9a8c\\u6536-autopilot-2\"}, \"send\": {\"ok\": true, \"dryRun\": false, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"orchestrator\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[TASK] T-993 | \\u72b6\\u6001=\\u5f85\\u5904\\u7406 | \\u5efa\\u8bae\\u8d1f\\u8d23\\u4eba=orchestrator\\n\\u6807\\u9898: \\u751f\\u4ea7\\u9a8c\\u6536-autopilot-2\", \"mode\": \"send\"}, \"result\": {\"action\": \"send\", \"channel\": \"feishu\", \"dryRun\": false, \"handledBy\": \"core\", \"payload\": {\"channel\": \"feishu\", \"to\": \"oc_041146c92a9ccb403a7f4f48fb59701d\", \"via\": \"direct\", \"mediaUrl\": null, \"result\": {\"channel\": \"feishu\", \"messageId\": \"om_x100b551f14de20a8c298c4cb2b77a5d\", \"chatId\": \"oc_041146c92a9ccb403a7f4f48fb59701d\"}}}}}]}}",
+      "stderr": "",
+      "json": {
+        "ok": true,
+        "handled": true,
+        "intent": "board_cmd",
+        "acceptance": null,
+        "apply": {
+          "ok": true,
+          "intent": "create_task",
+          "taskId": "T-993",
+          "assigneeHint": "orchestrator"
+        },
+        "publish": {
+          "ok": true,
+          "count": 1,
+          "results": [
+            {
+              "message": {
+                "prefix": "[TASK]",
+                "taskId": "T-993",
+                "text": "[TASK] T-993 | 状态=待处理 | 建议负责人=orchestrator\n标题: 生产验收-autopilot-2"
+              },
+              "send": {
+                "ok": true,
+                "dryRun": false,
+                "payload": {
+                  "channel": "feishu",
+                  "accountId": "orchestrator",
+                  "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+                  "text": "[TASK] T-993 | 状态=待处理 | 建议负责人=orchestrator\n标题: 生产验收-autopilot-2",
+                  "mode": "send"
+                },
+                "result": {
+                  "action": "send",
+                  "channel": "feishu",
+                  "dryRun": false,
+                  "handledBy": "core",
+                  "payload": {
+                    "channel": "feishu",
+                    "to": "oc_041146c92a9ccb403a7f4f48fb59701d",
+                    "via": "direct",
+                    "mediaUrl": null,
+                    "result": {
+                      "channel": "feishu",
+                      "messageId": "om_x100b551f14de20a8c298c4cb2b77a5d",
+                      "chatId": "oc_041146c92a9ccb403a7f4f48fb59701d"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "autopilot_2",
+      "cmd": [
+        "python3",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator/scripts/lib/milestones.py",
+        "autopilot",
+        "--root",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator",
+        "--actor",
+        "orchestrator",
+        "--group-id",
+        "oc_041146c92a9ccb403a7f4f48fb59701d",
+        "--account-id",
+        "orchestrator",
+        "--mode",
+        "send",
+        "--spawn",
+        "--max-steps",
+        "2",
+        "--visibility-mode",
+        "handoff_visible",
+        "--spawn-output",
+        "{\"status\":\"done\",\"message\":\"已完成，测试通过，证据: logs/prod-autopilot.log\"}"
+      ],
+      "returncode": 0,
+      "stdout": "{\"ok\": true, \"handled\": true, \"intent\": \"autopilot\", \"maxSteps\": 2, \"stepsRun\": 2, \"summary\": {\"done\": 2, \"blocked\": 0, \"manual\": 0}, \"stopReason\": \"max_steps_reached\", \"visibilityMode\": \"handoff_visible\", \"steps\": [{\"index\": 1, \"taskId\": \"T-1001\", \"agent\": \"debugger\", \"dispatch\": {\"ok\": true, \"handled\": true, \"intent\": \"dispatch\", \"taskId\": \"T-1001\", \"agent\": \"debugger\", \"dispatchMode\": \"spawn\", \"visibilityMode\": \"handoff_visible\", \"claim\": {\"ok\": true, \"intent\": \"claim_task\", \"taskId\": \"T-1001\", \"status\": \"in_progress\", \"skipped\": true}, \"claimSend\": {\"ok\": true, \"dryRun\": false, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"orchestrator\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[CLAIM] T-1001 | \\u72b6\\u6001=\\u8fdb\\u884c\\u4e2d | \\u6307\\u6d3e=debugger\\n\\u6807\\u9898: DIAG T-1000: need diag\\n\\u6d3e\\u53d1\\u6a21\\u5f0f: \\u81ea\\u52a8\\u6267\\u884c\\u95ed\\u73af\\uff08spawn\\u5e76\\u56de\\u5199\\u770b\\u677f\\uff09\", \"mode\": \"send\"}, \"result\": {\"action\": \"send\", \"channel\": \"feishu\", \"dryRun\": false, \"handledBy\": \"core\", \"payload\": {\"channel\": \"feishu\", \"to\": \"oc_041146c92a9ccb403a7f4f48fb59701d\", \"via\": \"direct\", \"mediaUrl\": null, \"result\": {\"channel\": \"feishu\", \"messageId\": \"om_x100b551f14f06888c45b8442d1e93b2\", \"chatId\": \"oc_041146c92a9ccb403a7f4f48fb59701d\"}}}}, \"taskSend\": {\"ok\": true, \"dryRun\": false, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"orchestrator\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[TASK] T-1001 | \\u8d1f\\u8d23\\u4eba=debugger\\n\\u4efb\\u52a1: T-1001: DIAG T-1000: need diag\\n\\u8bf7 <at user_id=\\\"ou_d4b917265da330a17a655c0eac97a151\\\">debugger</at> \\u6267\\u884c\\uff0c\\u5b8c\\u6210\\u540e\\u6309\\u6a21\\u677f\\u56de\\u62a5\\uff1a<at user_id=\\\"ou_f938eaffd79cf1837c3c7c6cd5089235\\\">orchestrator</at> T-1001 \\u5df2\\u5b8c\\u6210\\uff0c\\u8bc1\\u636e: \\u65e5\\u5fd7/\\u622a\\u56fe/\\u94fe\\u63a5\\u3002\", \"mode\": \"send\"}, \"result\": {\"action\": \"send\", \"channel\": \"feishu\", \"dryRun\": false, \"handledBy\": \"core\", \"payload\": {\"channel\": \"feishu\", \"to\": \"oc_041146c92a9ccb403a7f4f48fb59701d\", \"via\": \"direct\", \"mediaUrl\": null, \"result\": {\"channel\": \"feishu\", \"messageId\": \"om_x100b551f14ab2cb0c394e5a58092923\", \"chatId\": \"oc_041146c92a9ccb403a7f4f48fb59701d\"}}}}, \"spawn\": {\"ok\": true, \"simulated\": true, \"stdout\": \"{\\\"status\\\":\\\"done\\\",\\\"message\\\":\\\"\\u5df2\\u5b8c\\u6210\\uff0c\\u6d4b\\u8bd5\\u901a\\u8fc7\\uff0c\\u8bc1\\u636e: logs/prod-autopilot.log\\\"}\", \"stderr\": \"\", \"command\": [\"--spawn-output\"], \"spawnResult\": {\"status\": \"done\", \"message\": \"\\u5df2\\u5b8c\\u6210\\uff0c\\u6d4b\\u8bd5\\u901a\\u8fc7\\uff0c\\u8bc1\\u636e: logs/prod-autopilot.log\"}, \"decision\": \"done\", \"detail\": \"{\\\"status\\\":\\\"done\\\",\\\"message\\\":\\\"\\u5df2\\u5b8c\\u6210\\uff0c\\u6d4b\\u8bd5\\u901a\\u8fc7\\uff0c\\u8bc1\\u636e: logs/prod-autopilot.log\\\"}\", \"reasonCode\": \"done_with_evidence\"}, \"closeApply\": {\"ok\": true, \"intent\": \"mark_done\", \"taskId\": \"T-1001\", \"status\": \"done\"}, \"closePublish\": {\"ok\": true, \"count\": 1, \"results\": [{\"message\": {\"prefix\": \"[DONE]\", \"taskId\": \"T-1001\", \"text\": \"[DONE] T-1001 | \\u72b6\\u6001=\\u5df2\\u5b8c\\u6210 | \\u8d1f\\u8d23\\u4eba=debugger\\n\\u7ed3\\u679c: {\\\"status\\\":\\\"done\\\",\\\"message\\\":\\\"\\u5df2\\u5b8c\\u6210\\uff0c\\u6d4b\\u8bd5\\u901a\\u8fc7\\uff0c\\u8bc1\\u636e: logs/prod-autopilot.log\\\"}\"}, \"send\": {\"ok\": true, \"dryRun\": false, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"orchestrator\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[DONE] T-1001 | \\u72b6\\u6001=\\u5df2\\u5b8c\\u6210 | \\u8d1f\\u8d23\\u4eba=debugger\\n\\u7ed3\\u679c: {\\\"status\\\":\\\"done\\\",\\\"message\\\":\\\"\\u5df2\\u5b8c\\u6210\\uff0c\\u6d4b\\u8bd5\\u901a\\u8fc7\\uff0c\\u8bc1\\u636e: logs/prod-autopilot.log\\\"}\", \"mode\": \"send\"}, \"result\": {\"action\": \"send\", \"channel\": \"feishu\", \"dryRun\": false, \"handledBy\": \"core\", \"payload\": {\"channel\": \"feishu\", \"to\": \"oc_041146c92a9ccb403a7f4f48fb59701d\", \"via\": \"direct\", \"mediaUrl\": null, \"result\": {\"channel\": \"feishu\", \"messageId\": \"om_x100b551f145ca4b4c428413d422f48a\", \"chatId\": \"oc_041146c92a9ccb403a7f4f48fb59701d\"}}}}}]}, \"workerReport\": {\"ok\": true, \"skipped\": false, \"visibilityMode\": \"handoff_visible\", \"send\": {\"ok\": true, \"dryRun\": false, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"debugger\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[TASK] T-1001 | \\u4ea4\\u63a5\\u4eba=debugger\\n<at user_id=\\\"ou_f938eaffd79cf1837c3c7c6cd5089235\\\">orchestrator</at> T-1001 \\u5df2\\u5b8c\\u6210\\uff0c\\u7ed3\\u679c: {\\\"status\\\":\\\"done\\\",\\\"message\\\":\\\"\\u5df2\\u5b8c\\u6210\\uff0c\\u6d4b\\u8bd5\\u901a\\u8fc7\\uff0c\\u8bc1\\u636e: logs/prod-autopilot.log\\\"}\", \"mode\": \"send\"}, \"result\": {\"action\": \"send\", \"channel\": \"feishu\", \"dryRun\": false, \"handledBy\": \"core\", \"payload\": {\"channel\": \"feishu\", \"to\": \"oc_041146c92a9ccb403a7f4f48fb59701d\", \"via\": \"direct\", \"mediaUrl\": null, \"result\": {\"channel\": \"feishu\", \"messageId\": \"om_x100b551f1477a4a4c442f0d095a4d1b\", \"chatId\": \"oc_041146c92a9ccb403a7f4f48fb59701d\"}}}}}, \"waitForReport\": false, \"autoClose\": true, \"reportTemplate\": \"<at user_id=\\\"ou_f938eaffd79cf1837c3c7c6cd5089235\\\">orchestrator</at> T-1001 \\u5df2\\u5b8c\\u6210\\uff0c\\u8bc1\\u636e: \\u65e5\\u5fd7/\\u622a\\u56fe/\\u94fe\\u63a5\"}}, {\"index\": 2, \"taskId\": \"T-1003\", \"agent\": \"debugger\", \"dispatch\": {\"ok\": true, \"handled\": true, \"intent\": \"dispatch\", \"taskId\": \"T-1003\", \"agent\": \"debugger\", \"dispatchMode\": \"spawn\", \"visibilityMode\": \"handoff_visible\", \"claim\": {\"ok\": true, \"intent\": \"claim_task\", \"taskId\": \"T-1003\", \"owner\": \"debugger\", \"status\": \"claimed\"}, \"claimSend\": {\"ok\": true, \"dryRun\": false, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"orchestrator\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[CLAIM] T-1003 | \\u72b6\\u6001=\\u5df2\\u8ba4\\u9886 | \\u6307\\u6d3e=debugger\\n\\u6807\\u9898: DIAG T-1002: need diag\\n\\u6d3e\\u53d1\\u6a21\\u5f0f: \\u81ea\\u52a8\\u6267\\u884c\\u95ed\\u73af\\uff08spawn\\u5e76\\u56de\\u5199\\u770b\\u677f\\uff09\", \"mode\": \"send\"}, \"result\": {\"action\": \"send\", \"channel\": \"feishu\", \"dryRun\": false, \"handledBy\": \"core\", \"payload\": {\"channel\": \"feishu\", \"to\": \"oc_041146c92a9ccb403a7f4f48fb59701d\", \"via\": \"direct\", \"mediaUrl\": null, \"result\": {\"channel\": \"feishu\", \"messageId\": \"om_x100b551f142e84b4c2c32e36671b950\", \"chatId\": \"oc_041146c92a9ccb403a7f4f48fb59701d\"}}}}, \"taskSend\": {\"ok\": true, \"dryRun\": false, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"orchestrator\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[TASK] T-1003 | \\u8d1f\\u8d23\\u4eba=debugger\\n\\u4efb\\u52a1: T-1003: DIAG T-1002: need diag\\n\\u8bf7 <at user_id=\\\"ou_d4b917265da330a17a655c0eac97a151\\\">debugger</at> \\u6267\\u884c\\uff0c\\u5b8c\\u6210\\u540e\\u6309\\u6a21\\u677f\\u56de\\u62a5\\uff1a<at user_id=\\\"ou_f938eaffd79cf1837c3c7c6cd5089235\\\">orchestrator</at> T-1003 \\u5df2\\u5b8c\\u6210\\uff0c\\u8bc1\\u636e: \\u65e5\\u5fd7/\\u622a\\u56fe/\\u94fe\\u63a5\\u3002\", \"mode\": \"send\"}, \"result\": {\"action\": \"send\", \"channel\": \"feishu\", \"dryRun\": false, \"handledBy\": \"core\", \"payload\": {\"channel\": \"feishu\", \"to\": \"oc_041146c92a9ccb403a7f4f48fb59701d\", \"via\": \"direct\", \"mediaUrl\": null, \"result\": {\"channel\": \"feishu\", \"messageId\": \"om_x100b551f15c18884c2595895f2fb4c1\", \"chatId\": \"oc_041146c92a9ccb403a7f4f48fb59701d\"}}}}, \"spawn\": {\"ok\": true, \"simulated\": true, \"stdout\": \"{\\\"status\\\":\\\"done\\\",\\\"message\\\":\\\"\\u5df2\\u5b8c\\u6210\\uff0c\\u6d4b\\u8bd5\\u901a\\u8fc7\\uff0c\\u8bc1\\u636e: logs/prod-autopilot.log\\\"}\", \"stderr\": \"\", \"command\": [\"--spawn-output\"], \"spawnResult\": {\"status\": \"done\", \"message\": \"\\u5df2\\u5b8c\\u6210\\uff0c\\u6d4b\\u8bd5\\u901a\\u8fc7\\uff0c\\u8bc1\\u636e: logs/prod-autopilot.log\"}, \"decision\": \"done\", \"detail\": \"{\\\"status\\\":\\\"done\\\",\\\"message\\\":\\\"\\u5df2\\u5b8c\\u6210\\uff0c\\u6d4b\\u8bd5\\u901a\\u8fc7\\uff0c\\u8bc1\\u636e: logs/prod-autopilot.log\\\"}\", \"reasonCode\": \"done_with_evidence\"}, \"closeApply\": {\"ok\": true, \"intent\": \"mark_done\", \"taskId\": \"T-1003\", \"status\": \"done\"}, \"closePublish\": {\"ok\": true, \"count\": 1, \"results\": [{\"message\": {\"prefix\": \"[DONE]\", \"taskId\": \"T-1003\", \"text\": \"[DONE] T-1003 | \\u72b6\\u6001=\\u5df2\\u5b8c\\u6210 | \\u8d1f\\u8d23\\u4eba=debugger\\n\\u7ed3\\u679c: {\\\"status\\\":\\\"done\\\",\\\"message\\\":\\\"\\u5df2\\u5b8c\\u6210\\uff0c\\u6d4b\\u8bd5\\u901a\\u8fc7\\uff0c\\u8bc1\\u636e: logs/prod-autopilot.log\\\"}\"}, \"send\": {\"ok\": true, \"dryRun\": false, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"orchestrator\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[DONE] T-1003 | \\u72b6\\u6001=\\u5df2\\u5b8c\\u6210 | \\u8d1f\\u8d23\\u4eba=debugger\\n\\u7ed3\\u679c: {\\\"status\\\":\\\"done\\\",\\\"message\\\":\\\"\\u5df2\\u5b8c\\u6210\\uff0c\\u6d4b\\u8bd5\\u901a\\u8fc7\\uff0c\\u8bc1\\u636e: logs/prod-autopilot.log\\\"}\", \"mode\": \"send\"}, \"result\": {\"action\": \"send\", \"channel\": \"feishu\", \"dryRun\": false, \"handledBy\": \"core\", \"payload\": {\"channel\": \"feishu\", \"to\": \"oc_041146c92a9ccb403a7f4f48fb59701d\", \"via\": \"direct\", \"mediaUrl\": null, \"result\": {\"channel\": \"feishu\", \"messageId\": \"om_x100b551f15fbe088c3f2064a026c647\", \"chatId\": \"oc_041146c92a9ccb403a7f4f48fb59701d\"}}}}}]}, \"workerReport\": {\"ok\": true, \"skipped\": false, \"visibilityMode\": \"handoff_visible\", \"send\": {\"ok\": true, \"dryRun\": false, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"debugger\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[TASK] T-1003 | \\u4ea4\\u63a5\\u4eba=debugger\\n<at user_id=\\\"ou_f938eaffd79cf1837c3c7c6cd5089235\\\">orchestrator</at> T-1003 \\u5df2\\u5b8c\\u6210\\uff0c\\u7ed3\\u679c: {\\\"status\\\":\\\"done\\\",\\\"message\\\":\\\"\\u5df2\\u5b8c\\u6210\\uff0c\\u6d4b\\u8bd5\\u901a\\u8fc7\\uff0c\\u8bc1\\u636e: logs/prod-autopilot.log\\\"}\", \"mode\": \"send\"}, \"result\": {\"action\": \"send\", \"channel\": \"feishu\", \"dryRun\": false, \"handledBy\": \"core\", \"payload\": {\"channel\": \"feishu\", \"to\": \"oc_041146c92a9ccb403a7f4f48fb59701d\", \"via\": \"direct\", \"mediaUrl\": null, \"result\": {\"channel\": \"feishu\", \"messageId\": \"om_x100b551f159388a4c359d091fff1817\", \"chatId\": \"oc_041146c92a9ccb403a7f4f48fb59701d\"}}}}}, \"waitForReport\": false, \"autoClose\": true, \"reportTemplate\": \"<at user_id=\\\"ou_f938eaffd79cf1837c3c7c6cd5089235\\\">orchestrator</at> T-1003 \\u5df2\\u5b8c\\u6210\\uff0c\\u8bc1\\u636e: \\u65e5\\u5fd7/\\u622a\\u56fe/\\u94fe\\u63a5\"}}]}",
+      "stderr": "",
+      "json": {
+        "ok": true,
+        "handled": true,
+        "intent": "autopilot",
+        "maxSteps": 2,
+        "stepsRun": 2,
+        "summary": {
+          "done": 2,
+          "blocked": 0,
+          "manual": 0
+        },
+        "stopReason": "max_steps_reached",
+        "visibilityMode": "handoff_visible",
+        "steps": [
+          {
+            "index": 1,
+            "taskId": "T-1001",
+            "agent": "debugger",
+            "dispatch": {
+              "ok": true,
+              "handled": true,
+              "intent": "dispatch",
+              "taskId": "T-1001",
+              "agent": "debugger",
+              "dispatchMode": "spawn",
+              "visibilityMode": "handoff_visible",
+              "claim": {
+                "ok": true,
+                "intent": "claim_task",
+                "taskId": "T-1001",
+                "status": "in_progress",
+                "skipped": true
+              },
+              "claimSend": {
+                "ok": true,
+                "dryRun": false,
+                "payload": {
+                  "channel": "feishu",
+                  "accountId": "orchestrator",
+                  "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+                  "text": "[CLAIM] T-1001 | 状态=进行中 | 指派=debugger\n标题: DIAG T-1000: need diag\n派发模式: 自动执行闭环（spawn并回写看板）",
+                  "mode": "send"
+                },
+                "result": {
+                  "action": "send",
+                  "channel": "feishu",
+                  "dryRun": false,
+                  "handledBy": "core",
+                  "payload": {
+                    "channel": "feishu",
+                    "to": "oc_041146c92a9ccb403a7f4f48fb59701d",
+                    "via": "direct",
+                    "mediaUrl": null,
+                    "result": {
+                      "channel": "feishu",
+                      "messageId": "om_x100b551f14f06888c45b8442d1e93b2",
+                      "chatId": "oc_041146c92a9ccb403a7f4f48fb59701d"
+                    }
+                  }
+                }
+              },
+              "taskSend": {
+                "ok": true,
+                "dryRun": false,
+                "payload": {
+                  "channel": "feishu",
+                  "accountId": "orchestrator",
+                  "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+                  "text": "[TASK] T-1001 | 负责人=debugger\n任务: T-1001: DIAG T-1000: need diag\n请 <at user_id=\"ou_d4b917265da330a17a655c0eac97a151\">debugger</at> 执行，完成后按模板回报：<at user_id=\"ou_f938eaffd79cf1837c3c7c6cd5089235\">orchestrator</at> T-1001 已完成，证据: 日志/截图/链接。",
+                  "mode": "send"
+                },
+                "result": {
+                  "action": "send",
+                  "channel": "feishu",
+                  "dryRun": false,
+                  "handledBy": "core",
+                  "payload": {
+                    "channel": "feishu",
+                    "to": "oc_041146c92a9ccb403a7f4f48fb59701d",
+                    "via": "direct",
+                    "mediaUrl": null,
+                    "result": {
+                      "channel": "feishu",
+                      "messageId": "om_x100b551f14ab2cb0c394e5a58092923",
+                      "chatId": "oc_041146c92a9ccb403a7f4f48fb59701d"
+                    }
+                  }
+                }
+              },
+              "spawn": {
+                "ok": true,
+                "simulated": true,
+                "stdout": "{\"status\":\"done\",\"message\":\"已完成，测试通过，证据: logs/prod-autopilot.log\"}",
+                "stderr": "",
+                "command": [
+                  "--spawn-output"
+                ],
+                "spawnResult": {
+                  "status": "done",
+                  "message": "已完成，测试通过，证据: logs/prod-autopilot.log"
+                },
+                "decision": "done",
+                "detail": "{\"status\":\"done\",\"message\":\"已完成，测试通过，证据: logs/prod-autopilot.log\"}",
+                "reasonCode": "done_with_evidence"
+              },
+              "closeApply": {
+                "ok": true,
+                "intent": "mark_done",
+                "taskId": "T-1001",
+                "status": "done"
+              },
+              "closePublish": {
+                "ok": true,
+                "count": 1,
+                "results": [
+                  {
+                    "message": {
+                      "prefix": "[DONE]",
+                      "taskId": "T-1001",
+                      "text": "[DONE] T-1001 | 状态=已完成 | 负责人=debugger\n结果: {\"status\":\"done\",\"message\":\"已完成，测试通过，证据: logs/prod-autopilot.log\"}"
+                    },
+                    "send": {
+                      "ok": true,
+                      "dryRun": false,
+                      "payload": {
+                        "channel": "feishu",
+                        "accountId": "orchestrator",
+                        "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+                        "text": "[DONE] T-1001 | 状态=已完成 | 负责人=debugger\n结果: {\"status\":\"done\",\"message\":\"已完成，测试通过，证据: logs/prod-autopilot.log\"}",
+                        "mode": "send"
+                      },
+                      "result": {
+                        "action": "send",
+                        "channel": "feishu",
+                        "dryRun": false,
+                        "handledBy": "core",
+                        "payload": {
+                          "channel": "feishu",
+                          "to": "oc_041146c92a9ccb403a7f4f48fb59701d",
+                          "via": "direct",
+                          "mediaUrl": null,
+                          "result": {
+                            "channel": "feishu",
+                            "messageId": "om_x100b551f145ca4b4c428413d422f48a",
+                            "chatId": "oc_041146c92a9ccb403a7f4f48fb59701d"
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              "workerReport": {
+                "ok": true,
+                "skipped": false,
+                "visibilityMode": "handoff_visible",
+                "send": {
+                  "ok": true,
+                  "dryRun": false,
+                  "payload": {
+                    "channel": "feishu",
+                    "accountId": "debugger",
+                    "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+                    "text": "[TASK] T-1001 | 交接人=debugger\n<at user_id=\"ou_f938eaffd79cf1837c3c7c6cd5089235\">orchestrator</at> T-1001 已完成，结果: {\"status\":\"done\",\"message\":\"已完成，测试通过，证据: logs/prod-autopilot.log\"}",
+                    "mode": "send"
+                  },
+                  "result": {
+                    "action": "send",
+                    "channel": "feishu",
+                    "dryRun": false,
+                    "handledBy": "core",
+                    "payload": {
+                      "channel": "feishu",
+                      "to": "oc_041146c92a9ccb403a7f4f48fb59701d",
+                      "via": "direct",
+                      "mediaUrl": null,
+                      "result": {
+                        "channel": "feishu",
+                        "messageId": "om_x100b551f1477a4a4c442f0d095a4d1b",
+                        "chatId": "oc_041146c92a9ccb403a7f4f48fb59701d"
+                      }
+                    }
+                  }
+                }
+              },
+              "waitForReport": false,
+              "autoClose": true,
+              "reportTemplate": "<at user_id=\"ou_f938eaffd79cf1837c3c7c6cd5089235\">orchestrator</at> T-1001 已完成，证据: 日志/截图/链接"
+            }
+          },
+          {
+            "index": 2,
+            "taskId": "T-1003",
+            "agent": "debugger",
+            "dispatch": {
+              "ok": true,
+              "handled": true,
+              "intent": "dispatch",
+              "taskId": "T-1003",
+              "agent": "debugger",
+              "dispatchMode": "spawn",
+              "visibilityMode": "handoff_visible",
+              "claim": {
+                "ok": true,
+                "intent": "claim_task",
+                "taskId": "T-1003",
+                "owner": "debugger",
+                "status": "claimed"
+              },
+              "claimSend": {
+                "ok": true,
+                "dryRun": false,
+                "payload": {
+                  "channel": "feishu",
+                  "accountId": "orchestrator",
+                  "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+                  "text": "[CLAIM] T-1003 | 状态=已认领 | 指派=debugger\n标题: DIAG T-1002: need diag\n派发模式: 自动执行闭环（spawn并回写看板）",
+                  "mode": "send"
+                },
+                "result": {
+                  "action": "send",
+                  "channel": "feishu",
+                  "dryRun": false,
+                  "handledBy": "core",
+                  "payload": {
+                    "channel": "feishu",
+                    "to": "oc_041146c92a9ccb403a7f4f48fb59701d",
+                    "via": "direct",
+                    "mediaUrl": null,
+                    "result": {
+                      "channel": "feishu",
+                      "messageId": "om_x100b551f142e84b4c2c32e36671b950",
+                      "chatId": "oc_041146c92a9ccb403a7f4f48fb59701d"
+                    }
+                  }
+                }
+              },
+              "taskSend": {
+                "ok": true,
+                "dryRun": false,
+                "payload": {
+                  "channel": "feishu",
+                  "accountId": "orchestrator",
+                  "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+                  "text": "[TASK] T-1003 | 负责人=debugger\n任务: T-1003: DIAG T-1002: need diag\n请 <at user_id=\"ou_d4b917265da330a17a655c0eac97a151\">debugger</at> 执行，完成后按模板回报：<at user_id=\"ou_f938eaffd79cf1837c3c7c6cd5089235\">orchestrator</at> T-1003 已完成，证据: 日志/截图/链接。",
+                  "mode": "send"
+                },
+                "result": {
+                  "action": "send",
+                  "channel": "feishu",
+                  "dryRun": false,
+                  "handledBy": "core",
+                  "payload": {
+                    "channel": "feishu",
+                    "to": "oc_041146c92a9ccb403a7f4f48fb59701d",
+                    "via": "direct",
+                    "mediaUrl": null,
+                    "result": {
+                      "channel": "feishu",
+                      "messageId": "om_x100b551f15c18884c2595895f2fb4c1",
+                      "chatId": "oc_041146c92a9ccb403a7f4f48fb59701d"
+                    }
+                  }
+                }
+              },
+              "spawn": {
+                "ok": true,
+                "simulated": true,
+                "stdout": "{\"status\":\"done\",\"message\":\"已完成，测试通过，证据: logs/prod-autopilot.log\"}",
+                "stderr": "",
+                "command": [
+                  "--spawn-output"
+                ],
+                "spawnResult": {
+                  "status": "done",
+                  "message": "已完成，测试通过，证据: logs/prod-autopilot.log"
+                },
+                "decision": "done",
+                "detail": "{\"status\":\"done\",\"message\":\"已完成，测试通过，证据: logs/prod-autopilot.log\"}",
+                "reasonCode": "done_with_evidence"
+              },
+              "closeApply": {
+                "ok": true,
+                "intent": "mark_done",
+                "taskId": "T-1003",
+                "status": "done"
+              },
+              "closePublish": {
+                "ok": true,
+                "count": 1,
+                "results": [
+                  {
+                    "message": {
+                      "prefix": "[DONE]",
+                      "taskId": "T-1003",
+                      "text": "[DONE] T-1003 | 状态=已完成 | 负责人=debugger\n结果: {\"status\":\"done\",\"message\":\"已完成，测试通过，证据: logs/prod-autopilot.log\"}"
+                    },
+                    "send": {
+                      "ok": true,
+                      "dryRun": false,
+                      "payload": {
+                        "channel": "feishu",
+                        "accountId": "orchestrator",
+                        "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+                        "text": "[DONE] T-1003 | 状态=已完成 | 负责人=debugger\n结果: {\"status\":\"done\",\"message\":\"已完成，测试通过，证据: logs/prod-autopilot.log\"}",
+                        "mode": "send"
+                      },
+                      "result": {
+                        "action": "send",
+                        "channel": "feishu",
+                        "dryRun": false,
+                        "handledBy": "core",
+                        "payload": {
+                          "channel": "feishu",
+                          "to": "oc_041146c92a9ccb403a7f4f48fb59701d",
+                          "via": "direct",
+                          "mediaUrl": null,
+                          "result": {
+                            "channel": "feishu",
+                            "messageId": "om_x100b551f15fbe088c3f2064a026c647",
+                            "chatId": "oc_041146c92a9ccb403a7f4f48fb59701d"
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              "workerReport": {
+                "ok": true,
+                "skipped": false,
+                "visibilityMode": "handoff_visible",
+                "send": {
+                  "ok": true,
+                  "dryRun": false,
+                  "payload": {
+                    "channel": "feishu",
+                    "accountId": "debugger",
+                    "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+                    "text": "[TASK] T-1003 | 交接人=debugger\n<at user_id=\"ou_f938eaffd79cf1837c3c7c6cd5089235\">orchestrator</at> T-1003 已完成，结果: {\"status\":\"done\",\"message\":\"已完成，测试通过，证据: logs/prod-autopilot.log\"}",
+                    "mode": "send"
+                  },
+                  "result": {
+                    "action": "send",
+                    "channel": "feishu",
+                    "dryRun": false,
+                    "handledBy": "core",
+                    "payload": {
+                      "channel": "feishu",
+                      "to": "oc_041146c92a9ccb403a7f4f48fb59701d",
+                      "via": "direct",
+                      "mediaUrl": null,
+                      "result": {
+                        "channel": "feishu",
+                        "messageId": "om_x100b551f159388a4c359d091fff1817",
+                        "chatId": "oc_041146c92a9ccb403a7f4f48fb59701d"
+                      }
+                    }
+                  }
+                }
+              },
+              "waitForReport": false,
+              "autoClose": true,
+              "reportTemplate": "<at user_id=\"ou_f938eaffd79cf1837c3c7c6cd5089235\">orchestrator</at> T-1003 已完成，证据: 日志/截图/链接"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "status_T-990",
+      "cmd": [
+        "python3",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator/scripts/lib/milestones.py",
+        "feishu-router",
+        "--root",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator",
+        "--actor",
+        "orchestrator",
+        "--text",
+        "@orchestrator status T-990",
+        "--group-id",
+        "oc_041146c92a9ccb403a7f4f48fb59701d",
+        "--account-id",
+        "orchestrator",
+        "--mode",
+        "dry-run"
+      ],
+      "returncode": 0,
+      "stdout": "{\"ok\": true, \"handled\": true, \"intent\": \"status\", \"send\": {\"ok\": true, \"dryRun\": true, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"orchestrator\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[TASK] T-990 | \\u72b6\\u6001=\\u5df2\\u5b8c\\u6210\\n\\u8d1f\\u8d23\\u4eba: coder\\n\\u6807\\u9898: \\u751f\\u4ea7\\u9a8c\\u6536-\\u53ef\\u89c1\\u4ea4\\u63a5\", \"mode\": \"dry-run\"}}}",
+      "stderr": "",
+      "json": {
+        "ok": true,
+        "handled": true,
+        "intent": "status",
+        "send": {
+          "ok": true,
+          "dryRun": true,
+          "payload": {
+            "channel": "feishu",
+            "accountId": "orchestrator",
+            "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+            "text": "[TASK] T-990 | 状态=已完成\n负责人: coder\n标题: 生产验收-可见交接",
+            "mode": "dry-run"
+          }
+        }
+      }
+    },
+    {
+      "name": "status_T-991",
+      "cmd": [
+        "python3",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator/scripts/lib/milestones.py",
+        "feishu-router",
+        "--root",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator",
+        "--actor",
+        "orchestrator",
+        "--text",
+        "@orchestrator status T-991",
+        "--group-id",
+        "oc_041146c92a9ccb403a7f4f48fb59701d",
+        "--account-id",
+        "orchestrator",
+        "--mode",
+        "dry-run"
+      ],
+      "returncode": 0,
+      "stdout": "{\"ok\": true, \"handled\": true, \"intent\": \"status\", \"send\": {\"ok\": true, \"dryRun\": true, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"orchestrator\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[TASK] T-991 | \\u72b6\\u6001=\\u963b\\u585e\\n\\u8d1f\\u8d23\\u4eba: coder\\n\\u6807\\u9898: \\u751f\\u4ea7\\u9a8c\\u6536-\\u9a8c\\u6536\\u95e8\\u7981\", \"mode\": \"dry-run\"}}}",
+      "stderr": "",
+      "json": {
+        "ok": true,
+        "handled": true,
+        "intent": "status",
+        "send": {
+          "ok": true,
+          "dryRun": true,
+          "payload": {
+            "channel": "feishu",
+            "accountId": "orchestrator",
+            "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+            "text": "[TASK] T-991 | 状态=阻塞\n负责人: coder\n标题: 生产验收-验收门禁",
+            "mode": "dry-run"
+          }
+        }
+      }
+    },
+    {
+      "name": "status_T-992",
+      "cmd": [
+        "python3",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator/scripts/lib/milestones.py",
+        "feishu-router",
+        "--root",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator",
+        "--actor",
+        "orchestrator",
+        "--text",
+        "@orchestrator status T-992",
+        "--group-id",
+        "oc_041146c92a9ccb403a7f4f48fb59701d",
+        "--account-id",
+        "orchestrator",
+        "--mode",
+        "dry-run"
+      ],
+      "returncode": 0,
+      "stdout": "{\"ok\": true, \"handled\": true, \"intent\": \"status\", \"send\": {\"ok\": true, \"dryRun\": true, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"orchestrator\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[TASK] T-992 | \\u72b6\\u6001=\\u5f85\\u5904\\u7406\\n\\u8d1f\\u8d23\\u4eba: orchestrator\\n\\u6807\\u9898: \\u751f\\u4ea7\\u9a8c\\u6536-autopilot-1\", \"mode\": \"dry-run\"}}}",
+      "stderr": "",
+      "json": {
+        "ok": true,
+        "handled": true,
+        "intent": "status",
+        "send": {
+          "ok": true,
+          "dryRun": true,
+          "payload": {
+            "channel": "feishu",
+            "accountId": "orchestrator",
+            "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+            "text": "[TASK] T-992 | 状态=待处理\n负责人: orchestrator\n标题: 生产验收-autopilot-1",
+            "mode": "dry-run"
+          }
+        }
+      }
+    },
+    {
+      "name": "status_T-993",
+      "cmd": [
+        "python3",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator/scripts/lib/milestones.py",
+        "feishu-router",
+        "--root",
+        "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator",
+        "--actor",
+        "orchestrator",
+        "--text",
+        "@orchestrator status T-993",
+        "--group-id",
+        "oc_041146c92a9ccb403a7f4f48fb59701d",
+        "--account-id",
+        "orchestrator",
+        "--mode",
+        "dry-run"
+      ],
+      "returncode": 0,
+      "stdout": "{\"ok\": true, \"handled\": true, \"intent\": \"status\", \"send\": {\"ok\": true, \"dryRun\": true, \"payload\": {\"channel\": \"feishu\", \"accountId\": \"orchestrator\", \"target\": \"chat:oc_041146c92a9ccb403a7f4f48fb59701d\", \"text\": \"[TASK] T-993 | \\u72b6\\u6001=\\u5f85\\u5904\\u7406\\n\\u8d1f\\u8d23\\u4eba: orchestrator\\n\\u6807\\u9898: \\u751f\\u4ea7\\u9a8c\\u6536-autopilot-2\", \"mode\": \"dry-run\"}}}",
+      "stderr": "",
+      "json": {
+        "ok": true,
+        "handled": true,
+        "intent": "status",
+        "send": {
+          "ok": true,
+          "dryRun": true,
+          "payload": {
+            "channel": "feishu",
+            "accountId": "orchestrator",
+            "target": "chat:oc_041146c92a9ccb403a7f4f48fb59701d",
+            "text": "[TASK] T-993 | 状态=待处理\n负责人: orchestrator\n标题: 生产验收-autopilot-2",
+            "mode": "dry-run"
+          }
+        }
+      }
+    }
+  ]
+}
