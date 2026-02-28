@@ -1356,7 +1356,6 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
             dispatch_mode_line,
         ]
     )
-    claim_send = send_group_message(args.group_id, args.account_id, claim_text, args.mode)
 
     mentions = load_bot_mentions(args.root)
     orchestrator_mention = mention_tag_for("orchestrator", mentions, fallback="@orchestrator")
@@ -1369,7 +1368,8 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
             f"请 {assignee_mention} 执行，完成后按模板回报：{report_template}。",
         ]
     )
-    task_send = send_group_message(args.group_id, args.account_id, task_text, args.mode)
+    claim_send: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "not_sent"}
+    task_send: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "not_sent"}
 
     spawn = {
         "ok": True,
@@ -1386,7 +1386,26 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     worker_report: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "visibility mode not enabled"}
 
     if args.spawn:
-        active_cooldown = recovery_loop.get_active_cooldown(args.root, args.task_id)
+        reason_code_hint = ""
+        if args.spawn_output:
+            try:
+                parsed_hint = parse_json_loose(args.spawn_output)
+                if not isinstance(parsed_hint, dict):
+                    parsed_hint = {"raw": args.spawn_output}
+                classified_hint = classify_spawn_result(
+                    args.root,
+                    args.task_id,
+                    args.agent,
+                    parsed_hint,
+                    fallback_text=args.spawn_output,
+                )
+                hinted_reason = str(classified_hint.get("reasonCode") or "").strip()
+                if recovery_loop.should_trigger_recovery(hinted_reason):
+                    reason_code_hint = hinted_reason
+            except Exception:
+                reason_code_hint = ""
+
+        active_cooldown = recovery_loop.get_active_cooldown(args.root, args.task_id, reason_code_hint)
         if isinstance(active_cooldown, dict) and active_cooldown.get("cooldownActive"):
             next_assignee = str(active_cooldown.get("nextAssignee") or "human")
             action = str(active_cooldown.get("action") or ("human" if next_assignee == "human" else "retry"))
@@ -1414,7 +1433,11 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                 "cooldownUntil": cooldown_until,
                 "cooldownUntilTs": int(active_cooldown.get("cooldownUntilTs") or 0),
             }
+            claim_send = {"ok": True, "skipped": True, "reason": "cooldown_active"}
+            task_send = {"ok": True, "skipped": True, "reason": "cooldown_active"}
         else:
+            claim_send = send_group_message(args.group_id, args.account_id, claim_text, args.mode)
+            task_send = send_group_message(args.group_id, args.account_id, task_text, args.mode)
             spawn = run_dispatch_spawn(args, agent_prompt)
             if (
                 not spawn.get("skipped")
@@ -1432,7 +1455,11 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                 spawn["retry"] = retry_spawn
                 if retry_spawn.get("decision") == "done":
                     spawn = retry_spawn
+    else:
+        claim_send = send_group_message(args.group_id, args.account_id, claim_text, args.mode)
+        task_send = send_group_message(args.group_id, args.account_id, task_text, args.mode)
 
+    if args.spawn:
         if spawn.get("skipped"):
             close_apply = {"ok": True, "skipped": True, "reason": spawn.get("reason", "spawn skipped")}
             close_publish = {"ok": True, "skipped": True, "reason": "spawn skipped"}

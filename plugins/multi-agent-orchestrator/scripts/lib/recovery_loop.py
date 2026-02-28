@@ -178,8 +178,11 @@ def next_assignee_for(chain: List[str], current_assignee: str) -> str:
     return chain[idx + 1]
 
 
-def get_active_cooldown(root: str, task_id: str, now_ts: int = None) -> Dict[str, Any]:
+def get_active_cooldown(root: str, task_id: str, reason_code: str = "", now_ts: int = None) -> Dict[str, Any]:
     now_unix = int(now_ts if now_ts is not None else time.time())
+    reason_filter = normalize_reason(reason_code)
+    if reason_filter and reason_filter not in RECOVERY_REASON_CODES:
+        return {}
     state = load_recovery_state(root)
     entries = state.get("entries") if isinstance(state.get("entries"), dict) else {}
     best: Dict[str, Any] = {}
@@ -199,6 +202,8 @@ def get_active_cooldown(root: str, task_id: str, now_ts: int = None) -> Dict[str
         if reason_code not in RECOVERY_REASON_CODES and "|" in str(key):
             reason_code = normalize_reason(str(key).split("|", 1)[1])
         if reason_code not in RECOVERY_REASON_CODES:
+            continue
+        if reason_filter and reason_code != reason_filter:
             continue
 
         attempt = max(0, safe_int(raw.get("attempt"), 0))

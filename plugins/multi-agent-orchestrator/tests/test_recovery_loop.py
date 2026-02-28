@@ -97,6 +97,10 @@ class RecoveryLoopTests(unittest.TestCase):
         self.assertTrue(second["spawn"]["spawnSkipped"], second)
         self.assertEqual(second["spawn"]["reason"], "cooldown_active", second)
         self.assertNotIn("spawnResult", second["spawn"], second)
+        self.assertTrue(second["claimSend"]["skipped"], second)
+        self.assertEqual(second["claimSend"]["reason"], "cooldown_active", second)
+        self.assertTrue(second["taskSend"]["skipped"], second)
+        self.assertEqual(second["taskSend"]["reason"], "cooldown_active", second)
 
     def test_cooldown_skips_second_autopilot_spawn(self):
         self._create_task("T-111", "coder", "autopilot cooldown branch")
@@ -136,10 +140,30 @@ class RecoveryLoopTests(unittest.TestCase):
         self.assertEqual(first["stepsRun"], 1, first)
         self.assertEqual(second["stepsRun"], 1, second)
         second_spawn = ((second.get("steps") or [{}])[0].get("dispatch") or {}).get("spawn") or {}
+        second_dispatch = (second.get("steps") or [{}])[0].get("dispatch") or {}
         self.assertTrue(second_spawn.get("spawnSkipped"), second)
         self.assertEqual(second_spawn.get("reason"), "cooldown_active", second)
         self.assertTrue(second_spawn.get("cooldownActive"), second)
         self.assertNotIn("spawnResult", second_spawn, second)
+        self.assertTrue((second_dispatch.get("claimSend") or {}).get("skipped"), second)
+        self.assertEqual((second_dispatch.get("claimSend") or {}).get("reason"), "cooldown_active", second)
+        self.assertTrue((second_dispatch.get("taskSend") or {}).get("skipped"), second)
+        self.assertEqual((second_dispatch.get("taskSend") or {}).get("reason"), "cooldown_active", second)
+
+    def test_cooldown_isolated_by_reason_code(self):
+        self._create_task("T-112", "coder", "reason-isolation branch")
+        first = self._dispatch("T-112", "coder", '{"status":"failed","message":"first spawn failure"}')
+        second = self._dispatch("T-112", "coder", '{"status":"done","summary":"done without evidence"}')
+
+        self.assertEqual(first["spawn"]["reasonCode"], "spawn_failed", first)
+        self.assertEqual(first["spawn"]["attempt"], 1, first)
+        self.assertEqual(second["spawn"]["reasonCode"], "incomplete_output", second)
+        self.assertFalse(second["spawn"].get("spawnSkipped"), second)
+        self.assertEqual(second["spawn"]["attempt"], 1, second)
+        self.assertTrue(second["claimSend"]["ok"], second)
+        self.assertFalse(second["claimSend"].get("skipped", False), second)
+        self.assertTrue(second["taskSend"]["ok"], second)
+        self.assertFalse(second["taskSend"].get("skipped", False), second)
 
     def test_over_budget_escalates_to_human(self):
         policy_path = self.root / "config" / "recovery-policy.json"
