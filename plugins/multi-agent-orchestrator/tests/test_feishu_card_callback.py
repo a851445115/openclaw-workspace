@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -38,38 +39,100 @@ def run_inbound(root: Path, raw: str):
         raise AssertionError(f"invalid inbound json: {err}\nstdout={proc.stdout}\nstderr={proc.stderr}")
 
 
-def make_card_callback_wrapper(command: str, message_id: str = "om_test_msg_001", action_ts: str = "1700000000"):
-    tpl = FIXTURE.read_text(encoding="utf-8")
-    return (
-        tpl.replace("__COMMAND__", command)
-        .replace("__MESSAGE_ID__", message_id)
-        .replace("__ACTION_TS__", action_ts)
+def make_wrapper(
+    text: str,
+    conv: Dict[str, object],
+    sender: Dict[str, object],
+    card_callback: Optional[Dict[str, object]] = None,
+    extra_json_sections: Optional[List[Tuple[str, Dict[str, object]]]] = None,
+):
+    lines = [
+        f"message in group oc_test_group: {text}",
+        "",
+        "Conversation info (untrusted metadata):",
+        "```json",
+        json.dumps(conv, ensure_ascii=True, indent=2),
+        "```",
+        "",
+        "Sender (untrusted metadata):",
+        "```json",
+        json.dumps(sender, ensure_ascii=True, indent=2),
+        "```",
+        "",
+    ]
+    if card_callback is not None:
+        lines.extend(
+            [
+                "Card callback (untrusted metadata):",
+                "```json",
+                json.dumps(card_callback, ensure_ascii=True, indent=2),
+                "```",
+                "",
+            ]
+        )
+    if extra_json_sections:
+        for title, obj in extra_json_sections:
+            lines.extend(
+                [
+                    title,
+                    "```json",
+                    json.dumps(obj, ensure_ascii=True, indent=2),
+                    "```",
+                    "",
+                ]
+            )
+    return "\n".join(lines)
+
+
+def make_card_callback_wrapper(
+    command: str,
+    message_id: str = "om_test_msg_001",
+    action_ts: str = "1700000000",
+    sender_name: str = "Test User",
+    sender_open_id: str = "ou_test_user_001",
+):
+    conv = {
+        "conversation_label": "oc_test_group",
+        "sender": sender_name,
+        "message_id": message_id,
+        "was_mentioned": True,
+    }
+    sender = {
+        "name": sender_name,
+        "sender_type": "user",
+        "open_id": sender_open_id,
+    }
+    callback = {
+        "open_message_id": message_id,
+        "action": {
+            "tag": "button",
+            "value": {
+                "command": command,
+                "message_id": message_id,
+                "action_ts": action_ts,
+            },
+        },
+    }
+    return make_wrapper(
+        text="@orchestrator status",
+        conv=conv,
+        sender=sender,
+        card_callback=callback,
     )
 
 
 def make_text_wrapper(text: str):
-    return "\n".join(
-        [
-            f"message in group oc_test_group: {text}",
-            "",
-            "Conversation info (untrusted metadata):",
-            "```json",
-            json.dumps(
-                {
-                    "conversation_label": "oc_test_group",
-                    "sender": "tester",
-                    "was_mentioned": True,
-                },
-                ensure_ascii=True,
-            ),
-            "```",
-            "",
-            "Sender (untrusted metadata):",
-            "```json",
-            json.dumps({"name": "Test User", "sender_type": "user"}, ensure_ascii=True),
-            "```",
-            "",
-        ]
+    return make_wrapper(
+        text=text,
+        conv={
+            "conversation_label": "oc_test_group",
+            "sender": "tester",
+            "was_mentioned": True,
+        },
+        sender={
+            "name": "Test User",
+            "sender_type": "user",
+        },
     )
 
 
@@ -116,6 +179,125 @@ class FeishuCardCallbackTests(unittest.TestCase):
         self.assertEqual(out.get("text"), "@orchestrator create task: text fallback", out)
         self.assertEqual((out.get("router") or {}).get("intent"), "board_cmd", out)
         self.assertNotEqual((out.get("router") or {}).get("source"), "card_callback", out)
+
+    def test_json_in_message_body_does_not_trigger_card_callback(self):
+        raw = make_wrapper(
+            text='@orchestrator create task: body json no callback {"sample": true}',
+            conv={
+                "conversation_label": "oc_test_group",
+                "sender": "tester",
+                "was_mentioned": True,
+            },
+            sender={
+                "name": "Test User",
+                "sender_type": "user",
+            },
+            card_callback=None,
+            extra_json_sections=[
+                (
+                    "Body JSON sample (not callback metadata):",
+                    {
+                        "action": {
+                            "value": {
+                                "command": "@orchestrator create task: should-not-run-from-body-json"
+                            }
+                        }
+                    },
+                )
+            ],
+        )
+        out = run_inbound(self.root, raw)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out.get("text"), '@orchestrator create task: body json no callback {"sample": true}', out)
+        self.assertEqual((out.get("router") or {}).get("intent"), "board_cmd", out)
+        self.assertNotEqual(out.get("source"), "card_callback", out)
+        self.assertNotEqual((out.get("router") or {}).get("source"), "card_callback", out)
+
+    def test_callback_field_priority_prefers_action_over_conversation_fields(self):
+        raw = make_wrapper(
+            text="@orchestrator status",
+            conv={
+                "conversation_label": "oc_test_group",
+                "sender": "tester",
+                "message_id": "conv_message_id",
+                "action_ts": "conv_action_ts",
+                "was_mentioned": True,
+            },
+            sender={
+                "name": "Test User",
+                "sender_type": "user",
+                "open_id": "ou_priority_user",
+            },
+            card_callback={
+                "message_id": "callback_message_id",
+                "action_ts": "callback_action_ts",
+                "action": {
+                    "value": {
+                        "command": "@orchestrator create task: field priority",
+                        "message_id": "action_message_id",
+                        "action_ts": "action_ts_123",
+                    }
+                },
+            },
+        )
+        out = run_inbound(self.root, raw)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out.get("text"), "@orchestrator create task: field priority", out)
+        ack = (out.get("router") or {}).get("ack") or {}
+        self.assertEqual(ack.get("messageId"), "action_message_id", out)
+        self.assertEqual(ack.get("actionTs"), "action_ts_123", out)
+
+    def test_callback_dedup_isolated_by_sender_identity(self):
+        first = make_card_callback_wrapper(
+            "@orchestrator create task: sender one",
+            message_id="om_user_scope_1",
+            action_ts="1700010101",
+            sender_name="User One",
+            sender_open_id="ou_sender_one",
+        )
+        second = make_card_callback_wrapper(
+            "@orchestrator create task: sender one",
+            message_id="om_user_scope_1",
+            action_ts="1700010101",
+            sender_name="User Two",
+            sender_open_id="ou_sender_two",
+        )
+
+        first_out = run_inbound(self.root, first)
+        second_out = run_inbound(self.root, second)
+        self.assertTrue(first_out["ok"], first_out)
+        self.assertTrue(second_out["ok"], second_out)
+        self.assertFalse(bool(first_out.get("deduplicated")), first_out)
+        self.assertFalse(bool(second_out.get("deduplicated")), second_out)
+
+    def test_callback_missing_message_and_action_ts_still_has_ttl_dedup_protection(self):
+        raw = make_wrapper(
+            text="@orchestrator status",
+            conv={
+                "conversation_label": "oc_test_group",
+                "sender": "tester",
+                "was_mentioned": True,
+            },
+            sender={
+                "name": "NoTs User",
+                "sender_type": "user",
+                "open_id": "ou_no_ts_user",
+            },
+            card_callback={
+                "event_id": "evt_no_ts_001",
+                "action": {
+                    "value": {
+                        "command": "@orchestrator create task: missing ids",
+                    }
+                },
+            },
+        )
+        first = run_inbound(self.root, raw)
+        second = run_inbound(self.root, raw)
+        self.assertTrue(first["ok"], first)
+        self.assertTrue(second["ok"], second)
+        self.assertFalse(bool(first.get("deduplicated")), first)
+        self.assertTrue(bool(second.get("deduplicated")), second)
 
 
 if __name__ == "__main__":

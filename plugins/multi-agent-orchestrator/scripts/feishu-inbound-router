@@ -7,7 +7,7 @@ import re
 import subprocess
 import sys
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 DEFAULT_GROUP_ID = "oc_041146c92a9ccb403a7f4f48fb59701d"
 DEFAULT_ACCOUNT_ID = "orchestrator"
@@ -20,6 +20,12 @@ BOT_OPENID_CONFIG_CANDIDATES = (
 )
 CALLBACK_DEDUP_STATE_FILE = os.path.join("state", "feishu-card-callback-dedup.json")
 CALLBACK_DEDUP_MAX_ENTRIES = 2000
+CALLBACK_DEDUP_DEFAULT_TTL_SEC = 86400
+CALLBACK_DEDUP_FALLBACK_TTL_SEC = 300
+CALLBACK_METADATA_HEADERS = (
+    "Card callback (untrusted metadata):",
+    "Card Callback (untrusted metadata):",
+)
 
 
 def extract_json_block(raw: str, header: str) -> Dict[str, Any]:
@@ -49,16 +55,12 @@ def normalize_message_text(raw: str) -> str:
     return ""
 
 
-def extract_json_objects(raw: str) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    for m in re.finditer(r"```json\s*(\{.*?\})\s*```", raw, flags=re.DOTALL):
-        try:
-            parsed = json.loads(m.group(1))
-        except Exception:
-            continue
-        if isinstance(parsed, dict):
-            out.append(parsed)
-    return out
+def extract_callback_block(raw: str) -> Dict[str, Any]:
+    for header in CALLBACK_METADATA_HEADERS:
+        obj = extract_json_block(raw, header)
+        if obj:
+            return obj
+    return {}
 
 
 def deep_get(obj: Dict[str, Any], path: Sequence[str]) -> Any:
@@ -83,12 +85,13 @@ def first_string(objects: Sequence[Dict[str, Any]], paths: Sequence[Sequence[str
     return ""
 
 
-def build_callback_context(raw: str, conv: Dict[str, Any], sender: Dict[str, Any]) -> Dict[str, str]:
-    objects: List[Dict[str, Any]] = [conv, sender]
-    objects.extend(extract_json_objects(raw))
+def build_callback_context(raw: str, conv: Dict[str, Any], sender: Dict[str, Any], actor_raw: str) -> Dict[str, Any]:
+    callback = extract_callback_block(raw)
+    if not callback:
+        return {}
 
     command = first_string(
-        objects,
+        [callback],
         [
             ("action", "value", "command"),
             ("event", "action", "value", "command"),
@@ -104,57 +107,148 @@ def build_callback_context(raw: str, conv: Dict[str, Any], sender: Dict[str, Any
         return {}
 
     message_id = first_string(
-        objects,
+        [callback],
         [
             ("action", "value", "message_id"),
             ("action", "value", "messageId"),
-            ("action", "value", "open_message_id"),
-            ("action", "value", "openMessageId"),
             ("event", "action", "value", "message_id"),
             ("event", "action", "value", "messageId"),
-            ("event", "message", "message_id"),
-            ("event", "message", "open_message_id"),
-            ("message", "message_id"),
-            ("message", "open_message_id"),
-            ("open_message_id",),
-            ("message_id",),
-            ("openMessageId",),
-            ("messageId",),
+            ("action", "value", "open_message_id"),
+            ("action", "value", "openMessageId"),
+            ("event", "action", "value", "open_message_id"),
+            ("event", "action", "value", "openMessageId"),
         ],
     )
+    if not message_id:
+        message_id = first_string(
+            [callback],
+            [
+                ("event", "message", "message_id"),
+                ("event", "message", "open_message_id"),
+                ("message", "message_id"),
+                ("message", "open_message_id"),
+                ("open_message_id",),
+                ("message_id",),
+                ("openMessageId",),
+                ("messageId",),
+            ],
+        )
+    if not message_id:
+        message_id = first_string([conv], [("message_id",), ("open_message_id",), ("messageId",), ("openMessageId",)])
+
     action_ts = first_string(
-        objects,
+        [callback],
         [
             ("action", "value", "action_ts"),
             ("action", "value", "actionTs"),
             ("event", "action", "value", "action_ts"),
             ("event", "action", "value", "actionTs"),
             ("action", "action_ts"),
-            ("action", "ts"),
             ("event", "action_ts"),
+            ("action", "ts"),
             ("event", "ts"),
             ("action_ts",),
             ("actionTs",),
             ("ts",),
         ],
     )
+    if not action_ts:
+        action_ts = first_string([conv], [("action_ts",), ("actionTs",), ("ts",)])
+
+    sender_key = first_string(
+        [callback],
+        [
+            ("action", "value", "open_id"),
+            ("action", "value", "openId"),
+            ("action", "value", "user_id"),
+            ("action", "value", "userId"),
+            ("event", "action", "value", "open_id"),
+            ("event", "action", "value", "openId"),
+            ("event", "action", "value", "user_id"),
+            ("event", "action", "value", "userId"),
+            ("event", "operator", "operator_id", "open_id"),
+            ("event", "operator", "operator_id", "user_id"),
+            ("event", "operator", "open_id"),
+            ("event", "operator", "user_id"),
+            ("operator", "operator_id", "open_id"),
+            ("operator", "operator_id", "user_id"),
+            ("operator", "open_id"),
+            ("operator", "user_id"),
+            ("open_id",),
+            ("user_id",),
+            ("openId",),
+            ("userId",),
+        ],
+    )
+    if not sender_key:
+        sender_key = first_string(
+            [sender, conv],
+            [
+                ("open_id",),
+                ("openId",),
+                ("user_id",),
+                ("userId",),
+                ("sender_id",),
+                ("sender",),
+                ("name",),
+                ("label",),
+            ],
+        )
+    if not sender_key:
+        sender_key = (actor_raw or "").strip() or "unknown"
+
+    envelope_key = first_string(
+        [callback],
+        [
+            ("event_id",),
+            ("eventId",),
+            ("event", "event_id"),
+            ("event", "eventId"),
+            ("event", "header", "event_id"),
+            ("event", "header", "eventId"),
+            ("header", "event_id"),
+            ("header", "eventId"),
+            ("token",),
+            ("event", "token"),
+            ("header", "token"),
+        ],
+    )
 
     command_norm = re.sub(r"\s+", " ", command).strip()
-    dedup_key = ""
+    dedup_mode = "stable_key"
+    dedup_ttl_sec = CALLBACK_DEDUP_DEFAULT_TTL_SEC
     if message_id.strip() or action_ts.strip():
         dedup_basis = "|".join(
             [
                 message_id.strip(),
                 action_ts.strip(),
+                sender_key.strip(),
                 command_norm.lower(),
             ]
         )
-        dedup_key = hashlib.sha1(dedup_basis.encode("utf-8")).hexdigest()
+    else:
+        dedup_mode = "fallback_ttl"
+        dedup_ttl_sec = CALLBACK_DEDUP_FALLBACK_TTL_SEC
+        bucket = int(time.time() // CALLBACK_DEDUP_FALLBACK_TTL_SEC)
+        dedup_basis = "|".join(
+            [
+                envelope_key.strip() or "no-envelope",
+                sender_key.strip() or "no-sender",
+                command_norm.lower(),
+                str(bucket),
+            ]
+        )
+    dedup_key = hashlib.sha1(dedup_basis.encode("utf-8")).hexdigest()
+
     return {
         "source": "card_callback",
         "command": command_norm,
         "messageId": message_id.strip(),
         "actionTs": action_ts.strip(),
+        "senderKey": sender_key.strip(),
+        "dedupMode": dedup_mode,
+        "dedupTtlSec": dedup_ttl_sec,
+        "eventEnvelopeKey": envelope_key.strip(),
         "dedupKey": dedup_key,
     }
 
@@ -186,24 +280,41 @@ def save_callback_dedup_state(root: str, state: Dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
-def remember_callback_once(root: str, dedup_key: str, context: Dict[str, str]) -> bool:
+def remember_callback_once(root: str, dedup_key: str, context: Dict[str, Any], ttl_sec: int) -> bool:
     if not dedup_key:
         return False
 
+    now = int(time.time())
+    ttl = ttl_sec if isinstance(ttl_sec, int) and ttl_sec > 0 else CALLBACK_DEDUP_DEFAULT_TTL_SEC
     state = load_callback_dedup_state(root)
-    entries = state.setdefault("entries", {})
-    if not isinstance(entries, dict):
-        entries = {}
-        state["entries"] = entries
+    raw_entries = state.setdefault("entries", {})
+    if not isinstance(raw_entries, dict):
+        raw_entries = {}
+    entries: Dict[str, Dict[str, Any]] = {}
+    for key, meta in raw_entries.items():
+        if not isinstance(meta, dict):
+            continue
+        seen_at_ts = int(meta.get("seenAtTs") or 0)
+        entry_ttl = int(meta.get("ttlSec") or CALLBACK_DEDUP_DEFAULT_TTL_SEC)
+        if seen_at_ts <= 0:
+            continue
+        if seen_at_ts + entry_ttl < now:
+            continue
+        entries[key] = meta
+    state["entries"] = entries
 
     if dedup_key in entries:
         return True
 
     entries[dedup_key] = {
-        "seenAtTs": int(time.time()),
+        "seenAtTs": now,
+        "ttlSec": ttl,
         "messageId": str(context.get("messageId") or ""),
         "actionTs": str(context.get("actionTs") or ""),
+        "senderKey": str(context.get("senderKey") or ""),
         "command": str(context.get("command") or ""),
+        "dedupMode": str(context.get("dedupMode") or ""),
+        "eventEnvelopeKey": str(context.get("eventEnvelopeKey") or ""),
     }
 
     while len(entries) > CALLBACK_DEDUP_MAX_ENTRIES:
@@ -324,7 +435,7 @@ def main() -> int:
     openid_role = load_openid_role_map(args.root)
     actor_raw = args.actor.strip() or resolve_actor(conv, sender)
     actor = normalize_actor(actor_raw, openid_role)
-    callback = build_callback_context(raw, conv, sender)
+    callback = build_callback_context(raw, conv, sender, actor_raw)
 
     source = "text"
     text = normalize_message_text(raw)
@@ -337,6 +448,9 @@ def main() -> int:
             "source": source,
             "messageId": str(callback.get("messageId") or ""),
             "actionTs": str(callback.get("actionTs") or ""),
+            "senderKey": str(callback.get("senderKey") or ""),
+            "dedupMode": str(callback.get("dedupMode") or ""),
+            "dedupTtlSec": int(callback.get("dedupTtlSec") or 0),
             "dedupKey": str(callback.get("dedupKey") or ""),
         }
 
@@ -346,7 +460,8 @@ def main() -> int:
 
     if source == "card_callback":
         dedup_key = str(callback.get("dedupKey") or "")
-        is_duplicate = remember_callback_once(args.root, dedup_key, callback)
+        dedup_ttl_sec = int(callback.get("dedupTtlSec") or CALLBACK_DEDUP_DEFAULT_TTL_SEC)
+        is_duplicate = remember_callback_once(args.root, dedup_key, callback, dedup_ttl_sec)
         if is_duplicate:
             ack["deduplicated"] = True
             out = {
