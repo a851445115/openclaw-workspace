@@ -604,6 +604,27 @@ def send_group_card(group_id: str, account_id: str, card: Dict[str, Any], mode: 
         pass
     if stderr:
         out["stderr"] = clip(stderr, 500)
+
+    # Some channel adapters may return exit=0 but without delivery ack for cards.
+    # In this case, treat as degraded and fallback to text to avoid silent no-reply.
+    result_obj = out.get("result")
+    message_id = ""
+    if isinstance(result_obj, dict):
+        payload_obj = result_obj.get("payload")
+        if isinstance(payload_obj, dict):
+            nested = payload_obj.get("result")
+            if isinstance(nested, dict):
+                message_id = str(nested.get("messageId") or "").strip()
+        if not message_id:
+            message_id = str(result_obj.get("messageId") or "").strip()
+    if not message_id and fallback_text:
+        fallback = send_group_message(group_id, account_id, fallback_text, mode)
+        out["fallback"] = fallback
+        out["degradedToText"] = True
+        out["ok"] = bool(fallback.get("ok"))
+        if not out["ok"]:
+            out["error"] = "card send missing delivery ack and text fallback failed"
+
     return out
 
 
