@@ -627,6 +627,274 @@ class RuntimeTests(unittest.TestCase):
         ])
         self.assertEqual(status["task"]["status"], "blocked", status)
 
+    def test_autopilot_respects_priority_and_dependencies(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-050: 低优先级",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-051: 高优先级可执行",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-052: 高优先级但依赖未完成",
+        ])
+        routing = self.root / "state" / "task-routing.json"
+        routing.write_text(
+            json.dumps(
+                {
+                    "priorities": {"T-050": 10, "T-051": 90, "T-052": 100},
+                    "dependsOn": {"T-052": ["T-050"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+        out = run_json([
+            "python3",
+            str(MILE),
+            "autopilot",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--max-steps",
+            "1",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/t051.log","pytest passed"]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["stepsRun"], 1, out)
+        self.assertEqual(out["steps"][0]["taskId"], "T-051", out)
+
+    def test_dispatch_auto_recovery_escalates_and_closes_done(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-060: 自恢复升级测试",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-060",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--auto-recover",
+            "--recovery-max-attempts",
+            "2",
+            "--spawn-output-seq",
+            '[{"status":"blocked","message":"error stack trace"},{"status":"done","summary":"已修复，测试通过","evidence":["logs/recover.log","pytest passed"]}]',
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertTrue(out["recovery"]["applied"], out)
+        self.assertEqual(out["recovery"]["agent"], "debugger", out)
+        self.assertEqual(out["spawn"]["decision"], "done", out)
+        status = run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "status T-060",
+        ])
+        self.assertEqual(status["task"]["status"], "done", status)
+
+    def test_scheduler_run_respects_debounce_guardrail(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-070: scheduler task",
+        ])
+        first = run_json([
+            "python3",
+            str(MILE),
+            "scheduler-run",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--mode",
+            "dry-run",
+            "--cycles",
+            "1",
+            "--autopilot-steps",
+            "1",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/scheduler.log","pytest passed"]}',
+        ])
+        self.assertTrue(first["ok"], first)
+        second_proc = subprocess.run(
+            [
+                "python3",
+                str(MILE),
+                "scheduler-run",
+                "--root",
+                str(self.root),
+                "--actor",
+                "orchestrator",
+                "--mode",
+                "dry-run",
+                "--cycles",
+                "1",
+                "--autopilot-steps",
+                "1",
+                "--debounce-sec",
+                "3600",
+                "--spawn-output",
+                '{"status":"done","summary":"完成","evidence":["logs/scheduler.log","pytest passed"]}',
+            ],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(second_proc.returncode, 0, second_proc.stdout + second_proc.stderr)
+        payload = json.loads(second_proc.stdout.strip())
+        self.assertTrue(payload.get("throttled"), payload)
+
+    def test_governance_pause_and_freeze_controls_scheduler(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-080: governance pause",
+        ])
+        paused = run_json([
+            "python3",
+            str(MILE),
+            "govern",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--action",
+            "pause",
+            "--reason",
+            "maintenance",
+        ])
+        self.assertTrue(paused["ok"], paused)
+        blocked_proc = subprocess.run(
+            [
+                "python3",
+                str(MILE),
+                "scheduler-run",
+                "--root",
+                str(self.root),
+                "--actor",
+                "orchestrator",
+                "--mode",
+                "dry-run",
+                "--cycles",
+                "1",
+                "--autopilot-steps",
+                "1",
+                "--spawn-output",
+                '{"status":"done","summary":"完成","evidence":["logs/pause.log","pytest passed"]}',
+            ],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(blocked_proc.returncode, 0, blocked_proc.stdout + blocked_proc.stderr)
+        blocked_payload = json.loads(blocked_proc.stdout.strip())
+        self.assertEqual(blocked_payload.get("reasonCode"), "scheduler_paused", blocked_payload)
+
+        run_json([
+            "python3",
+            str(MILE),
+            "govern",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--action",
+            "resume",
+        ])
+        run_json([
+            "python3",
+            str(MILE),
+            "govern",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--action",
+            "freeze",
+            "--task-id",
+            "T-080",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "scheduler-run",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--mode",
+            "dry-run",
+            "--cycles",
+            "1",
+            "--autopilot-steps",
+            "1",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/pause.log","pytest passed"]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["cycles"][0]["autopilot"]["stepsRun"], 0, out)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -48,6 +48,13 @@ DEFAULT_ACCEPTANCE_POLICY: Dict[str, Any] = {
         },
     },
 }
+DEFAULT_GOVERNANCE_STATE: Dict[str, Any] = {
+    "paused": False,
+    "pauseReason": "",
+    "pausedAt": "",
+    "frozenTaskIds": [],
+}
+RECOVERY_AGENT_CHAIN = ("debugger", "invest-analyst", "coder")
 
 
 def now_iso() -> str:
@@ -868,7 +875,26 @@ def classify_spawn_result(root: str, task_id: str, role: str, spawn_obj: Dict[st
 
 
 def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, Any]:
-    if args.mode == "dry-run" and not args.spawn_output:
+    simulated_output = str(getattr(args, "spawn_output", "") or "").strip()
+    raw_seq = str(getattr(args, "spawn_output_seq", "") or "").strip()
+    if raw_seq:
+        try:
+            seq_output = next_spawn_output(args)
+        except Exception as err:
+            return {
+                "ok": False,
+                "error": f"invalid --spawn-output-seq: {err}",
+                "stdout": raw_seq,
+                "stderr": "",
+                "command": ["--spawn-output-seq"],
+                "decision": "blocked",
+                "detail": clip(str(err), 200),
+                "reasonCode": "invalid_spawn_output_seq",
+            }
+        if seq_output:
+            simulated_output = seq_output
+
+    if args.mode == "dry-run" and not simulated_output:
         return {
             "ok": True,
             "skipped": True,
@@ -880,18 +906,18 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
             "detail": "",
         }
 
-    if args.spawn_output:
+    if simulated_output:
         try:
-            obj = parse_json_loose(args.spawn_output)
+            obj = parse_json_loose(simulated_output)
             if not isinstance(obj, dict):
-                obj = {"raw": args.spawn_output}
-            decision = classify_spawn_result(args.root, args.task_id, args.agent, obj, fallback_text=args.spawn_output)
+                obj = {"raw": simulated_output}
+            decision = classify_spawn_result(args.root, args.task_id, args.agent, obj, fallback_text=simulated_output)
             return {
                 "ok": True,
                 "simulated": True,
-                "stdout": args.spawn_output,
+                "stdout": simulated_output,
                 "stderr": "",
-                "command": ["--spawn-output"],
+                "command": ["--spawn-output-seq"] if raw_seq else ["--spawn-output"],
                 "spawnResult": obj,
                 "decision": decision["decision"],
                 "detail": decision["detail"],
@@ -902,9 +928,9 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
             return {
                 "ok": False,
                 "error": f"invalid --spawn-output: {err}",
-                "stdout": args.spawn_output,
+                "stdout": simulated_output,
                 "stderr": "",
-                "command": ["--spawn-output"],
+                "command": ["--spawn-output-seq"] if raw_seq else ["--spawn-output"],
                 "decision": "blocked",
                 "detail": clip(str(err), 200),
                 "reasonCode": "invalid_spawn_output",
@@ -1036,12 +1062,14 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     close_apply: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "spawn disabled"}
     close_publish: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "spawn disabled"}
     worker_report: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "visibility mode not enabled"}
+    recovery: Dict[str, Any] = {"enabled": bool(getattr(args, "auto_recover", False)), "applied": False, "attempts": []}
 
     if args.spawn:
         spawn = run_dispatch_spawn(args, agent_prompt)
         if (
             not spawn.get("skipped")
-            and not args.spawn_output
+            and not str(getattr(args, "spawn_output", "") or "").strip()
+            and not str(getattr(args, "spawn_output_seq", "") or "").strip()
             and spawn.get("decision") == "blocked"
             and str(spawn.get("reasonCode") or "") in {"incomplete_output", "missing_evidence", "stage_only", "role_policy_missing_keyword"}
         ):
@@ -1055,6 +1083,46 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
             spawn["retry"] = retry_spawn
             if retry_spawn.get("decision") == "done":
                 spawn = retry_spawn
+
+        if (
+            not spawn.get("skipped")
+            and bool(getattr(args, "auto_recover", False))
+            and str(spawn.get("decision") or "") == "blocked"
+        ):
+            max_attempts = max(1, parse_int(getattr(args, "recovery_max_attempts", 2), 2))
+            for attempt_idx in range(max_attempts):
+                recovery_agent = choose_recovery_agent(args.agent, attempt_idx)
+                recovery_prompt = clip(
+                    "\n".join(
+                        [
+                            agent_prompt,
+                            "",
+                            f"恢复模式: 请由 @{recovery_agent} 接管此任务，优先定位阻塞并给出可验收结果。",
+                            f"上次失败原因: {spawn.get('reasonCode') or 'unknown'}",
+                            f"上次失败详情: {clip(spawn.get('detail') or '', 260)}",
+                        ]
+                    ),
+                    5000,
+                )
+                r_args = argparse.Namespace(**vars(args))
+                r_args.agent = recovery_agent
+                if hasattr(args, "_spawn_output_seq_queue"):
+                    r_args._spawn_output_seq_queue = getattr(args, "_spawn_output_seq_queue")
+                recovery_spawn = run_dispatch_spawn(r_args, recovery_prompt)
+                recovery_entry = {
+                    "attempt": attempt_idx + 1,
+                    "agent": recovery_agent,
+                    "decision": recovery_spawn.get("decision"),
+                    "reasonCode": recovery_spawn.get("reasonCode"),
+                    "detail": recovery_spawn.get("detail"),
+                }
+                recovery["attempts"].append(recovery_entry)
+                if recovery_spawn.get("decision") == "done":
+                    recovery["applied"] = True
+                    recovery["agent"] = recovery_agent
+                    recovery["decision"] = recovery_spawn.get("decision")
+                    spawn = recovery_spawn
+                    break
 
         if spawn.get("skipped"):
             close_apply = {"ok": True, "skipped": True, "reason": spawn.get("reason", "spawn skipped")}
@@ -1115,6 +1183,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         "claimSend": claim_send,
         "taskSend": task_send,
         "spawn": spawn,
+        "recovery": recovery,
         "closeApply": close_apply,
         "closePublish": close_publish,
         "workerReport": worker_report,
@@ -1131,15 +1200,32 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
-def cmd_autopilot(args: argparse.Namespace) -> int:
+def run_autopilot(args: argparse.Namespace) -> Dict[str, Any]:
     if args.actor != "orchestrator":
-        print(json.dumps({"ok": False, "error": "autopilot is restricted to actor=orchestrator"}))
-        return 1
-    max_steps = max(1, int(args.max_steps))
+        return {"ok": False, "error": "autopilot is restricted to actor=orchestrator", "handled": True, "intent": "autopilot"}
+    max_steps = max(1, parse_int(getattr(args, "max_steps", 1), 1))
     steps: List[Dict[str, Any]] = []
     summary = {"done": 0, "blocked": 0, "manual": 0}
     stop_reason = "no_runnable_task"
     ok = True
+
+    shared_seq: Optional[List[str]] = None
+    if str(getattr(args, "spawn_output_seq", "") or "").strip():
+        try:
+            shared_seq = ensure_spawn_output_seq_queue(args)
+        except Exception as err:
+            return {
+                "ok": False,
+                "handled": True,
+                "intent": "autopilot",
+                "maxSteps": max_steps,
+                "stepsRun": 0,
+                "summary": summary,
+                "stopReason": "invalid_spawn_output_seq",
+                "error": str(err),
+                "visibilityMode": str(getattr(args, "visibility_mode", VISIBILITY_MODES[0])),
+                "steps": [],
+            }
 
     for idx in range(max_steps):
         task = choose_task_for_run(args.root, "")
@@ -1162,16 +1248,21 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
             agent=agent,
             task=f"{task_id}: {task.get('title') or 'untitled'}",
             actor="orchestrator",
-            session_id=args.session_id,
-            group_id=args.group_id,
-            account_id=args.account_id,
-            mode=args.mode,
-            timeout_sec=args.timeout_sec,
-            spawn=args.spawn,
-            spawn_cmd=args.spawn_cmd,
-            spawn_output=args.spawn_output,
-            visibility_mode=args.visibility_mode,
+            session_id=getattr(args, "session_id", ""),
+            group_id=getattr(args, "group_id", DEFAULT_GROUP_ID),
+            account_id=getattr(args, "account_id", DEFAULT_ACCOUNT_ID),
+            mode=getattr(args, "mode", "send"),
+            timeout_sec=parse_int(getattr(args, "timeout_sec", 120), 120),
+            spawn=bool(getattr(args, "spawn", True)),
+            spawn_cmd=str(getattr(args, "spawn_cmd", "") or ""),
+            spawn_output=str(getattr(args, "spawn_output", "") or ""),
+            spawn_output_seq=str(getattr(args, "spawn_output_seq", "") or ""),
+            auto_recover=bool(getattr(args, "auto_recover", False)),
+            recovery_max_attempts=parse_int(getattr(args, "recovery_max_attempts", 2), 2),
+            visibility_mode=str(getattr(args, "visibility_mode", VISIBILITY_MODES[0]) or VISIBILITY_MODES[0]),
         )
+        if shared_seq is not None:
+            d_args._spawn_output_seq_queue = shared_seq
         dispatch_result = dispatch_once(d_args)
         steps.append({"index": idx + 1, "taskId": task_id, "agent": agent, "dispatch": dispatch_result})
 
@@ -1189,7 +1280,7 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
             summary["manual"] += 1
         stop_reason = "max_steps_reached"
 
-    result = {
+    return {
         "ok": ok,
         "handled": True,
         "intent": "autopilot",
@@ -1197,11 +1288,200 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
         "stepsRun": len(steps),
         "summary": summary,
         "stopReason": stop_reason,
-        "visibilityMode": str(args.visibility_mode),
+        "visibilityMode": str(getattr(args, "visibility_mode", VISIBILITY_MODES[0])),
         "steps": steps,
+    }
+
+
+def cmd_autopilot(args: argparse.Namespace) -> int:
+    result = run_autopilot(args)
+    print(json.dumps(result, ensure_ascii=True))
+    return 0 if result.get("ok") else 1
+
+
+def cmd_scheduler_run(args: argparse.Namespace) -> int:
+    if args.actor != "orchestrator":
+        print(json.dumps({"ok": False, "error": "scheduler-run is restricted to actor=orchestrator"}))
+        return 1
+
+    governance = load_governance_state(args.root)
+    if governance.get("paused"):
+        result = {
+            "ok": False,
+            "handled": True,
+            "intent": "scheduler_run",
+            "reasonCode": "scheduler_paused",
+            "governance": governance,
+        }
+        print(json.dumps(result, ensure_ascii=True))
+        return 1
+
+    state_file = str(getattr(args, "state_file", "") or scheduler_state_path(args.root))
+    state = load_json_file(state_file, {"lastRunTs": 0, "runs": []})
+    now_ts = int(time.time())
+    last_run_ts = parse_int(state.get("lastRunTs", 0), 0)
+    debounce_sec = max(0, parse_int(getattr(args, "debounce_sec", 0), 0))
+    if debounce_sec > 0 and last_run_ts > 0 and (now_ts - last_run_ts) < debounce_sec:
+        retry_after = debounce_sec - (now_ts - last_run_ts)
+        result = {
+            "ok": False,
+            "handled": True,
+            "intent": "scheduler_run",
+            "throttled": True,
+            "reasonCode": "scheduler_debounced",
+            "retryAfterSec": retry_after,
+            "lastRunTs": last_run_ts,
+        }
+        print(json.dumps(result, ensure_ascii=True))
+        return 1
+
+    window_sec = max(1, parse_int(getattr(args, "window_sec", 3600), 3600))
+    max_runs = max(1, parse_int(getattr(args, "max_runs", 24), 24))
+    runs_raw = state.get("runs", [])
+    runs: List[int] = []
+    if isinstance(runs_raw, list):
+        for item in runs_raw:
+            ts = parse_int(item, 0)
+            if ts > 0 and ts >= now_ts - window_sec:
+                runs.append(ts)
+    if len(runs) >= max_runs:
+        result = {
+            "ok": False,
+            "handled": True,
+            "intent": "scheduler_run",
+            "throttled": True,
+            "reasonCode": "scheduler_window_limit",
+            "windowSec": window_sec,
+            "maxRuns": max_runs,
+        }
+        print(json.dumps(result, ensure_ascii=True))
+        return 1
+
+    cycles = max(1, parse_int(getattr(args, "cycles", 1), 1))
+    autopilot_steps = max(1, parse_int(getattr(args, "autopilot_steps", 1), 1))
+    cycles_out: List[Dict[str, Any]] = []
+    ok = True
+    stop_reason = "completed"
+
+    shared_seq: Optional[List[str]] = None
+    if str(getattr(args, "spawn_output_seq", "") or "").strip():
+        try:
+            shared_seq = ensure_spawn_output_seq_queue(args)
+        except Exception as err:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "handled": True,
+                        "intent": "scheduler_run",
+                        "error": str(err),
+                        "reasonCode": "invalid_spawn_output_seq",
+                    },
+                    ensure_ascii=True,
+                )
+            )
+            return 1
+
+    for idx in range(cycles):
+        a_args = argparse.Namespace(
+            root=args.root,
+            actor="orchestrator",
+            session_id=getattr(args, "session_id", ""),
+            group_id=getattr(args, "group_id", DEFAULT_GROUP_ID),
+            account_id=getattr(args, "account_id", DEFAULT_ACCOUNT_ID),
+            mode=getattr(args, "mode", "send"),
+            timeout_sec=parse_int(getattr(args, "timeout_sec", 120), 120),
+            spawn=bool(getattr(args, "spawn", True)),
+            spawn_cmd=str(getattr(args, "spawn_cmd", "") or ""),
+            spawn_output=str(getattr(args, "spawn_output", "") or ""),
+            spawn_output_seq=str(getattr(args, "spawn_output_seq", "") or ""),
+            auto_recover=bool(getattr(args, "auto_recover", False)),
+            recovery_max_attempts=parse_int(getattr(args, "recovery_max_attempts", 2), 2),
+            max_steps=autopilot_steps,
+            visibility_mode=str(getattr(args, "visibility_mode", VISIBILITY_MODES[0]) or VISIBILITY_MODES[0]),
+        )
+        if shared_seq is not None:
+            a_args._spawn_output_seq_queue = shared_seq
+        auto_result = run_autopilot(a_args)
+        cycles_out.append({"index": idx + 1, "autopilot": auto_result})
+        if not auto_result.get("ok"):
+            ok = False
+            stop_reason = "autopilot_failed"
+            break
+        if parse_int(auto_result.get("stepsRun", 0), 0) <= 0:
+            stop_reason = "idle"
+            break
+
+    state["lastRunTs"] = now_ts
+    state["lastRunAt"] = now_iso()
+    runs.append(now_ts)
+    state["runs"] = runs[-max(max_runs * 2, max_runs) :]
+    save_json_file(state_file, state)
+
+    result = {
+        "ok": ok,
+        "handled": True,
+        "intent": "scheduler_run",
+        "cyclesRequested": cycles,
+        "cyclesRun": len(cycles_out),
+        "cycles": cycles_out,
+        "stopReason": stop_reason,
+        "stateFile": state_file,
+        "governance": governance,
     }
     print(json.dumps(result, ensure_ascii=True))
     return 0 if ok else 1
+
+
+def cmd_govern(args: argparse.Namespace) -> int:
+    if args.actor != "orchestrator":
+        print(json.dumps({"ok": False, "error": "govern is restricted to actor=orchestrator"}))
+        return 1
+
+    action = str(getattr(args, "action", "status") or "status").strip().lower()
+    state = load_governance_state(args.root)
+    changed = False
+
+    if action == "pause":
+        state["paused"] = True
+        state["pauseReason"] = clip(str(getattr(args, "reason", "") or "manual"))
+        state["pausedAt"] = now_iso()
+        changed = True
+    elif action == "resume":
+        state["paused"] = False
+        state["pauseReason"] = ""
+        state["pausedAt"] = ""
+        changed = True
+    elif action == "freeze":
+        task_id = str(getattr(args, "task_id", "") or "").strip()
+        if not task_id:
+            print(json.dumps({"ok": False, "error": "--task-id is required for action=freeze"}))
+            return 1
+        frozen = set(state.get("frozenTaskIds") or [])
+        frozen.add(task_id)
+        state["frozenTaskIds"] = sorted(frozen)
+        changed = True
+    elif action == "unfreeze":
+        task_id = str(getattr(args, "task_id", "") or "").strip()
+        if not task_id:
+            print(json.dumps({"ok": False, "error": "--task-id is required for action=unfreeze"}))
+            return 1
+        frozen = set(state.get("frozenTaskIds") or [])
+        frozen.discard(task_id)
+        state["frozenTaskIds"] = sorted(frozen)
+        changed = True
+    elif action == "status":
+        pass
+    else:
+        print(json.dumps({"ok": False, "error": f"unsupported action: {action}"}))
+        return 1
+
+    state = normalize_governance_state(state)
+    if changed:
+        save_governance_state(args.root, state)
+    result = {"ok": True, "handled": True, "intent": "govern", "action": action, "changed": changed, "state": state}
+    print(json.dumps(result, ensure_ascii=True))
+    return 0
 
 
 def load_json_file(path: str, default_obj: Dict[str, Any]) -> Dict[str, Any]:
@@ -1216,6 +1496,103 @@ def save_json_file(path: str, data: Dict[str, Any]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=True, indent=2)
         f.write("\n")
+
+
+def governance_state_path(root: str) -> str:
+    return os.path.join(root, "state", "governance.state.json")
+
+
+def scheduler_state_path(root: str) -> str:
+    return os.path.join(root, "state", "scheduler.state.json")
+
+
+def routing_state_path(root: str) -> str:
+    return os.path.join(root, "state", "task-routing.json")
+
+
+def normalize_governance_state(raw: Dict[str, Any]) -> Dict[str, Any]:
+    state = dict(DEFAULT_GOVERNANCE_STATE)
+    if not isinstance(raw, dict):
+        return state
+    state["paused"] = bool(raw.get("paused", False))
+    state["pauseReason"] = clip(str(raw.get("pauseReason") or ""), 200)
+    state["pausedAt"] = str(raw.get("pausedAt") or "")
+    frozen = raw.get("frozenTaskIds")
+    if isinstance(frozen, list):
+        task_ids: List[str] = []
+        for item in frozen:
+            tid = str(item or "").strip()
+            if tid:
+                task_ids.append(tid)
+        state["frozenTaskIds"] = sorted(set(task_ids))
+    return state
+
+
+def load_governance_state(root: str) -> Dict[str, Any]:
+    path = governance_state_path(root)
+    return normalize_governance_state(load_json_file(path, dict(DEFAULT_GOVERNANCE_STATE)))
+
+
+def save_governance_state(root: str, data: Dict[str, Any]) -> None:
+    path = governance_state_path(root)
+    save_json_file(path, normalize_governance_state(data))
+
+
+def load_task_routing(root: str) -> Dict[str, Any]:
+    path = routing_state_path(root)
+    default = {"priorities": {}, "dependsOn": {}}
+    raw = load_json_file(path, default)
+    if not isinstance(raw, dict):
+        return default
+    priorities = raw.get("priorities") if isinstance(raw.get("priorities"), dict) else {}
+    depends_on = raw.get("dependsOn") if isinstance(raw.get("dependsOn"), dict) else {}
+    return {"priorities": priorities, "dependsOn": depends_on}
+
+
+def parse_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def ensure_spawn_output_seq_queue(args: argparse.Namespace) -> List[str]:
+    queue = getattr(args, "_spawn_output_seq_queue", None)
+    if isinstance(queue, list):
+        return queue
+    raw = str(getattr(args, "spawn_output_seq", "") or "").strip()
+    if not raw:
+        queue = []
+        setattr(args, "_spawn_output_seq_queue", queue)
+        return queue
+    parsed = parse_json_loose(raw)
+    if not isinstance(parsed, list):
+        raise ValueError("--spawn-output-seq must be a JSON array")
+    queue = []
+    for item in parsed:
+        if isinstance(item, str):
+            queue.append(item)
+        else:
+            queue.append(json.dumps(item, ensure_ascii=True))
+    setattr(args, "_spawn_output_seq_queue", queue)
+    return queue
+
+
+def next_spawn_output(args: argparse.Namespace) -> str:
+    queue = ensure_spawn_output_seq_queue(args)
+    if not queue:
+        return ""
+    return str(queue.pop(0) or "")
+
+
+def choose_recovery_agent(base_agent: str, attempt_idx: int) -> str:
+    preferred = [a for a in RECOVERY_AGENT_CHAIN if a != base_agent]
+    if base_agent in RECOVERY_AGENT_CHAIN:
+        preferred.append(base_agent)
+    if not preferred:
+        preferred = ["debugger"]
+    idx = attempt_idx % len(preferred)
+    return preferred[idx]
 
 
 def cmd_clarify(args: argparse.Namespace) -> int:
@@ -1308,20 +1685,53 @@ def parse_project_tasks(payload: str) -> Tuple[str, List[str]]:
 def choose_task_for_run(root: str, requested: str) -> Optional[Dict[str, Any]]:
     data = load_snapshot(root)
     tasks = data.get("tasks", {})
+    governance = load_governance_state(root)
+    frozen_task_ids = set(str(x) for x in (governance.get("frozenTaskIds") or []))
+    routing = load_task_routing(root)
+    priorities = routing.get("priorities") if isinstance(routing.get("priorities"), dict) else {}
+    depends_on = routing.get("dependsOn") if isinstance(routing.get("dependsOn"), dict) else {}
+
+    def task_id_of(task_obj: Dict[str, Any]) -> str:
+        return str(task_obj.get("taskId") or "").strip()
+
+    def priority_of(task_obj: Dict[str, Any]) -> int:
+        tid = task_id_of(task_obj)
+        return parse_int(priorities.get(tid, 0), 0)
+
+    def deps_ready(task_obj: Dict[str, Any]) -> bool:
+        tid = task_id_of(task_obj)
+        raw_deps = depends_on.get(tid)
+        deps: List[str] = []
+        if isinstance(raw_deps, list):
+            deps = [str(x or "").strip() for x in raw_deps if str(x or "").strip()]
+        for dep in deps:
+            dep_task = tasks.get(dep)
+            if not isinstance(dep_task, dict):
+                return False
+            if str(dep_task.get("status") or "") != "done":
+                return False
+        return True
+
     if requested:
         t = tasks.get(requested)
-        if isinstance(t, dict):
+        if isinstance(t, dict) and requested not in frozen_task_ids and deps_ready(t):
             return t
         return None
     candidates = []
     for t in tasks.values():
         if not isinstance(t, dict):
             continue
-        if t.get("status") in {"pending", "claimed", "in_progress", "review"}:
-            candidates.append(t)
+        if str(t.get("status") or "") not in {"pending", "claimed", "in_progress", "review"}:
+            continue
+        task_id = task_id_of(t)
+        if not task_id or task_id in frozen_task_ids:
+            continue
+        if not deps_ready(t):
+            continue
+        candidates.append(t)
     if not candidates:
         return None
-    candidates.sort(key=lambda x: x.get("taskId") or "")
+    candidates.sort(key=lambda x: (-priority_of(x), task_id_of(x)))
     return candidates[0]
 
 
@@ -1569,6 +1979,9 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             spawn=dispatch_spawn,
             spawn_cmd=args.spawn_cmd,
             spawn_output=args.spawn_output,
+            spawn_output_seq=args.spawn_output_seq,
+            auto_recover=args.auto_recover,
+            recovery_max_attempts=args.recovery_max_attempts,
             visibility_mode=visibility_mode,
         )
         rc = cmd_dispatch(d_args)
@@ -1594,6 +2007,9 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             spawn=spawn_enabled,
             spawn_cmd=args.spawn_cmd,
             spawn_output=args.spawn_output,
+            spawn_output_seq=args.spawn_output_seq,
+            auto_recover=args.auto_recover,
+            recovery_max_attempts=args.recovery_max_attempts,
             max_steps=max_steps,
             visibility_mode=visibility_mode,
         )
@@ -1656,6 +2072,9 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             spawn=dispatch_spawn,
             spawn_cmd=args.spawn_cmd,
             spawn_output=args.spawn_output,
+            spawn_output_seq=args.spawn_output_seq,
+            auto_recover=args.auto_recover,
+            recovery_max_attempts=args.recovery_max_attempts,
             visibility_mode=visibility_mode,
         )
         return cmd_dispatch(d_args)
@@ -1803,6 +2222,9 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             spawn=dispatch_spawn,
             spawn_cmd=args.spawn_cmd,
             spawn_output=args.spawn_output,
+            spawn_output_seq=args.spawn_output_seq,
+            auto_recover=args.auto_recover,
+            recovery_max_attempts=args.recovery_max_attempts,
             visibility_mode=visibility_mode,
         )
         rc = cmd_dispatch(d_args)
@@ -1844,6 +2266,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_dispatch.add_argument("--no-spawn", dest="spawn", action="store_false")
     p_dispatch.add_argument("--spawn-cmd", default="")
     p_dispatch.add_argument("--spawn-output", default="")
+    p_dispatch.add_argument("--spawn-output-seq", default="")
+    p_dispatch.add_argument("--auto-recover", action="store_true", default=False)
+    p_dispatch.add_argument("--recovery-max-attempts", type=int, default=2)
     p_dispatch.set_defaults(func=cmd_dispatch)
 
     p_autopilot = sub.add_parser("autopilot")
@@ -1858,9 +2283,44 @@ def build_parser() -> argparse.ArgumentParser:
     p_autopilot.add_argument("--no-spawn", dest="spawn", action="store_false")
     p_autopilot.add_argument("--spawn-cmd", default="")
     p_autopilot.add_argument("--spawn-output", default="")
+    p_autopilot.add_argument("--spawn-output-seq", default="")
+    p_autopilot.add_argument("--auto-recover", action="store_true", default=False)
+    p_autopilot.add_argument("--recovery-max-attempts", type=int, default=2)
     p_autopilot.add_argument("--max-steps", type=int, default=3)
     p_autopilot.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=VISIBILITY_MODES[0])
     p_autopilot.set_defaults(func=cmd_autopilot)
+
+    p_scheduler = sub.add_parser("scheduler-run")
+    p_scheduler.add_argument("--root", required=True)
+    p_scheduler.add_argument("--actor", default="orchestrator")
+    p_scheduler.add_argument("--group-id", default=DEFAULT_GROUP_ID)
+    p_scheduler.add_argument("--account-id", default=DEFAULT_ACCOUNT_ID)
+    p_scheduler.add_argument("--mode", choices=["send", "dry-run"], default="send")
+    p_scheduler.add_argument("--session-id", default="")
+    p_scheduler.add_argument("--timeout-sec", type=int, default=120)
+    p_scheduler.add_argument("--spawn", dest="spawn", action="store_true", default=True)
+    p_scheduler.add_argument("--no-spawn", dest="spawn", action="store_false")
+    p_scheduler.add_argument("--spawn-cmd", default="")
+    p_scheduler.add_argument("--spawn-output", default="")
+    p_scheduler.add_argument("--spawn-output-seq", default="")
+    p_scheduler.add_argument("--auto-recover", action="store_true", default=False)
+    p_scheduler.add_argument("--recovery-max-attempts", type=int, default=2)
+    p_scheduler.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=VISIBILITY_MODES[0])
+    p_scheduler.add_argument("--cycles", type=int, default=1)
+    p_scheduler.add_argument("--autopilot-steps", type=int, default=1)
+    p_scheduler.add_argument("--debounce-sec", type=int, default=0)
+    p_scheduler.add_argument("--window-sec", type=int, default=3600)
+    p_scheduler.add_argument("--max-runs", type=int, default=24)
+    p_scheduler.add_argument("--state-file", default="")
+    p_scheduler.set_defaults(func=cmd_scheduler_run)
+
+    p_govern = sub.add_parser("govern")
+    p_govern.add_argument("--root", required=True)
+    p_govern.add_argument("--actor", default="orchestrator")
+    p_govern.add_argument("--action", choices=["pause", "resume", "freeze", "unfreeze", "status"], default="status")
+    p_govern.add_argument("--task-id", default="")
+    p_govern.add_argument("--reason", default="")
+    p_govern.set_defaults(func=cmd_govern)
 
     p_clarify = sub.add_parser("clarify")
     p_clarify.add_argument("--root", required=True)
@@ -1891,6 +2351,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_feishu.add_argument("--autopilot-max-steps", type=int, default=3)
     p_feishu.add_argument("--spawn-cmd", default="")
     p_feishu.add_argument("--spawn-output", default="")
+    p_feishu.add_argument("--spawn-output-seq", default="")
+    p_feishu.add_argument("--auto-recover", action="store_true")
+    p_feishu.add_argument("--recovery-max-attempts", type=int, default=2)
     p_feishu.add_argument("--clarify-cooldown-sec", type=int, default=300)
     p_feishu.add_argument("--clarify-state-file", default="")
     p_feishu.set_defaults(func=cmd_feishu_router)
