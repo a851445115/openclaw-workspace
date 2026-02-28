@@ -10,6 +10,11 @@ import time
 import uuid
 from typing import Any, Dict, Optional, Sequence, Tuple
 
+try:
+    import fcntl
+except Exception:  # pragma: no cover
+    fcntl = None
+
 DEFAULT_GROUP_ID = "oc_041146c92a9ccb403a7f4f48fb59701d"
 DEFAULT_ACCOUNT_ID = "orchestrator"
 
@@ -20,6 +25,7 @@ BOT_OPENID_CONFIG_CANDIDATES = (
     os.path.join("state", "feishu-bot-openids.json"),
 )
 CALLBACK_DEDUP_STATE_FILE = os.path.join("state", "feishu-card-callback-dedup.json")
+CALLBACK_DEDUP_LOCK_FILE = os.path.join("state", "feishu-card-callback-dedup.lock")
 CALLBACK_DEDUP_MAX_ENTRIES = 2000
 CALLBACK_DEDUP_DEFAULT_TTL_SEC = 86400
 CALLBACK_DEDUP_FALLBACK_TTL_SEC = 300
@@ -303,62 +309,88 @@ def remember_callback_once(root: str, dedup_key: str, context: Dict[str, Any], t
     if not dedup_key:
         return False
 
-    now = int(time.time())
-    ttl = ttl_sec if isinstance(ttl_sec, int) and ttl_sec > 0 else CALLBACK_DEDUP_DEFAULT_TTL_SEC
-    state = load_callback_dedup_state(root)
-    raw_entries = state.setdefault("entries", {})
-    if not isinstance(raw_entries, dict):
-        raw_entries = {}
-    entries: Dict[str, Dict[str, Any]] = {}
-    for key, meta in raw_entries.items():
-        if not isinstance(meta, dict):
-            continue
-        try:
-            seen_at_ts = int(meta.get("seenAtTs") or 0)
-            entry_ttl = int(meta.get("ttlSec") or CALLBACK_DEDUP_DEFAULT_TTL_SEC)
-        except (TypeError, ValueError):
-            # Fail-open for dirty state entries to avoid blocking router flow.
-            continue
-        if entry_ttl <= 0:
-            continue
-        if seen_at_ts <= 0:
-            continue
-        if seen_at_ts + entry_ttl < now:
-            continue
-        entries[key] = meta
-    state["entries"] = entries
+    lock_path = os.path.join(root, CALLBACK_DEDUP_LOCK_FILE)
+    try:
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        with open(lock_path, "a+", encoding="utf-8") as lock_file:
+            if fcntl is None:
+                # Fail-open: do not crash routing if file locking is unavailable.
+                return False
 
-    if dedup_key in entries:
-        return True
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            except Exception:
+                # Fail-open: keep callback path available even if lock acquisition fails.
+                return False
 
-    entries[dedup_key] = {
-        "seenAtTs": now,
-        "ttlSec": ttl,
-        "messageId": str(context.get("messageId") or ""),
-        "actionTs": str(context.get("actionTs") or ""),
-        "senderKey": str(context.get("senderKey") or ""),
-        "command": str(context.get("command") or ""),
-        "dedupMode": str(context.get("dedupMode") or ""),
-        "eventEnvelopeKey": str(context.get("eventEnvelopeKey") or ""),
-    }
+            try:
+                now = int(time.time())
+                ttl = ttl_sec if isinstance(ttl_sec, int) and ttl_sec > 0 else CALLBACK_DEDUP_DEFAULT_TTL_SEC
+                state = load_callback_dedup_state(root)
+                raw_entries = state.setdefault("entries", {})
+                if not isinstance(raw_entries, dict):
+                    raw_entries = {}
+                entries: Dict[str, Dict[str, Any]] = {}
+                for key, meta in raw_entries.items():
+                    if not isinstance(meta, dict):
+                        continue
+                    try:
+                        seen_at_ts = int(meta.get("seenAtTs") or 0)
+                        entry_ttl = int(meta.get("ttlSec") or CALLBACK_DEDUP_DEFAULT_TTL_SEC)
+                    except (TypeError, ValueError):
+                        # Fail-open for dirty state entries to avoid blocking router flow.
+                        continue
+                    if entry_ttl <= 0:
+                        continue
+                    if seen_at_ts <= 0:
+                        continue
+                    if seen_at_ts + entry_ttl < now:
+                        continue
+                    entries[key] = meta
+                state["entries"] = entries
 
-    while len(entries) > CALLBACK_DEDUP_MAX_ENTRIES:
-        oldest: Optional[Tuple[str, int]] = None
-        for key, meta in entries.items():
-            ts = 0
-            if isinstance(meta, dict):
+                if dedup_key in entries:
+                    return True
+
+                entries[dedup_key] = {
+                    "seenAtTs": now,
+                    "ttlSec": ttl,
+                    "messageId": str(context.get("messageId") or ""),
+                    "actionTs": str(context.get("actionTs") or ""),
+                    "senderKey": str(context.get("senderKey") or ""),
+                    "command": str(context.get("command") or ""),
+                    "dedupMode": str(context.get("dedupMode") or ""),
+                    "eventEnvelopeKey": str(context.get("eventEnvelopeKey") or ""),
+                }
+
+                while len(entries) > CALLBACK_DEDUP_MAX_ENTRIES:
+                    oldest: Optional[Tuple[str, int]] = None
+                    for key, meta in entries.items():
+                        ts = 0
+                        if isinstance(meta, dict):
+                            try:
+                                ts = int(meta.get("seenAtTs") or 0)
+                            except Exception:
+                                ts = 0
+                        if oldest is None or ts < oldest[1]:
+                            oldest = (key, ts)
+                    if oldest is None:
+                        break
+                    entries.pop(oldest[0], None)
+
+                save_callback_dedup_state(root, state)
+                return False
+            except Exception:
+                # Fail-open: dedup persistence issues must not break callback routing.
+                return False
+            finally:
                 try:
-                    ts = int(meta.get("seenAtTs") or 0)
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
                 except Exception:
-                    ts = 0
-            if oldest is None or ts < oldest[1]:
-                oldest = (key, ts)
-        if oldest is None:
-            break
-        entries.pop(oldest[0], None)
-
-    save_callback_dedup_state(root, state)
-    return False
+                    pass
+    except Exception:
+        # Fail-open: lock file IO errors should not crash inbound router.
+        return False
 
 
 def resolve_actor(conv: Dict[str, Any], sender: Dict[str, Any]) -> str:

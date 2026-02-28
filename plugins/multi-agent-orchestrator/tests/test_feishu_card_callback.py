@@ -1,8 +1,10 @@
+import concurrent.futures
 import importlib.machinery
 import importlib.util
 import json
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -358,6 +360,30 @@ class FeishuCardCallbackTests(unittest.TestCase):
         self.assertTrue(second["ok"], second)
         self.assertFalse(bool(first.get("deduplicated")), first)
         self.assertTrue(bool(second.get("deduplicated")), second)
+
+    def test_concurrent_same_callback_allows_single_non_deduplicated_result(self):
+        raw = make_card_callback_wrapper(
+            "@orchestrator create task: concurrent dedup",
+            message_id="om_concurrent_1",
+            action_ts="1700101010",
+            sender_name="Concurrent User",
+            sender_open_id="ou_concurrent_user",
+        )
+        workers = 8
+        barrier = threading.Barrier(workers)
+
+        def worker():
+            barrier.wait(timeout=5)
+            return run_inbound(self.root, raw)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(lambda _: worker(), range(workers)))
+
+        self.assertEqual(len(results), workers, results)
+        self.assertTrue(all(bool(r.get("ok")) for r in results), results)
+        dedup_flags = [bool(r.get("deduplicated")) for r in results]
+        self.assertEqual(dedup_flags.count(False), 1, results)
+        self.assertEqual(dedup_flags.count(True), workers - 1, results)
 
 
 if __name__ == "__main__":
