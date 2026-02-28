@@ -17,6 +17,7 @@ The scaffold exposes a minimal schema in `openclaw.plugin.json`.
 - Task board source of truth remains local files (`state/tasks.jsonl` + snapshot).
 - Milestone broadcasts are concise Chinese status messages from orchestrator router.
 - `config/feishu-bot-openids.json` maps bot role/accountId to Feishu open_id, used to generate real `<at user_id="...">name</at>` mention tags in bot dispatch templates.
+- `config/acceptance-policy.json` controls done gate policy (global evidence requirement + role keyword requirements).
 - Validation remains conservative and status-driven.
 
 ## TODO Milestone B/C
@@ -33,3 +34,9 @@ The scaffold exposes a minimal schema in `openclaw.plugin.json`.
 
 - `feishu-router` now supports group command intents through orchestrator entry: create/claim/done/block/status/synthesize/escalate/dispatch/clarify.
 - Runtime guardrails include bot-to-bot milestone echo suppression and clarify global cooldown throttle.
+- Visibility mode switch:
+  - `milestone_only`: default low-noise milestones
+  - `handoff_visible`: show worker->orchestrator handoff report
+  - `full_visible`: reserved for richer visible collaboration signals
+- `autopilot` command:
+  - `@orchestrator autopilot [N]` loops runnable tasks with a max-step cap (default 3).

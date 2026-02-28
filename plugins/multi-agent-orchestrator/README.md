@@ -9,10 +9,17 @@ Implemented in this MVP:
 - Feishu command parser for:
   - `@orchestrator create project ...`
   - `@orchestrator run`
+  - `@orchestrator autopilot [N]` (连续推进最多 N 步，默认 3)
   - `@orchestrator status` (默认短摘要，含计数 + 阻塞Top + 待推进Top，目标<500字)
   - `@orchestrator status all` / `@orchestrator status full` (扩展调试视图)
+- Acceptance policy gate:
+  - `done` 状态会经过角色化验收策略（`config/acceptance-policy.json`）
+  - coder 需包含更强验收信号（测试/验证/日志等关键词）才可自动完结
+- Visibility modes:
+  - `milestone_only`（默认）仅里程碑广播
+  - `handoff_visible` / `full_visible` 会额外发送 agent -> orchestrator 的可见交接 @mention
 - Simple Wake-up v1:
-  - `@orchestrator run` / `dispatch` 会发布 `[CLAIM]` + `[TASK]`，并执行 spawn 闭环（默认开启）
+  - `@orchestrator run` / `dispatch` 会发布 `[CLAIM]` + `[TASK]`（默认手动协作模式）
   - spawn 完成后自动解析子代理输出，回写看板为 `done` / `blocked`，并发布 `[DONE]` / `[BLOCKED]` 中文里程碑
   - 被指派成员也可通过 `@orchestrator` 主动汇报完成/阻塞，仍会更新看板并发布低噪里程碑
   - bot 对 bot 派发模板自动插入 Feishu API mention 标签（`<at user_id="...">name</at>`），确保真实@到 orchestrator
@@ -32,6 +39,7 @@ Implemented in this MVP:
 - `scripts/dispatch-task`: direct dispatch/clarify wrapper.
 - `scripts/dry-run-mvp`: minimal dry-run verification flow.
 - `config/feishu-bot-openids.json`: bot role/accountId -> Feishu open_id 映射（用于 API mention 标签）。
+- `config/acceptance-policy.json`: done 验收策略（全局证据要求 + 角色关键词门禁）。
 
 ## Quick Start
 
@@ -40,6 +48,7 @@ cd ~/.openclaw/workspace/plugins/multi-agent-orchestrator
 ./scripts/init-task-board --root .
 ./scripts/orchestrator-router --root . --actor orchestrator --text "@orchestrator create project Alpha: 完成解析器; 编写测试"
 ./scripts/orchestrator-router --root . --actor orchestrator --text "@orchestrator run"
+./scripts/orchestrator-router --root . --actor orchestrator --text "@orchestrator autopilot 2"
 ./scripts/orchestrator-router --root . --actor orchestrator --text "@orchestrator status"
 ./scripts/orchestrator-router --root . --actor orchestrator --text "@orchestrator status full"
 ```
@@ -85,7 +94,7 @@ cat inbound.txt | ./scripts/feishu-inbound-router --root .
    - bot 回报应使用 API mention 标签（由调度模板自动生成），Feishu UI 中 orchestrator 会被高亮@到
 5. Send blocked report:
    - `@orchestrator T-001 阻塞，错误日志在 tmp/error.log`
-6. 验证派发闭环（默认 `run` 会自动 spawn + 回写看板，`--dispatch-manual` 可退回手动模式）。
+6. 验证派发闭环（默认 `run` 为手动模式；可使用 `@orchestrator autopilot` 或 `--dispatch-spawn` 触发自动闭环）。
 7. Validate chat output style:
    - `@orchestrator status` returns compact Chinese board summary (counts + blocked/pending top items)
    - `@orchestrator status full` returns a longer but capped list for debugging
@@ -99,7 +108,7 @@ Run `python3 examples/hello_world.py`.
 
 Simple Wake-up v1 默认使用 dispatch spawn 闭环；如需兼容旧流程，可用 `--dispatch-manual` 仅发布 `[TASK]` 模板。
 
-Local simulation command:
+Visibility mode simulation command:
 
 ```bash
 ./scripts/simulate-coder-autopilot.py \
@@ -150,3 +159,16 @@ Pass criteria:
 - simulator `reportPreview` includes real orchestrator mention tag and `T-1007 已完成`
 
 For live Feishu validation, run the same `@orchestrator run T-1007` in the allowlisted group and check coder bot replies without human `@coder` prompting.
+
+## Visibility Mode Usage
+
+默认是 `milestone_only`。如果希望群里看到可见交接 @mention，可切换：
+
+```bash
+./scripts/orchestrator-router \
+  --root . \
+  --actor orchestrator \
+  --milestones dry-run \
+  --visibility-mode handoff_visible \
+  --text "dispatch T-1007 coder: 修复任务派发后的自动回报"
+```
