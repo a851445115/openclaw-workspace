@@ -171,11 +171,60 @@ def next_assignee_for(chain: List[str], current_assignee: str) -> str:
     if not chain:
         chain = ["coder", "debugger", "invest-analyst", "human"]
     if current not in chain:
-        current = chain[0]
+        return chain[0]
     idx = chain.index(current)
     if idx >= len(chain) - 1:
         return chain[-1]
     return chain[idx + 1]
+
+
+def get_active_cooldown(root: str, task_id: str, now_ts: int = None) -> Dict[str, Any]:
+    now_unix = int(now_ts if now_ts is not None else time.time())
+    state = load_recovery_state(root)
+    entries = state.get("entries") if isinstance(state.get("entries"), dict) else {}
+    best: Dict[str, Any] = {}
+
+    for key, raw in entries.items():
+        if not isinstance(raw, dict):
+            continue
+        row_task_id = str(raw.get("taskId") or "").strip()
+        if row_task_id != task_id:
+            continue
+
+        cooldown_until_ts = max(0, safe_int(raw.get("cooldownUntilTs"), 0))
+        if cooldown_until_ts <= now_unix:
+            continue
+
+        reason_code = normalize_reason(str(raw.get("reasonCode") or ""))
+        if reason_code not in RECOVERY_REASON_CODES and "|" in str(key):
+            reason_code = normalize_reason(str(key).split("|", 1)[1])
+        if reason_code not in RECOVERY_REASON_CODES:
+            continue
+
+        attempt = max(0, safe_int(raw.get("attempt"), 0))
+        next_assignee = str(raw.get("nextAssignee") or "").strip().lower()
+        action = str(raw.get("action") or "").strip().lower()
+        if action not in {"retry", "escalate", "human"}:
+            action = "human" if next_assignee == "human" else "retry"
+        recovery_state = str(raw.get("recoveryState") or "").strip()
+        if not recovery_state:
+            recovery_state = "human_handoff" if action == "human" else "recovery_scheduled"
+
+        candidate = {
+            "reasonCode": reason_code,
+            "attempt": attempt,
+            "nextAssignee": next_assignee or "human",
+            "action": action,
+            "recoveryState": recovery_state,
+            "cooldownActive": True,
+            "cooldownUntilTs": cooldown_until_ts,
+            "cooldownUntil": str(raw.get("cooldownUntil") or ts_to_iso(cooldown_until_ts)),
+            "recoverable": action in {"retry", "human"},
+        }
+        if not best or cooldown_until_ts > int(best.get("cooldownUntilTs") or 0):
+            best = candidate
+
+    return best
 
 
 def decide_recovery(root: str, task_id: str, current_assignee: str, reason_code: str, now_ts: int = None) -> Dict[str, Any]:
