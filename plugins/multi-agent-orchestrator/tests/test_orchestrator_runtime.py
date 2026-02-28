@@ -1055,6 +1055,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(out.get("intent"), "control_panel", out)
         send = out.get("send") or {}
         card = ((send.get("payload") or {}).get("card") or {})
+        self.assertNotIn("text", (send.get("payload") or {}), out)
         actions = card.get("actions") if isinstance(card, dict) else []
         self.assertTrue(isinstance(actions, list) and actions, out)
         titles = [str((a or {}).get("title") or "") for a in actions]

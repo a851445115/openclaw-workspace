@@ -557,8 +557,6 @@ def send_group_card(group_id: str, account_id: str, card: Dict[str, Any], mode: 
         "card": card,
         "mode": mode,
     }
-    if fallback_text:
-        payload["text"] = fallback_text
 
     if mode == "dry-run":
         return {"ok": True, "dryRun": True, "payload": payload}
@@ -577,20 +575,26 @@ def send_group_card(group_id: str, account_id: str, card: Dict[str, Any], mode: 
         json.dumps(card, ensure_ascii=False),
         "--json",
     ]
-    if fallback_text:
-        cmd.extend(["--message", fallback_text])
 
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=45)
     stdout = (proc.stdout or "").strip()
     stderr = (proc.stderr or "").strip()
     if proc.returncode != 0:
-        return {
+        out = {
             "ok": False,
             "error": f"card send failed (exit={proc.returncode})",
             "stdout": clip(stdout, 500),
             "stderr": clip(stderr, 500),
             "payload": payload,
         }
+        if fallback_text:
+            fallback = send_group_message(group_id, account_id, fallback_text, mode)
+            out["fallback"] = fallback
+            if fallback.get("ok"):
+                out["ok"] = True
+                out["degradedToText"] = True
+                out["error"] = ""
+        return out
 
     out = {"ok": True, "dryRun": False, "payload": payload}
     try:
