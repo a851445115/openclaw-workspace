@@ -579,6 +579,10 @@ def infer_task_kind(agent: str, title: str, dispatch_task: str) -> str:
         return "research"
     if agent_norm == "broadcaster" or any(k in text for k in ("broadcast", "公告", "发布", "summary", "同步")):
         return "broadcast"
+    if any(k in text for k in ("review", "code review", "quality gate", "验收", "复核", "qa")):
+        return "review"
+    if any(k in text for k in ("ops", "runbook", "scheduler", "govern", "运维", "巡检", "值班")):
+        return "ops"
     return "coding"
 
 
@@ -799,22 +803,33 @@ def load_knowledge_feedback(root: str, role: str, task_kind: str, reason_code: s
     kind_key = normalize_task_kind(task_kind) or "coding"
     adapter = {"ok": True, "skipped": True, "source": "", "error": ""}
     signals: List[Dict[str, Any]] = []
+    loaded = False
+    last_error = ""
+    last_error_path = ""
 
     for path in knowledge_feedback_candidate_paths(root):
         if not os.path.exists(path):
             continue
-        adapter["source"] = path
         adapter["skipped"] = False
         try:
             with open(path, "r", encoding="utf-8") as f:
                 raw = json.load(f)
             signals = parse_knowledge_signals(raw)
             adapter["ok"] = True
+            adapter["source"] = path
+            adapter["error"] = ""
+            loaded = True
+            break
         except Exception as err:
-            adapter["ok"] = False
-            adapter["error"] = clip(str(err), 200)
+            last_error = clip(str(err), 200)
+            last_error_path = path
             signals = []
-        break
+            continue
+
+    if not adapter["skipped"] and not loaded:
+        adapter["ok"] = False
+        adapter["source"] = last_error_path
+        adapter["error"] = last_error
 
     context: List[Dict[str, Any]] = []
     tags: List[str] = []
@@ -1661,7 +1676,10 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                 worker_report = {"ok": True, "skipped": True, "reason": "spawn not done or visibility hidden"}
 
     final_reason_code = str(spawn.get("reasonCode") or "")
-    knowledge_feedback = load_knowledge_feedback(args.root, args.agent, task_kind, final_reason_code)
+    knowledge_role = str(args.agent or "")
+    if bool(recovery.get("applied")) and str(recovery.get("agent") or "").strip():
+        knowledge_role = str(recovery.get("agent") or "")
+    knowledge_feedback = load_knowledge_feedback(args.root, knowledge_role, task_kind, final_reason_code)
     auto_close = bool(args.spawn and not spawn.get("skipped"))
     ok = (
         bool(claimed.get("ok"))

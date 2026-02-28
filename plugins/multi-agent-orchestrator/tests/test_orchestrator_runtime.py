@@ -1681,6 +1681,179 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("evidence-gap", tags, out)
         self.assertTrue(any("硬证据" in str(x) for x in hints), out)
 
+    def test_knowledge_feedback_falls_back_to_state_when_config_invalid(self):
+        config_file = self.root / "config" / "knowledge-feedback.json"
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text("{invalid", encoding="utf-8")
+        state_file = self.root / "state" / "knowledge-feedback.json"
+        state_file.write_text(
+            json.dumps(
+                {
+                    "lessons": [
+                        {
+                            "tag": "state-fallback",
+                            "hint": "当 config 文件损坏时仍应使用 state 兜底。",
+                            "taskKinds": ["coding"],
+                            "roles": ["coder"],
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-135: knowledge fallback",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-135",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/t135.log","pytest passed"]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        knowledge = out.get("knowledgeFeedback", {})
+        adapter = knowledge.get("adapter", {})
+        self.assertTrue(adapter.get("ok"), out)
+        self.assertEqual(adapter.get("source"), str(state_file), out)
+        self.assertIn("state-fallback", out.get("agentPrompt", ""), out)
+
+    def test_dispatch_infers_review_and_ops_task_kind(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-136: review quality gate",
+        ])
+        review_out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-136",
+            "--agent",
+            "coder",
+            "--task",
+            "请进行 review gate 验收并给结论",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/t136.log","pytest passed"]}',
+        ])
+        self.assertEqual(review_out["strategy"]["taskKind"], "review", review_out)
+
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-137: ops runbook",
+        ])
+        ops_out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-137",
+            "--agent",
+            "coder",
+            "--task",
+            "ops 巡检 runbook 与 scheduler 健康检查",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/t137.log","pytest passed"]}',
+        ])
+        self.assertEqual(ops_out["strategy"]["taskKind"], "ops", ops_out)
+
+    def test_recovery_knowledge_feedback_uses_recovery_agent_scope(self):
+        knowledge_file = self.root / "state" / "knowledge-feedback.json"
+        knowledge_file.write_text(
+            json.dumps(
+                {
+                    "lessons": [
+                        {
+                            "tag": "debug-recovery",
+                            "hint": "恢复接管时由 debugger 输出复盘证据。",
+                            "taskKinds": ["coding"],
+                            "roles": ["debugger"],
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-138: recovery knowledge scope",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-138",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--auto-recover",
+            "--recovery-max-attempts",
+            "1",
+            "--spawn-output-seq",
+            '[{"status":"done","summary":"第一轮仅阶段结论"},{"status":"done","summary":"恢复完成","evidence":["logs/recover.log","pytest passed"]}]',
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertTrue(out["recovery"]["applied"], out)
+        self.assertEqual(out["recovery"]["agent"], "debugger", out)
+        knowledge = out.get("knowledgeFeedback", {})
+        self.assertEqual(knowledge.get("role"), "debugger", out)
+        self.assertTrue(any(x.get("tag") == "debug-recovery" for x in knowledge.get("context", [])), out)
+
 
 if __name__ == "__main__":
     unittest.main()
