@@ -637,7 +637,7 @@ export async function handleFeishuMessage(params: {
   }
 
   log(
-    `feishu[${account.accountId}]: received message from ${ctx.senderOpenId} in ${ctx.chatId} (${ctx.chatType})`,
+    `feishu[${account.accountId}]: received message from ${ctx.senderOpenId} in ${ctx.chatId} (${ctx.chatType}) msg=${ctx.messageId}`,
   );
 
   // Log mention targets if detected
@@ -710,12 +710,16 @@ export async function handleFeishuMessage(params: {
 
     if (!ctx.mentionedBot && looksLikeAssignedTask(ctx.content, account.accountId, botOpenId)) {
       ctx.mentionedBot = true;
-      log(`feishu[${account.accountId}]: inferred mention from assignment task pattern`);
+      const assignmentPreview = ctx.content.replace(/\s+/g, " ").slice(0, 120);
+      log(
+        `feishu[${account.accountId}]: inferred mention from assignment task pattern preview="${assignmentPreview}"`,
+      );
     }
 
     if (requireMention && !ctx.mentionedBot) {
+      const mentionPreview = ctx.content.replace(/\s+/g, " ").slice(0, 120);
       log(
-        `feishu[${account.accountId}]: message in group ${ctx.chatId} did not mention bot, recording to history`,
+        `feishu[${account.accountId}]: message in group ${ctx.chatId} did not mention bot, recording to history preview="${mentionPreview}"`,
       );
       if (chatHistories) {
         recordPendingHistoryEntryIfEnabled({

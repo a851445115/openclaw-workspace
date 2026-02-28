@@ -148,6 +148,17 @@ export type SendFeishuMessageParams = {
   accountId?: string;
 };
 
+function buildFeishuTextMessagePayload(params: { messageText: string }): {
+  content: string;
+  msgType: string;
+} {
+  const { messageText } = params;
+  return {
+    content: JSON.stringify({ text: messageText }),
+    msgType: "text",
+  };
+}
+
 function buildFeishuPostMessagePayload(params: { messageText: string }): {
   content: string;
   msgType: string;
@@ -168,6 +179,13 @@ function buildFeishuPostMessagePayload(params: { messageText: string }): {
     }),
     msgType: "post",
   };
+}
+
+function shouldUseTextMessagePayload(rawText: string, mentions?: MentionTarget[]): boolean {
+  if (mentions && mentions.length > 0) {
+    return true;
+  }
+  return /<at\s+(user_id|id)=/i.test(rawText);
 }
 
 export async function sendMessageFeishu(
@@ -198,7 +216,9 @@ export async function sendMessageFeishu(
   }
   const messageText = getFeishuRuntime().channel.text.convertMarkdownTables(rawText, tableMode);
 
-  const { content, msgType } = buildFeishuPostMessagePayload({ messageText });
+  const { content, msgType } = shouldUseTextMessagePayload(rawText, mentions)
+    ? buildFeishuTextMessagePayload({ messageText: rawText })
+    : buildFeishuPostMessagePayload({ messageText });
 
   // Get retry config
   const retryConfig = getRetryConfig(cfg);
