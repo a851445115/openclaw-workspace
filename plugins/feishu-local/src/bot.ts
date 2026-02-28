@@ -195,18 +195,89 @@ function parseMessageContent(content: string, messageType: string): string {
   }
 }
 
-function checkBotMentioned(event: FeishuMessageEvent, botOpenId?: string): boolean {
-  if (!botOpenId) return false;
+function checkBotMentioned(
+  event: FeishuMessageEvent,
+  botOpenId?: string,
+  accountId?: string,
+): boolean {
+  const normalizedAccountId = (accountId || "").trim().toLowerCase();
+
   const mentions = event.message.mentions ?? [];
   if (mentions.length > 0) {
-    return mentions.some((m) => m.id.open_id === botOpenId);
+    return mentions.some((m) => {
+      const mentionName = (m.name || "").trim().toLowerCase();
+      const mentionOpenId = (m.id.open_id || "").trim();
+      const mentionUserId = (m.id.user_id || "").trim();
+      const mentionUnionId = (m.id.union_id || "").trim();
+      const mentionKey = typeof m.key === "string" ? m.key : "";
+
+      if (botOpenId) {
+        // Some Feishu events may populate user_id/union_id but not open_id.
+        if (
+          mentionOpenId === botOpenId ||
+          mentionUserId === botOpenId ||
+          mentionUnionId === botOpenId ||
+          mentionKey.includes(botOpenId)
+        ) {
+          return true;
+        }
+      }
+
+      // Fallback for payloads where mention ids are not comparable to botOpenId.
+      return normalizedAccountId.length > 0 && mentionName === normalizedAccountId;
+    });
   }
-  // Post (rich text) messages may have empty message.mentions when they contain docs/paste
-  if (event.message.message_type === "post") {
+
+  // Post (rich text) messages may have empty message.mentions when they contain docs/paste.
+  if (botOpenId && event.message.message_type === "post") {
     const { mentionedOpenIds } = parsePostContent(event.message.content);
-    return mentionedOpenIds.some((id) => id === botOpenId);
+    if (mentionedOpenIds.some((id) => id === botOpenId)) {
+      return true;
+    }
   }
+
+  // Fallback: bot-to-bot mentions rendered via <at ...> may not populate message.mentions.
+  const rawText = parseMessageContent(event.message.content, event.message.message_type);
+  if (botOpenId && rawText.includes(botOpenId)) {
+    const atText = new RegExp(`<at\\s+user_id=["']?${escapeRegExp(botOpenId)}["']?[^>]*>`, "i");
+    const atCard = new RegExp(`<at\\s+id=["']?${escapeRegExp(botOpenId)}["']?[^>]*>`, "i");
+    if (atText.test(rawText) || atCard.test(rawText)) {
+      return true;
+    }
+  }
+
+  if (normalizedAccountId.length > 0) {
+    const atByName = new RegExp(`<at\\b[^>]*>${escapeRegExp(accountId || "")}</at>`, "i");
+    if (atByName.test(rawText)) {
+      return true;
+    }
+  }
+
   return false;
+}
+
+
+function looksLikeAssignedTask(content: string, accountId: string, botOpenId?: string): boolean {
+  const text = (content || "").trim();
+  if (!text) return false;
+
+  const lower = text.toLowerCase();
+  const account = (accountId || "").trim().toLowerCase();
+  const hasTaskPrefix = lower.includes("[task]") || lower.includes("[diag]");
+
+  if (botOpenId && text.includes(botOpenId) && hasTaskPrefix) {
+    return true;
+  }
+
+  if (!account || !hasTaskPrefix) {
+    return false;
+  }
+
+  return (
+    lower.includes(`负责人=${account}`) ||
+    lower.includes(`指派=${account}`) ||
+    lower.includes(`@${account}`)
+  );
 }
 
 export function stripBotMention(
@@ -466,9 +537,10 @@ async function resolveFeishuMediaList(params: {
 export function parseFeishuMessageEvent(
   event: FeishuMessageEvent,
   botOpenId?: string,
+  accountId?: string,
 ): FeishuMessageContext {
   const rawContent = parseMessageContent(event.message.content, event.message.message_type);
-  const mentionedBot = checkBotMentioned(event, botOpenId);
+  const mentionedBot = checkBotMentioned(event, botOpenId, accountId);
   const content = stripBotMention(rawContent, event.message.mentions);
 
   const ctx: FeishuMessageContext = {
@@ -522,7 +594,7 @@ export async function handleFeishuMessage(params: {
     return;
   }
 
-  let ctx = parseFeishuMessageEvent(event, botOpenId);
+  let ctx = parseFeishuMessageEvent(event, botOpenId, account.accountId);
   const isGroup = ctx.chatType === "group";
   const senderUserId = event.sender.sender_id.user_id?.trim() || undefined;
   const sendFallbackFinal = async (text: string, reason: string) => {
@@ -635,6 +707,11 @@ export async function handleFeishuMessage(params: {
       globalConfig: feishuCfg,
       groupConfig,
     });
+
+    if (!ctx.mentionedBot && looksLikeAssignedTask(ctx.content, account.accountId, botOpenId)) {
+      ctx.mentionedBot = true;
+      log(`feishu[${account.accountId}]: inferred mention from assignment task pattern`);
+    }
 
     if (requireMention && !ctx.mentionedBot) {
       log(

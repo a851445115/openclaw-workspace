@@ -10,6 +10,13 @@ from typing import Any, Dict
 DEFAULT_GROUP_ID = "oc_041146c92a9ccb403a7f4f48fb59701d"
 DEFAULT_ACCOUNT_ID = "orchestrator"
 
+BOT_ROLES = {"orchestrator", "coder", "debugger", "invest-analyst", "broadcaster"}
+MILESTONE_PREFIXES = ("[TASK]", "[CLAIM]", "[DONE]", "[BLOCKED]", "[DIAG]", "[REVIEW]")
+BOT_OPENID_CONFIG_CANDIDATES = (
+    os.path.join("config", "feishu-bot-openids.json"),
+    os.path.join("state", "feishu-bot-openids.json"),
+)
+
 
 def extract_json_block(raw: str, header: str) -> Dict[str, Any]:
     m = re.search(re.escape(header) + r"\s*```json\s*(\{.*?\})\s*```", raw, flags=re.DOTALL)
@@ -23,9 +30,15 @@ def extract_json_block(raw: str, header: str) -> Dict[str, Any]:
 
 
 def normalize_message_text(raw: str) -> str:
-    m = re.search(r"message in group\s+[^:]+:\s*(.+)", raw, flags=re.IGNORECASE)
+    # Extract the message body from an OpenClaw Feishu wrapper text.
+    # Keep multi-line messages intact by cutting off before metadata blocks.
+    delim = raw.find("Conversation info (untrusted metadata):")
+    head = raw if delim < 0 else raw[:delim]
+
+    m = re.search(r"message in group\s+[^:]+:\s*", head, flags=re.IGNORECASE)
     if m:
-        return m.group(1).strip()
+        return head[m.end() :].strip()
+
     lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
     if lines:
         return lines[-1]
@@ -44,9 +57,60 @@ def resolve_actor(conv: Dict[str, Any], sender: Dict[str, Any]) -> str:
     return "unknown"
 
 
+def load_openid_role_map(root: str) -> Dict[str, str]:
+    """Return {open_id -> role} mapping from feishu-bot-openids.json if present.
+
+    In group chat wiring, actor is often an open_id (ou_...). Normalizing it early
+    makes bot-loop guards reliable.
+    """
+    out: Dict[str, str] = {}
+    for rel in BOT_OPENID_CONFIG_CANDIDATES:
+        path = os.path.join(root, rel)
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except Exception:
+            continue
+
+        if not isinstance(raw, dict):
+            continue
+
+        entries: Dict[str, Any] = {}
+        role_map = raw.get("byRole")
+        acct_map = raw.get("byAccountId")
+        if isinstance(role_map, dict):
+            entries.update(role_map)
+        if isinstance(acct_map, dict):
+            for k, v in acct_map.items():
+                entries.setdefault(k, v)
+        if not entries:
+            entries = raw
+
+        for role, info in entries.items():
+            if not isinstance(role, str) or not isinstance(info, dict):
+                continue
+            open_id = str(info.get("open_id") or info.get("openId") or "").strip()
+            if open_id:
+                out[open_id] = role
+
+        if out:
+            return out
+
+    return out
+
+
+def normalize_actor(actor: str, openid_role: Dict[str, str]) -> str:
+    s = (actor or "").strip()
+    if not s:
+        return "unknown"
+    return openid_role.get(s, s)
+
+
 def is_bot_sender(actor: str, sender: Dict[str, Any]) -> bool:
     actor_norm = (actor or "").strip().lower()
-    if actor_norm in {"orchestrator", "coder", "debugger", "invest-analyst", "broadcaster"}:
+    if actor_norm in {r.lower() for r in BOT_ROLES}:
         return True
     for key in ("is_bot", "isBot"):
         if bool(sender.get(key)):
@@ -76,7 +140,10 @@ def main() -> int:
     sender = extract_json_block(raw, "Sender (untrusted metadata):")
 
     group_id = args.group_id or str(conv.get("conversation_label") or "").strip() or DEFAULT_GROUP_ID
-    actor = args.actor.strip() or resolve_actor(conv, sender)
+
+    openid_role = load_openid_role_map(args.root)
+    actor_raw = args.actor.strip() or resolve_actor(conv, sender)
+    actor = normalize_actor(actor_raw, openid_role)
     text = normalize_message_text(raw)
 
     was_mentioned = bool(conv.get("was_mentioned"))
@@ -85,7 +152,7 @@ def main() -> int:
 
     if is_bot_sender(actor, sender):
         stripped = text.strip()
-        if actor.lower() == args.account_id.lower() or stripped.startswith(("[TASK]", "[CLAIM]", "[DONE]", "[BLOCKED]", "[DIAG]", "[REVIEW]")):
+        if actor.lower() == args.account_id.lower() or stripped.startswith(MILESTONE_PREFIXES):
             out = {
                 "ok": True,
                 "handled": True,

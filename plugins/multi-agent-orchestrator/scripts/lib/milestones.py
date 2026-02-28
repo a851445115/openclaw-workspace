@@ -656,11 +656,13 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     title = clip(task.get("title") or "未命名任务")
     dispatch_task = clip(args.task or f"{args.task_id}: {task.get('title') or 'untitled'}", 300)
 
+    dispatch_mode_line = "派发模式: 手动协作（等待回报）" if not args.spawn else "派发模式: 自动执行闭环（spawn并回写看板）"
+
     claim_text = "\n".join(
         [
             f"[CLAIM] {args.task_id} | 状态={status_zh(status or '-')} | 指派={args.agent}",
             f"标题: {title}",
-            "派发模式: 自动闭环（派发后执行并回写看板）",
+            dispatch_mode_line,
         ]
     )
     claim_send = send_group_message(args.group_id, args.account_id, claim_text, args.mode)

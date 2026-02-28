@@ -525,18 +525,20 @@
     "T-1001": {
       "taskId": "T-1001",
       "title": "DIAG T-1000: need diag",
-      "status": "pending",
-      "owner": null,
+      "status": "in_progress",
+      "owner": "debugger",
       "assigneeHint": "debugger",
       "createdBy": "orchestrator",
       "createdAt": "2026-02-27T07:42:34Z",
-      "updatedAt": "2026-02-27T07:42:34Z",
+      "updatedAt": "2026-02-28T03:32:44Z",
       "blockedReason": null,
       "result": null,
       "review": null,
       "relatedTo": "T-1000",
       "history": [
-        "6cf4bc6b-aba3-4390-bdc4-3fa70c570492"
+        "6cf4bc6b-aba3-4390-bdc4-3fa70c570492",
+        "3a291bd5-7150-432b-af97-dede4de34878",
+        "49780184-d4a0-4cfa-bea3-6fc4afedffcd"
       ]
     },
     "T-1002": {
@@ -634,26 +636,45 @@
     "T-1007": {
       "taskId": "T-1007",
       "title": "[\u6d4b\u8bd5\u9879\u76ee] \u8f93\u51fa\u622a\u56fe",
-      "status": "in_progress",
+      "status": "done",
       "owner": "coder",
       "assigneeHint": "coder",
       "createdBy": "orchestrator",
       "createdAt": "2026-02-27T17:02:47Z",
-      "updatedAt": "2026-02-27T18:23:04Z",
+      "updatedAt": "2026-02-28T03:17:10Z",
       "blockedReason": null,
-      "result": null,
+      "result": "@orchestrator T-1007 \u5df2\u5b8c\u6210\\n\u6807\u9898: [\u6d4b\u8bd5\u9879\u76ee] \u8f93\u51fa\u622a\u56fe\\n\u8bc1\u636e:\\n- \u6587\u4ef6: /Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchest...",
       "review": null,
       "relatedTo": null,
       "projectId": null,
       "history": [
         "44967d40-67b8-4e37-8010-37ce930368b2",
         "04329086-64a1-4c99-87ff-d987bc882209",
-        "78638732-3b77-46e9-aee0-7ccd973a4363"
+        "78638732-3b77-46e9-aee0-7ccd973a4363",
+        "ca41433e-1d14-417b-ae79-bc59cd32c5ac"
+      ]
+    },
+    "T-1008": {
+      "taskId": "T-1008",
+      "title": "[Test] \u751f\u6210\u4e00\u4e2a\u7b80\u5355\u4efb\u52a1",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "coder",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-02-28T03:26:07Z",
+      "updatedAt": "2026-02-28T03:26:07Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "383036d6-eb85-42fb-a238-3c3e491343a5"
       ]
     }
   },
   "meta": {
     "version": 2,
-    "updatedAt": "2026-02-27T18:23:04Z"
+    "updatedAt": "2026-02-28T03:32:44Z"
   }
 }
