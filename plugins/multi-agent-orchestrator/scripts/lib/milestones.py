@@ -120,6 +120,11 @@ TASK_KIND_STRATEGY_LIBRARY: Dict[str, Dict[str, List[str]]] = {
         ],
     },
 }
+KNOWLEDGE_FEEDBACK_ENV = "ORCHESTRATOR_KNOWLEDGE_FEEDBACK_PATH"
+KNOWLEDGE_FEEDBACK_CONFIG_CANDIDATES = (
+    os.path.join("config", "knowledge-feedback.json"),
+    os.path.join("state", "knowledge-feedback.json"),
+)
 
 
 def now_iso() -> str:
@@ -660,6 +665,191 @@ def resolve_strategy_block(root: str, role: str, task_kind: str) -> Dict[str, An
     }
 
 
+def normalize_token_list(value: Any, limit: int = 8, item_limit: int = 80) -> List[str]:
+    out: List[str] = []
+    if isinstance(value, str):
+        s = clip(value.strip().lower(), item_limit)
+        if s:
+            out.append(s)
+        return out
+    if not isinstance(value, list):
+        return out
+    for item in value:
+        s = clip(str(item or "").strip().lower(), item_limit)
+        if not s or s in out:
+            continue
+        out.append(s)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def normalize_knowledge_signal(item: Any, category: str) -> Optional[Dict[str, Any]]:
+    if isinstance(item, str):
+        text = clip(item, 220)
+        if not text:
+            return None
+        return {
+            "category": category,
+            "tag": clip(category, 80),
+            "hint": text,
+            "taskKinds": [],
+            "roles": [],
+            "reasonCodes": [],
+            "source": "",
+        }
+    if not isinstance(item, dict):
+        return None
+    tag = clip(str(item.get("tag") or item.get("id") or item.get("name") or category), 80)
+    hint = clip(
+        str(
+            item.get("hint")
+            or item.get("summary")
+            or item.get("lesson")
+            or item.get("pattern")
+            or item.get("advice")
+            or ""
+        ),
+        220,
+    )
+    if not hint:
+        return None
+    task_kinds = normalize_token_list(item.get("taskKinds") or item.get("taskKind") or item.get("appliesTaskKinds") or [])
+    task_kinds = [normalize_task_kind(x) for x in task_kinds]
+    task_kinds = [x for x in task_kinds if x]
+    roles = normalize_token_list(item.get("roles") or item.get("role") or item.get("appliesRoles") or [])
+    reason_codes = normalize_token_list(item.get("reasonCodes") or item.get("reasonCode") or item.get("reasons") or [])
+    source = clip(str(item.get("source") or item.get("path") or item.get("link") or ""), 180)
+    return {
+        "category": clip(str(item.get("category") or category), 40),
+        "tag": tag,
+        "hint": hint,
+        "taskKinds": task_kinds,
+        "roles": roles,
+        "reasonCodes": reason_codes,
+        "source": source,
+    }
+
+
+def parse_knowledge_signals(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    if not isinstance(payload, dict):
+        return rows
+    signals_raw = payload.get("signals")
+    if isinstance(signals_raw, list):
+        for item in signals_raw:
+            category = "signal"
+            if isinstance(item, dict):
+                category = clip(str(item.get("category") or item.get("kind") or "signal"), 40)
+            signal = normalize_knowledge_signal(item, category)
+            if signal:
+                rows.append(signal)
+    for category in ("lessons", "mistakes", "patterns"):
+        raw = payload.get(category)
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            signal = normalize_knowledge_signal(item, category[:-1] if category.endswith("s") else category)
+            if signal:
+                rows.append(signal)
+    return rows
+
+
+def knowledge_feedback_candidate_paths(root: str) -> List[str]:
+    out: List[str] = []
+    env_path = clip(str(os.getenv(KNOWLEDGE_FEEDBACK_ENV, "") or "").strip(), 400)
+    if env_path:
+        out.append(env_path if os.path.isabs(env_path) else os.path.join(root, env_path))
+    for rel in KNOWLEDGE_FEEDBACK_CONFIG_CANDIDATES:
+        out.append(os.path.join(root, rel))
+    dedup: List[str] = []
+    seen = set()
+    for item in out:
+        if item in seen:
+            continue
+        dedup.append(item)
+        seen.add(item)
+    return dedup
+
+
+def signal_matches_scope(signal: Dict[str, Any], role: str, task_kind: str) -> bool:
+    role_key = str(role or "").strip().lower()
+    kind_key = normalize_task_kind(task_kind) or "coding"
+    roles = signal.get("roles") if isinstance(signal.get("roles"), list) else []
+    kinds = signal.get("taskKinds") if isinstance(signal.get("taskKinds"), list) else []
+    if roles and role_key not in roles:
+        return False
+    if kinds and kind_key not in kinds:
+        return False
+    return True
+
+
+def signal_matches_reason(signal: Dict[str, Any], reason_code: str) -> bool:
+    reason = str(reason_code or "").strip().lower()
+    if not reason:
+        return False
+    codes = signal.get("reasonCodes") if isinstance(signal.get("reasonCodes"), list) else []
+    if not codes:
+        return True
+    return reason in codes
+
+
+def load_knowledge_feedback(root: str, role: str, task_kind: str, reason_code: str = "") -> Dict[str, Any]:
+    role_key = str(role or "").strip().lower()
+    kind_key = normalize_task_kind(task_kind) or "coding"
+    adapter = {"ok": True, "skipped": True, "source": "", "error": ""}
+    signals: List[Dict[str, Any]] = []
+
+    for path in knowledge_feedback_candidate_paths(root):
+        if not os.path.exists(path):
+            continue
+        adapter["source"] = path
+        adapter["skipped"] = False
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            signals = parse_knowledge_signals(raw)
+            adapter["ok"] = True
+        except Exception as err:
+            adapter["ok"] = False
+            adapter["error"] = clip(str(err), 200)
+            signals = []
+        break
+
+    context: List[Dict[str, Any]] = []
+    tags: List[str] = []
+    hints: List[str] = []
+    for signal in signals:
+        if not signal_matches_scope(signal, role_key, kind_key):
+            continue
+        context.append(
+            {
+                "category": str(signal.get("category") or ""),
+                "tag": str(signal.get("tag") or ""),
+                "hint": str(signal.get("hint") or ""),
+                "reasonCodes": signal.get("reasonCodes") if isinstance(signal.get("reasonCodes"), list) else [],
+                "source": str(signal.get("source") or ""),
+            }
+        )
+        if signal_matches_reason(signal, reason_code):
+            tag = str(signal.get("tag") or "").strip()
+            hint = str(signal.get("hint") or "").strip()
+            if tag and tag not in tags:
+                tags.append(tag)
+            if hint and hint not in hints:
+                hints.append(hint)
+
+    return {
+        "adapter": adapter,
+        "role": role_key,
+        "taskKind": kind_key,
+        "reasonCode": str(reason_code or "").strip().lower(),
+        "context": context[:5],
+        "tags": tags[:5],
+        "hints": hints[:5],
+    }
+
+
 def requirements_for_kind(kind: str) -> List[str]:
     if kind == "debug":
         return [
@@ -706,12 +896,15 @@ def build_agent_prompt(
     agent: str,
     dispatch_task: str,
     strategy_block: Optional[Dict[str, Any]] = None,
+    knowledge_feedback: Optional[Dict[str, Any]] = None,
 ) -> str:
     task_id = str(task.get("taskId") or "")
     title = str(task.get("title") or "")
     task_kind = infer_task_kind(agent, title, dispatch_task)
     if not isinstance(strategy_block, dict):
         strategy_block = resolve_strategy_block(root, agent, task_kind)
+    if not isinstance(knowledge_feedback, dict):
+        knowledge_feedback = load_knowledge_feedback(root, agent, task_kind)
     requirements = requirements_for_kind(task_kind)
     schema = build_structured_output_schema(task_id, agent)
     board_snapshot = build_prompt_board_snapshot(root, task_id)
@@ -739,6 +932,8 @@ def build_agent_prompt(
         json.dumps(history, ensure_ascii=False, indent=2),
         "STRATEGY_BLOCK:",
         json.dumps(strategy_block, ensure_ascii=False, indent=2),
+        "KNOWLEDGE_FEEDBACK:",
+        json.dumps(knowledge_feedback, ensure_ascii=False, indent=2),
         "EXECUTION_REQUIREMENTS:",
     ]
     for idx, item in enumerate(requirements, start=1):
@@ -1307,7 +1502,15 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     dispatch_task = clip(args.task or f"{args.task_id}: {task.get('title') or 'untitled'}", 300)
     task_kind = infer_task_kind(args.agent, title, dispatch_task)
     strategy_block = resolve_strategy_block(args.root, args.agent, task_kind)
-    agent_prompt = build_agent_prompt(args.root, task, args.agent, dispatch_task, strategy_block=strategy_block)
+    knowledge_prompt_block = load_knowledge_feedback(args.root, args.agent, task_kind)
+    agent_prompt = build_agent_prompt(
+        args.root,
+        task,
+        args.agent,
+        dispatch_task,
+        strategy_block=strategy_block,
+        knowledge_feedback=knowledge_prompt_block,
+    )
 
     dispatch_mode_line = "派发模式: 手动协作（等待回报）" if not args.spawn else "派发模式: 自动执行闭环（spawn并回写看板）"
 
@@ -1457,6 +1660,8 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
             else:
                 worker_report = {"ok": True, "skipped": True, "reason": "spawn not done or visibility hidden"}
 
+    final_reason_code = str(spawn.get("reasonCode") or "")
+    knowledge_feedback = load_knowledge_feedback(args.root, args.agent, task_kind, final_reason_code)
     auto_close = bool(args.spawn and not spawn.get("skipped"))
     ok = (
         bool(claimed.get("ok"))
@@ -1487,12 +1692,19 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         "reportTemplate": report_template,
         "agentPrompt": agent_prompt,
         "strategy": strategy_block,
+        "knowledgeFeedback": knowledge_feedback,
     }
 
 
 def cmd_dispatch(args: argparse.Namespace) -> int:
     result = dispatch_once(args)
     strategy_block = result.get("strategy") if isinstance(result.get("strategy"), dict) else {}
+    knowledge_feedback = result.get("knowledgeFeedback") if isinstance(result.get("knowledgeFeedback"), dict) else {}
+    knowledge_tags = knowledge_feedback.get("tags") if isinstance(knowledge_feedback.get("tags"), list) else []
+    knowledge_hints = knowledge_feedback.get("hints") if isinstance(knowledge_feedback.get("hints"), list) else []
+    knowledge_adapter = (
+        knowledge_feedback.get("adapter") if isinstance(knowledge_feedback.get("adapter"), dict) else {}
+    )
     spawn = result.get("spawn") if isinstance(result.get("spawn"), dict) else {}
     audit = append_observability_event(
         args.root,
@@ -1509,6 +1721,9 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
             "strategy": strategy_block,
             "strategyVariant": str(strategy_block.get("variant") or ""),
             "taskKind": str(strategy_block.get("taskKind") or ""),
+            "knowledgeTags": [clip(str(x), 80) for x in knowledge_tags[:6]],
+            "knowledgeHintCount": len(knowledge_hints),
+            "knowledgeAdapterOk": bool(knowledge_adapter.get("ok", True)),
         },
     )
     result["audit"] = audit
@@ -2478,6 +2693,8 @@ def build_observability_report_data(root: str, window_sec: int) -> Dict[str, Any
     recovered_tasks = 0
     dispatches = 0
     strategy_usage: Dict[str, int] = {}
+    knowledge_tag_usage: Dict[str, int] = {}
+    knowledge_adapter_failures = 0
     for event in cycle_events:
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         if bool(payload.get("ok")):
@@ -2501,6 +2718,14 @@ def build_observability_report_data(root: str, window_sec: int) -> Dict[str, Any
             80,
         )
         strategy_usage[variant] = strategy_usage.get(variant, 0) + 1
+        tags = payload.get("knowledgeTags") if isinstance(payload.get("knowledgeTags"), list) else []
+        for tag in tags:
+            key = clip(str(tag or ""), 80)
+            if not key:
+                continue
+            knowledge_tag_usage[key] = knowledge_tag_usage.get(key, 0) + 1
+        if payload.get("knowledgeAdapterOk") is False:
+            knowledge_adapter_failures += 1
 
     cycle_success_rate = (cycle_success / cycle_total) if cycle_total > 0 else 0.0
     mean_cycle_time_sec = (cycle_time_sum / cycle_time_count) if cycle_time_count > 0 else 0.0
@@ -2518,6 +2743,8 @@ def build_observability_report_data(root: str, window_sec: int) -> Dict[str, Any
         "recoveryAttempts": recovery_attempts,
         "recoveredTasks": recovered_tasks,
         "strategyUsage": strategy_usage,
+        "knowledgeTagUsage": knowledge_tag_usage,
+        "knowledgeAdapterFailures": knowledge_adapter_failures,
     }
     return {
         "windowSec": window_sec,

@@ -1541,6 +1541,146 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("strategyUsage", report["metrics"], report)
         self.assertGreaterEqual(report["metrics"]["strategyUsage"].get("strict-evidence", 0), 1, report)
 
+    def test_dispatch_prompt_includes_knowledge_feedback_block(self):
+        knowledge_file = self.root / "state" / "knowledge-feedback.json"
+        knowledge_file.write_text(
+            json.dumps(
+                {
+                    "lessons": [
+                        {
+                            "tag": "small-batch",
+                            "hint": "尽量小步提交并立即验证。",
+                            "taskKinds": ["coding"],
+                            "roles": ["coder"],
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-132: knowledge context",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-132",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/t132.log","pytest passed"]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        prompt = out.get("agentPrompt", "")
+        self.assertIn("KNOWLEDGE_FEEDBACK", prompt, out)
+        self.assertIn("small-batch", prompt, out)
+
+    def test_dispatch_knowledge_adapter_failure_is_non_blocking(self):
+        knowledge_file = self.root / "state" / "knowledge-feedback.json"
+        knowledge_file.write_text("{invalid", encoding="utf-8")
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-133: knowledge adapter fail",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-133",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/t133.log","pytest passed"]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        knowledge = out.get("knowledgeFeedback", {})
+        adapter = knowledge.get("adapter", {})
+        self.assertFalse(adapter.get("ok", True), out)
+        self.assertIn("error", adapter, out)
+
+    def test_blocked_dispatch_returns_knowledge_hints(self):
+        knowledge_file = self.root / "state" / "knowledge-feedback.json"
+        knowledge_file.write_text(
+            json.dumps(
+                {
+                    "mistakes": [
+                        {
+                            "tag": "evidence-gap",
+                            "hint": "缺少硬证据时先补日志路径和测试输出。",
+                            "taskKinds": ["coding"],
+                            "roles": ["coder"],
+                            "reasonCodes": ["missing_evidence", "missing_hard_evidence"],
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-134: knowledge hints",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-134",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"完成"}',
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["spawn"]["decision"], "blocked", out)
+        knowledge = out.get("knowledgeFeedback", {})
+        tags = knowledge.get("tags", [])
+        hints = knowledge.get("hints", [])
+        self.assertIn("evidence-gap", tags, out)
+        self.assertTrue(any("硬证据" in str(x) for x in hints), out)
+
 
 if __name__ == "__main__":
     unittest.main()
