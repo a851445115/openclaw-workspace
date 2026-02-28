@@ -1,0 +1,26 @@
+{
+  "recoveryChain": [
+    "coder",
+    "debugger",
+    "invest-analyst",
+    "human"
+  ],
+  "default": {
+    "maxAttempts": 2,
+    "cooldownSec": 180
+  },
+  "reasonPolicies": {
+    "spawn_failed": {
+      "maxAttempts": 2,
+      "cooldownSec": 180
+    },
+    "incomplete_output": {
+      "maxAttempts": 2,
+      "cooldownSec": 120
+    },
+    "blocked_signal": {
+      "maxAttempts": 2,
+      "cooldownSec": 180
+    }
+  }
+}

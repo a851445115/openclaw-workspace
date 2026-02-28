@@ -94,3 +94,28 @@ Validation checks during replay:
   - 回放 `tasks.jsonl` 重建 snapshot（含错误统计与 diff 摘要）
   - apply 模式原子写出 rebuilt snapshot
   - 可选 `--compact-jsonl` 输出去重压缩后的事件流
+
+## 6) Failure Auto-Recovery & Escalation Loop (Batch 2)
+
+- 策略文件：`config/recovery-policy.json`
+  - 默认恢复链：`coder -> debugger -> invest-analyst -> human`
+  - 支持按 `reasonCode` 覆盖 `maxAttempts` 与 `cooldownSec`
+  - 支持在任务根目录 `config/recovery-policy.json` 覆盖仓库默认策略
+- 状态文件：`state/recovery.state.json`
+  - 维度：`taskId + reasonCode`
+  - 记录字段：`attempt`、`nextAssignee`、`action`、`recoveryState`、`cooldownUntilTs`
+  - 冷却未到期时复用上一决策，不递增 attempt
+- 触发条件（当前支持）
+  - `spawn_failed`
+  - `incomplete_output`
+  - `blocked_signal`
+- 输出字段（dispatch/autopilot 的 `spawn`）
+  - `reasonCode`
+  - `attempt`
+  - `nextAssignee`
+  - `action`（`retry` | `escalate` | `human`）
+  - 附加：`recoveryState`、`cooldownActive`、`cooldownUntil`
+- 行为约定
+  - 可恢复时输出下一跳负责人与尝试次数
+  - 超预算进入 `escalated_to_human`
+  - `incomplete_output` 的 `retry` 默认保持 `blocked` 并附带 `recovery_pending:<nextAssignee>`，兼容既有阻塞门禁

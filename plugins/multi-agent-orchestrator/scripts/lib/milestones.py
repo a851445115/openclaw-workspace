@@ -5,12 +5,18 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+
+SCRIPT_LIB_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_LIB_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_LIB_DIR)
+import recovery_loop
 
 DEFAULT_GROUP_ID = "oc_041146c92a9ccb403a7f4f48fb59701d"
 DEFAULT_ACCOUNT_ID = "orchestrator"
@@ -1404,8 +1410,39 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         else:
             decision = spawn.get("decision") or "blocked"
             detail = clip(spawn.get("detail") or f"{args.task_id} 子代理执行结果未明确", 200)
+            recovery_decision: Optional[Dict[str, Any]] = None
+            reason_code = str(spawn.get("reasonCode") or "").strip()
+            if decision != "done" and recovery_loop.should_trigger_recovery(reason_code):
+                recovery_decision = recovery_loop.decide_recovery(
+                    args.root,
+                    args.task_id,
+                    args.agent,
+                    reason_code,
+                )
+                spawn["attempt"] = int(recovery_decision.get("attempt") or 0)
+                spawn["nextAssignee"] = str(recovery_decision.get("nextAssignee") or "human")
+                spawn["action"] = str(recovery_decision.get("action") or "escalate")
+                spawn["recoveryState"] = str(recovery_decision.get("recoveryState") or "")
+                spawn["cooldownActive"] = bool(recovery_decision.get("cooldownActive"))
+                spawn["cooldownUntil"] = str(recovery_decision.get("cooldownUntil") or "")
             if decision == "done":
                 close_apply = board_apply(args.root, "orchestrator", f"mark done {args.task_id}: {detail}")
+            elif isinstance(recovery_decision, dict):
+                recovery_action = str(recovery_decision.get("action") or "escalate")
+                next_assignee = str(recovery_decision.get("nextAssignee") or "human")
+                recovery_state = str(recovery_decision.get("recoveryState") or "")
+                if recovery_action == "retry":
+                    if reason_code == "incomplete_output":
+                        close_apply = board_apply(
+                            args.root,
+                            "orchestrator",
+                            f"block task {args.task_id}: {clip(detail + ' | recovery_pending:' + next_assignee, 200)}",
+                        )
+                    else:
+                        close_apply = board_apply(args.root, "orchestrator", f"@{next_assignee} claim task {args.task_id}")
+                else:
+                    tail = recovery_state or ("escalated_to_human" if recovery_action == "escalate" else "human_handoff")
+                    close_apply = board_apply(args.root, "orchestrator", f"block task {args.task_id}: {clip(detail + ' | ' + tail, 200)}")
             else:
                 close_apply = board_apply(args.root, "orchestrator", f"block task {args.task_id}: {detail}")
             close_publish = publish_apply_result(
