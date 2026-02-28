@@ -128,4 +128,14 @@ bot->bot 派发模板会带 Feishu API mention 标签（如 `<at user_id="...">o
 人工用户仍通过 Feishu UI 直接输入 `@orchestrator` 即可，无需手写 mention 标签。
 若指定已完成任务（`done`），会返回幂等提示：`[DONE] T-xxx 已完成，无需重复执行`，且不改状态。
 
+## Hybrid Worker Routing (Scheme B)
+
+- orchestrator 继续负责任务看板、派发、验收和里程碑广播。
+- 当 `dispatch/autopilot` 对象是 `coder` 且开启 spawn 闭环时，默认执行器为 `codex_cli`（bridge: `scripts/lib/codex_worker_bridge.py`）。
+- bridge 使用 `codex exec --output-schema --output-last-message` 约束输出为结构化 JSON。
+- 非 coder 角色默认执行器仍为 `openclaw_agent`。
+- 调度结果中 `spawn` 包含：
+  - `executor`: `codex_cli|openclaw_agent|custom`
+  - `plannedCommand`: 计划执行命令（用于审计与排障）
+
 Inbound wrapper parsing helper: `scripts/feishu-inbound-router` (used by orchestrator agent runtime).

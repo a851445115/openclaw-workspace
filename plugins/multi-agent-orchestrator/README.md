@@ -22,6 +22,11 @@ Implemented in this MVP:
 - Structured agent prompt:
   - orchestrator 派发给子 agent 的 prompt 采用结构化模板，包含 `TASK_CONTEXT`、`BOARD_SNAPSHOT`、`TASK_RECENT_HISTORY`、`OUTPUT_SCHEMA`
   - `OUTPUT_SCHEMA` 统一为 `status/summary/changes/evidence/risks/nextActions`，便于自动验收和下一步调度
+- Hybrid worker execution:
+  - orchestrator 保持任务管理与验收闭环
+  - `coder` 默认通过 Codex CLI bridge 执行（`scripts/lib/codex_worker_bridge.py`）
+  - `debugger/invest-analyst/broadcaster` 默认保持 OpenClaw agent 执行
+  - coder 回传仍按统一结构化 JSON 合约写回看板并触发 `[DONE]/[BLOCKED]`
 - Visibility modes:
   - `milestone_only`（默认）仅里程碑广播
   - `handoff_visible` / `full_visible` 会额外发送 agent -> orchestrator 的可见交接 @mention
@@ -41,6 +46,7 @@ Implemented in this MVP:
 - `openclaw.plugin.json`: plugin manifest and config schema.
 - `scripts/lib/task_board.py`: board engine (route/apply/status) with lock discipline.
 - `scripts/lib/milestones.py`: Feishu parser, wake-up flow, milestone publishing, dispatch spawn 闭环。
+- `scripts/lib/codex_worker_bridge.py`: coder -> Codex CLI bridge (schema-constrained JSON output).
 - `scripts/orchestrator-router`: unified command entrypoint.
 - `scripts/feishu-inbound-router`: parse Feishu inbound wrapper and call router.
 - `scripts/dispatch-task`: direct dispatch/clarify wrapper.

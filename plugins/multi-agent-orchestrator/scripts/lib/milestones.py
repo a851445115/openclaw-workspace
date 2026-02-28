@@ -57,6 +57,8 @@ DEFAULT_PROJECT_BOOTSTRAP_TASKS = (
     "拆解可执行里程碑并标注负责人建议",
     "启动首个最小可交付任务并回传证据",
 )
+TASK_CONTEXT_STATE_FILE = "task-context-map.json"
+DEFAULT_CODER_WORKSPACE = os.path.expanduser("~/.openclaw/agents/coder/workspace")
 
 
 def now_iso() -> str:
@@ -443,6 +445,7 @@ def build_structured_output_schema(task_id: str, agent: str) -> Dict[str, Any]:
 def build_agent_prompt(root: str, task: Dict[str, Any], agent: str, dispatch_task: str) -> str:
     task_id = str(task.get("taskId") or "")
     title = str(task.get("title") or "")
+    project_path = lookup_task_project_path(root, task_id)
     task_kind = infer_task_kind(agent, title, dispatch_task)
     requirements = requirements_for_kind(task_kind)
     schema = build_structured_output_schema(task_id, agent)
@@ -459,6 +462,8 @@ def build_agent_prompt(root: str, task: Dict[str, Any], agent: str, dispatch_tas
         "relatedTo": str(task.get("relatedTo") or ""),
         "objective": clip(dispatch_task, 320),
     }
+    if project_path:
+        task_context["projectPath"] = project_path
 
     lines = [
         "SYSTEM_ROLE: You are a specialist execution agent in a multi-agent project team.",
@@ -524,6 +529,60 @@ def send_group_message(group_id: str, account_id: str, text: str, mode: str) -> 
             "stderr": clip(stderr, 500),
             "payload": payload,
         }
+    out = {"ok": True, "dryRun": False, "payload": payload}
+    try:
+        if stdout:
+            out["result"] = parse_json_loose(stdout)
+    except Exception:
+        pass
+    if stderr:
+        out["stderr"] = clip(stderr, 500)
+    return out
+
+
+def send_group_card(group_id: str, account_id: str, card: Dict[str, Any], mode: str, fallback_text: str = "") -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "channel": "feishu",
+        "accountId": account_id,
+        "target": f"chat:{group_id}",
+        "card": card,
+        "mode": mode,
+    }
+    if fallback_text:
+        payload["text"] = fallback_text
+
+    if mode == "dry-run":
+        return {"ok": True, "dryRun": True, "payload": payload}
+
+    cmd = [
+        "openclaw",
+        "message",
+        "send",
+        "--channel",
+        "feishu",
+        "--account",
+        account_id,
+        "--target",
+        f"chat:{group_id}",
+        "--card",
+        json.dumps(card, ensure_ascii=False),
+        "--json",
+    ]
+    if fallback_text:
+        cmd.extend(["--message", fallback_text])
+
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=45)
+    stdout = (proc.stdout or "").strip()
+    stderr = (proc.stderr or "").strip()
+    if proc.returncode != 0:
+        return {
+            "ok": False,
+            "error": f"card send failed (exit={proc.returncode})",
+            "stdout": clip(stdout, 500),
+            "stderr": clip(stderr, 500),
+            "payload": payload,
+        }
+
     out = {"ok": True, "dryRun": False, "payload": payload}
     try:
         if stdout:
@@ -877,6 +936,10 @@ def classify_spawn_result(root: str, task_id: str, role: str, spawn_obj: Dict[st
 
 
 def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, Any]:
+    plan = resolve_spawn_plan(args, task_prompt)
+    executor = str(plan.get("executor") or "openclaw_agent")
+    planned_cmd = list(plan.get("command") or [])
+
     if args.mode == "dry-run" and not args.spawn_output:
         return {
             "ok": True,
@@ -885,6 +948,8 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
             "stdout": "",
             "stderr": "",
             "command": [],
+            "executor": executor,
+            "plannedCommand": planned_cmd,
             "decision": "",
             "detail": "",
         }
@@ -901,6 +966,8 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
                 "stdout": args.spawn_output,
                 "stderr": "",
                 "command": ["--spawn-output"],
+                "executor": executor,
+                "plannedCommand": planned_cmd,
                 "spawnResult": obj,
                 "decision": decision["decision"],
                 "detail": decision["detail"],
@@ -914,30 +981,27 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
                 "stdout": args.spawn_output,
                 "stderr": "",
                 "command": ["--spawn-output"],
+                "executor": executor,
+                "plannedCommand": planned_cmd,
                 "decision": "blocked",
                 "detail": clip(str(err), 200),
                 "reasonCode": "invalid_spawn_output",
             }
 
-    if args.spawn_cmd:
-        rendered = (
-            args.spawn_cmd.replace("{agent}", args.agent)
-            .replace("{task_id}", args.task_id)
-            .replace("{task}", task_prompt)
-        )
-        cmd = shlex.split(rendered)
-    else:
-        cmd = [
-            "openclaw",
-            "agent",
-            "--agent",
-            args.agent,
-            "--message",
-            task_prompt,
-            "--json",
-            "--timeout",
-            str(args.timeout_sec),
-        ]
+    cmd = planned_cmd
+    if not cmd:
+        return {
+            "ok": False,
+            "error": "spawn plan resolved to empty command",
+            "stdout": "",
+            "stderr": "",
+            "command": [],
+            "executor": executor,
+            "plannedCommand": planned_cmd,
+            "decision": "blocked",
+            "detail": "spawn command is empty",
+            "reasonCode": "spawn_command_empty",
+        }
 
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=max(10, args.timeout_sec + 5))
     stdout = (proc.stdout or "").strip()
@@ -962,6 +1026,8 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
             "stdout": stdout,
             "stderr": stderr,
             "command": cmd,
+            "executor": executor,
+            "plannedCommand": planned_cmd,
             "spawnResult": parsed,
             "decision": "blocked",
             "detail": detail,
@@ -974,6 +1040,8 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
         "stdout": stdout,
         "stderr": stderr,
         "command": cmd,
+        "executor": executor,
+        "plannedCommand": planned_cmd,
         "spawnResult": parsed,
         "decision": decision["decision"],
         "detail": decision["detail"],
@@ -1447,6 +1515,128 @@ def build_user_help_message() -> str:
     return "\n".join(lines)
 
 
+def build_control_panel_card(state: Dict[str, Any]) -> Dict[str, Any]:
+    enabled = bool((state or {}).get("enabled"))
+    max_steps = int((state or {}).get("maxSteps") or AUTO_PROGRESS_DEFAULT_MAX_STEPS)
+    status_text = "已开启" if enabled else "已关闭"
+    return {
+        "type": "AdaptiveCard",
+        "version": "1.4",
+        "body": [
+            {"type": "TextBlock", "weight": "Bolder", "size": "Medium", "text": "Orchestrator 控制台"},
+            {"type": "TextBlock", "wrap": True, "text": f"自动推进: {status_text}（maxSteps={max_steps}）"},
+            {"type": "TextBlock", "wrap": True, "text": "常用命令："},
+            {"type": "TextBlock", "wrap": True, "text": "• @orchestrator 开始项目 /absolute/path"},
+            {"type": "TextBlock", "wrap": True, "text": "• @orchestrator 项目状态"},
+            {"type": "TextBlock", "wrap": True, "text": "• @orchestrator 推进一次"},
+            {"type": "TextBlock", "wrap": True, "text": "• @orchestrator 自动推进 开 2 / 关"},
+        ],
+        "actions": [
+            {"type": "Action.Submit", "title": "项目状态", "data": {"command": "@orchestrator 项目状态"}},
+            {"type": "Action.Submit", "title": "推进一次", "data": {"command": "@orchestrator 推进一次"}},
+            {"type": "Action.Submit", "title": "自动推进开", "data": {"command": "@orchestrator 自动推进 开 2"}},
+            {"type": "Action.Submit", "title": "自动推进关", "data": {"command": "@orchestrator 自动推进 关"}},
+        ],
+    }
+
+
+def task_context_state_path(root: str) -> str:
+    return os.path.join(root, "state", TASK_CONTEXT_STATE_FILE)
+
+
+def load_task_context_state(root: str) -> Dict[str, Any]:
+    state = load_json_file(task_context_state_path(root), {"tasks": {}})
+    tasks = state.get("tasks")
+    if not isinstance(tasks, dict):
+        tasks = {}
+    return {"tasks": tasks}
+
+
+def save_task_context_state(root: str, state: Dict[str, Any]) -> None:
+    tasks = state.get("tasks")
+    if not isinstance(tasks, dict):
+        tasks = {}
+    save_json_file(task_context_state_path(root), {"tasks": tasks})
+
+
+def bind_task_project_context(root: str, task_id: str, project_path: str, project_name: str) -> None:
+    if not task_id:
+        return
+    state = load_task_context_state(root)
+    tasks = state.setdefault("tasks", {})
+    tasks[task_id] = {
+        "projectPath": project_path,
+        "projectName": project_name,
+        "updatedAt": now_iso(),
+    }
+    save_task_context_state(root, state)
+
+
+def lookup_task_project_path(root: str, task_id: str) -> str:
+    if not task_id:
+        return ""
+    state = load_task_context_state(root)
+    tasks = state.get("tasks", {})
+    entry = tasks.get(task_id)
+    if not isinstance(entry, dict):
+        return ""
+    path = normalize_project_path(str(entry.get("projectPath") or ""))
+    if not path or not os.path.isdir(path):
+        return ""
+    return path
+
+
+def render_spawn_template(template: str, values: Dict[str, Any]) -> List[str]:
+    rendered = template
+    for key, raw in values.items():
+        rendered = rendered.replace("{" + key + "}", shlex.quote(str(raw)))
+    return shlex.split(rendered)
+
+
+def resolve_spawn_plan(args: argparse.Namespace, task_prompt: str) -> Dict[str, Any]:
+    values = {
+        "root": args.root,
+        "task_id": args.task_id,
+        "agent": args.agent,
+        "task": task_prompt,
+        "timeout_sec": args.timeout_sec,
+        "bridge": os.path.join(os.path.dirname(__file__), "codex_worker_bridge.py"),
+    }
+
+    raw_spawn_cmd = str(getattr(args, "spawn_cmd", "") or "").strip()
+    if raw_spawn_cmd:
+        return {
+            "executor": "custom",
+            "command": render_spawn_template(raw_spawn_cmd, values),
+            "template": raw_spawn_cmd,
+        }
+
+    if str(args.agent or "").strip().lower() == "coder":
+        template = "python3 {bridge} --root {root} --task-id {task_id} --agent {agent} --task {task} --timeout-sec {timeout_sec}"
+        return {
+            "executor": "codex_cli",
+            "command": render_spawn_template(template, values),
+            "template": template,
+        }
+
+    command = [
+        "openclaw",
+        "agent",
+        "--agent",
+        args.agent,
+        "--message",
+        task_prompt,
+        "--json",
+        "--timeout",
+        str(args.timeout_sec),
+    ]
+    return {
+        "executor": "openclaw_agent",
+        "command": command,
+        "template": "",
+    }
+
+
 def choose_task_for_run(root: str, requested: str) -> Optional[Dict[str, Any]]:
     data = load_snapshot(root)
     tasks = data.get("tasks", {})
@@ -1734,7 +1924,10 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             assignee = suggest_agent_from_title(str(item))
             apply_obj = board_apply(args.root, "orchestrator", f"@{assignee} create task: [{project_name}] {clip(str(item), 120)}")
             if isinstance(apply_obj, dict) and apply_obj.get("ok"):
-                created_ids.append(str(apply_obj.get("taskId") or ""))
+                tid = str(apply_obj.get("taskId") or "")
+                if tid:
+                    created_ids.append(tid)
+                    bind_task_project_context(args.root, tid, project_path, project_name)
             publish = publish_apply_result(
                 args.root,
                 "orchestrator",

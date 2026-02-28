@@ -776,6 +776,76 @@ class RuntimeTests(unittest.TestCase):
         ])
         self.assertEqual(t001["task"]["status"], "done", t001)
 
+    def test_scheme_b_coder_dispatch_uses_codex_worker_executor(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-060: codex worker 路由测试",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--task-id",
+            "T-060",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/one-step.log"]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        spawn = out.get("spawn") or {}
+        self.assertEqual(spawn.get("executor"), "codex_cli", out)
+        planned = spawn.get("plannedCommand") or []
+        self.assertTrue(any("codex_worker_bridge.py" in str(x) for x in planned), out)
+
+    def test_scheme_b_non_coder_dispatch_keeps_openclaw_executor(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@debugger create task T-061: 非 coder 路由保持",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--task-id",
+            "T-061",
+            "--agent",
+            "debugger",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/route.log"]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        spawn = out.get("spawn") or {}
+        self.assertEqual(spawn.get("executor"), "openclaw_agent", out)
+
 
 if __name__ == "__main__":
     unittest.main()
