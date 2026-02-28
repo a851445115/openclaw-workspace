@@ -1,0 +1,49 @@
+{
+  "global": {
+    "requireEvidence": true
+  },
+  "roles": {
+    "coder": {
+      "requireAny": [
+        "test",
+        "pytest",
+        "验证",
+        "通过",
+        "日志",
+        "log",
+        "输出",
+        "result"
+      ]
+    },
+    "debugger": {
+      "requireAny": [
+        "日志",
+        "log",
+        "error",
+        "异常",
+        "复现",
+        "stack",
+        "trace"
+      ]
+    },
+    "invest-analyst": {
+      "requireAny": [
+        "来源",
+        "source",
+        "引用",
+        "link",
+        "数据",
+        "report"
+      ]
+    },
+    "broadcaster": {
+      "requireAny": [
+        "公告",
+        "发布",
+        "summary",
+        "broadcast",
+        "同步"
+      ]
+    }
+  }
+}

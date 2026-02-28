@@ -165,7 +165,7 @@ class RuntimeTests(unittest.TestCase):
             "--actor",
             "coder",
             "--text",
-            "@orchestrator done T-002: 已完成，证据: docs/protocol.md",
+            "@orchestrator done T-002: 已完成，测试通过，证据: docs/protocol.md",
             "--mode",
             "dry-run",
         ])
@@ -315,6 +315,171 @@ class RuntimeTests(unittest.TestCase):
         ])
         self.assertTrue(out["ok"], out)
         self.assertEqual(out["router"].get("intent"), "ignored_loop", out)
+
+    def test_autopilot_advances_pending_tasks(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-010: 自动推进一",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-011: 自动推进二",
+        ])
+
+        out = run_json([
+            "python3",
+            str(MILE),
+            "autopilot",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--max-steps",
+            "2",
+            "--spawn-output",
+            '{"status":"done","message":"已完成，测试通过，证据: logs/auto.log"}',
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["stepsRun"], 2, out)
+
+        t10 = run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "status T-010",
+        ])
+        t11 = run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "status T-011",
+        ])
+        self.assertEqual(t10["task"]["status"], "done", t10)
+        self.assertEqual(t11["task"]["status"], "done", t11)
+
+    def test_acceptance_policy_blocks_weak_coder_done_report(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-020: 验收策略测试",
+        ])
+        run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "coder",
+            "--text",
+            "@orchestrator claim T-020",
+            "--mode",
+            "dry-run",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "coder",
+            "--text",
+            "@orchestrator done T-020: 已完成，证据: docs/protocol.md",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(out["ok"], out)
+
+        status = run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "status T-020",
+        ])
+        self.assertEqual(status["task"]["status"], "blocked", status)
+
+    def test_dispatch_handoff_visible_emits_agent_report(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-030: 可见交接模式",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-030",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--visibility-mode",
+            "handoff_visible",
+            "--spawn-output",
+            '{"status":"done","message":"已完成，pytest 通过，证据: logs/handoff.log"}',
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["visibilityMode"], "handoff_visible", out)
+        self.assertTrue(out["workerReport"]["ok"], out)
+        self.assertEqual(
+            out["workerReport"]["send"]["payload"]["accountId"],
+            "coder",
+            out,
+        )
+        self.assertIn(
+            "<at user_id=",
+            out["workerReport"]["send"]["payload"]["text"],
+            out,
+        )
 
 
 if __name__ == "__main__":

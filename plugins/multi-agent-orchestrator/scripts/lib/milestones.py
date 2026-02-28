@@ -24,6 +24,30 @@ BOT_OPENID_CONFIG_CANDIDATES = (
     os.path.join("config", "feishu-bot-openids.json"),
     os.path.join("state", "feishu-bot-openids.json"),
 )
+VISIBILITY_MODES = ("milestone_only", "handoff_visible", "full_visible")
+ACCEPTANCE_POLICY_CONFIG_CANDIDATES = (
+    os.path.join("config", "acceptance-policy.json"),
+    os.path.join("state", "acceptance-policy.json"),
+)
+DEFAULT_ACCEPTANCE_POLICY: Dict[str, Any] = {
+    "global": {
+        "requireEvidence": True,
+    },
+    "roles": {
+        "coder": {
+            "requireAny": ["test", "pytest", "验证", "通过", "日志", "log", "输出", "result"],
+        },
+        "debugger": {
+            "requireAny": ["日志", "log", "error", "异常", "复现", "stack", "trace"],
+        },
+        "invest-analyst": {
+            "requireAny": ["来源", "source", "引用", "link", "数据", "report"],
+        },
+        "broadcaster": {
+            "requireAny": ["公告", "发布", "summary", "broadcast", "同步"],
+        },
+    },
+}
 
 
 def now_iso() -> str:
@@ -506,7 +530,7 @@ def extract_text_for_judgement(obj: Any) -> str:
     return "\n".join(chunks)
 
 
-def classify_spawn_result(task_id: str, spawn_obj: Dict[str, Any], fallback_text: str = "") -> Dict[str, str]:
+def classify_spawn_result(root: str, task_id: str, role: str, spawn_obj: Dict[str, Any], fallback_text: str = "") -> Dict[str, str]:
     status_hint = str(spawn_obj.get("status") or spawn_obj.get("taskStatus") or "").strip().lower()
     ok_flag = spawn_obj.get("ok")
     text = (fallback_text or extract_text_for_judgement(spawn_obj) or "").strip()
@@ -520,11 +544,15 @@ def classify_spawn_result(task_id: str, spawn_obj: Dict[str, Any], fallback_text
 
     maybe_done = status_hint in {"done", "completed", "success", "succeeded"} or kind == "done"
     if maybe_done:
-        if has_evidence(text) and not looks_stage_only(text):
+        accepted = evaluate_acceptance(root, role, text)
+        if accepted.get("ok"):
             return {"decision": "done", "detail": clip(text or f"{task_id} 子代理返回完成", 200), "reasonCode": "done_with_evidence"}
         return {
             "decision": "blocked",
-            "detail": clip(text or f"{task_id} 子代理仅返回阶段性话术，缺少证据", 200),
+            "detail": clip(
+                f"{text or f'{task_id} 子代理结果未通过验收'} | {accepted.get('reason') or '未通过验收策略'}",
+                200,
+            ),
             "reasonCode": "incomplete_output",
         }
 
@@ -552,7 +580,7 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
             obj = parse_json_loose(args.spawn_output)
             if not isinstance(obj, dict):
                 obj = {"raw": args.spawn_output}
-            decision = classify_spawn_result(args.task_id, obj, fallback_text=args.spawn_output)
+            decision = classify_spawn_result(args.root, args.task_id, args.agent, obj, fallback_text=args.spawn_output)
             return {
                 "ok": True,
                 "simulated": True,
@@ -625,7 +653,7 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
             "reasonCode": "spawn_failed",
         }
 
-    decision = classify_spawn_result(args.task_id, parsed or {"output": stdout}, fallback_text=stdout)
+    decision = classify_spawn_result(args.root, args.task_id, args.agent, parsed or {"output": stdout}, fallback_text=stdout)
     return {
         "ok": True,
         "stdout": stdout,
@@ -638,29 +666,25 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
     }
 
 
-def cmd_dispatch(args: argparse.Namespace) -> int:
+def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
+    visibility_mode = str(getattr(args, "visibility_mode", VISIBILITY_MODES[0]) or VISIBILITY_MODES[0])
+    if visibility_mode not in VISIBILITY_MODES:
+        visibility_mode = VISIBILITY_MODES[0]
+
     if args.actor != "orchestrator":
-        print(json.dumps({"ok": False, "error": "dispatch is restricted to actor=orchestrator"}))
-        return 1
+        return {"ok": False, "error": "dispatch is restricted to actor=orchestrator"}
 
     task = get_task(args.root, args.task_id)
     if not isinstance(task, dict):
-        print(json.dumps({"ok": False, "error": f"task not found: {args.task_id}"}))
-        return 1
+        return {"ok": False, "error": f"task not found: {args.task_id}"}
 
     claimed = ensure_claimed(args.root, args.task_id, args.agent)
     if not isinstance(claimed, dict) or not claimed.get("ok"):
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "error": f"failed to claim task: {args.task_id}",
-                    "claim": claimed,
-                },
-                ensure_ascii=True,
-            )
-        )
-        return 1
+        return {
+            "ok": False,
+            "error": f"failed to claim task: {args.task_id}",
+            "claim": claimed,
+        }
 
     task = get_task(args.root, args.task_id) or task
     status = str(task.get("status") or "")
@@ -703,6 +727,7 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     }
     close_apply: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "spawn disabled"}
     close_publish: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "spawn disabled"}
+    worker_report: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "visibility mode not enabled"}
 
     if args.spawn:
         spawn = run_dispatch_spawn(args, dispatch_task)
@@ -710,7 +735,7 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
             not spawn.get("skipped")
             and not args.spawn_output
             and spawn.get("decision") == "blocked"
-            and spawn.get("reasonCode") == "incomplete_output"
+            and str(spawn.get("reasonCode") or "") in {"incomplete_output", "missing_evidence", "stage_only", "role_policy_missing_keyword"}
         ):
             retry_prompt = clip(
                 dispatch_task
@@ -743,6 +768,24 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
                 allow_broadcaster=False,
             )
 
+            if decision == "done" and visibility_mode in {"handoff_visible", "full_visible"}:
+                handoff_line = f"{orchestrator_mention} {args.task_id} 已完成，结果: {detail}"
+                worker_text = "\n".join(
+                    [
+                        f"[TASK] {args.task_id} | 交接人={args.agent}",
+                        handoff_line,
+                    ]
+                )
+                worker_send = send_group_message(args.group_id, args.agent, worker_text, args.mode)
+                worker_report = {
+                    "ok": bool(worker_send.get("ok")),
+                    "skipped": False,
+                    "visibilityMode": visibility_mode,
+                    "send": worker_send,
+                }
+            else:
+                worker_report = {"ok": True, "skipped": True, "reason": "spawn not done or visibility hidden"}
+
     auto_close = bool(args.spawn and not spawn.get("skipped"))
     ok = (
         bool(claimed.get("ok"))
@@ -750,29 +793,105 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
         and bool(task_send.get("ok"))
         and bool(close_apply.get("ok"))
         and bool(close_publish.get("ok"))
+        and bool(worker_report.get("ok"))
     )
-    print(
-        json.dumps(
-            {
-                "ok": ok,
-                "handled": True,
-                "intent": "dispatch",
-                "taskId": args.task_id,
-                "agent": args.agent,
-                "dispatchMode": "spawn" if auto_close else "manual",
-                "claim": claimed,
-                "claimSend": claim_send,
-                "taskSend": task_send,
-                "spawn": spawn,
-                "closeApply": close_apply,
-                "closePublish": close_publish,
-                "waitForReport": not auto_close,
-                "autoClose": auto_close,
-                "reportTemplate": report_template,
-            },
-            ensure_ascii=True,
+    return {
+        "ok": ok,
+        "handled": True,
+        "intent": "dispatch",
+        "taskId": args.task_id,
+        "agent": args.agent,
+        "dispatchMode": "spawn" if auto_close else "manual",
+        "visibilityMode": visibility_mode,
+        "claim": claimed,
+        "claimSend": claim_send,
+        "taskSend": task_send,
+        "spawn": spawn,
+        "closeApply": close_apply,
+        "closePublish": close_publish,
+        "workerReport": worker_report,
+        "waitForReport": not auto_close,
+        "autoClose": auto_close,
+        "reportTemplate": report_template,
+    }
+
+
+def cmd_dispatch(args: argparse.Namespace) -> int:
+    result = dispatch_once(args)
+    print(json.dumps(result, ensure_ascii=True))
+    return 0 if result.get("ok") else 1
+
+
+def cmd_autopilot(args: argparse.Namespace) -> int:
+    if args.actor != "orchestrator":
+        print(json.dumps({"ok": False, "error": "autopilot is restricted to actor=orchestrator"}))
+        return 1
+    max_steps = max(1, int(args.max_steps))
+    steps: List[Dict[str, Any]] = []
+    summary = {"done": 0, "blocked": 0, "manual": 0}
+    stop_reason = "no_runnable_task"
+    ok = True
+
+    for idx in range(max_steps):
+        task = choose_task_for_run(args.root, "")
+        if not isinstance(task, dict):
+            stop_reason = "no_runnable_task"
+            break
+        task_id = str(task.get("taskId") or "").strip()
+        if not task_id:
+            stop_reason = "invalid_task"
+            ok = False
+            break
+
+        agent = str(task.get("owner") or task.get("assigneeHint") or "coder")
+        if agent not in BOT_ROLES:
+            agent = suggest_agent_from_title(str(task.get("title") or ""))
+
+        d_args = argparse.Namespace(
+            root=args.root,
+            task_id=task_id,
+            agent=agent,
+            task=f"{task_id}: {task.get('title') or 'untitled'}",
+            actor="orchestrator",
+            session_id=args.session_id,
+            group_id=args.group_id,
+            account_id=args.account_id,
+            mode=args.mode,
+            timeout_sec=args.timeout_sec,
+            spawn=args.spawn,
+            spawn_cmd=args.spawn_cmd,
+            spawn_output=args.spawn_output,
+            visibility_mode=args.visibility_mode,
         )
-    )
+        dispatch_result = dispatch_once(d_args)
+        steps.append({"index": idx + 1, "taskId": task_id, "agent": agent, "dispatch": dispatch_result})
+
+        if not dispatch_result.get("ok"):
+            ok = False
+            stop_reason = "dispatch_failed"
+            break
+
+        if dispatch_result.get("autoClose"):
+            if str((dispatch_result.get("spawn") or {}).get("decision") or "") == "done":
+                summary["done"] += 1
+            else:
+                summary["blocked"] += 1
+        else:
+            summary["manual"] += 1
+        stop_reason = "max_steps_reached"
+
+    result = {
+        "ok": ok,
+        "handled": True,
+        "intent": "autopilot",
+        "maxSteps": max_steps,
+        "stepsRun": len(steps),
+        "summary": summary,
+        "stopReason": stop_reason,
+        "visibilityMode": str(args.visibility_mode),
+        "steps": steps,
+    }
+    print(json.dumps(result, ensure_ascii=True))
     return 0 if ok else 1
 
 
@@ -889,7 +1008,7 @@ def choose_task_for_run(root: str, requested: str) -> Optional[Dict[str, Any]]:
     for t in tasks.values():
         if not isinstance(t, dict):
             continue
-        if t.get("status") in {"pending", "claimed", "in_progress"}:
+        if t.get("status") in {"pending", "claimed", "in_progress", "review"}:
             candidates.append(t)
     if not candidates:
         return None
@@ -915,6 +1034,89 @@ def parse_wakeup_kind(text: str) -> str:
     if any(h.lower() in lower for h in DONE_HINTS):
         return "done"
     return "progress"
+
+
+def merge_acceptance_policy(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {
+        "global": dict(base.get("global") or {}),
+        "roles": {k: dict(v) for k, v in (base.get("roles") or {}).items() if isinstance(v, dict)},
+    }
+    if not isinstance(override, dict):
+        return merged
+
+    glob = override.get("global")
+    if isinstance(glob, dict):
+        merged["global"].update(glob)
+
+    roles = override.get("roles")
+    if isinstance(roles, dict):
+        for role, conf in roles.items():
+            if not isinstance(role, str) or not isinstance(conf, dict):
+                continue
+            role_conf = dict(merged["roles"].get(role) or {})
+            role_conf.update(conf)
+            merged["roles"][role] = role_conf
+
+    return merged
+
+
+def load_acceptance_policy(root: str) -> Dict[str, Any]:
+    script_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    search_roots = [root, script_root]
+    policy = DEFAULT_ACCEPTANCE_POLICY
+    for base in search_roots:
+        for rel in ACCEPTANCE_POLICY_CONFIG_CANDIDATES:
+            path = os.path.join(base, rel)
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    policy = merge_acceptance_policy(policy, loaded)
+            except Exception:
+                continue
+    return policy
+
+
+def evaluate_acceptance(root: str, role: str, text: str) -> Dict[str, Any]:
+    note = (text or "").strip()
+    policy = load_acceptance_policy(root)
+    global_conf = policy.get("global") if isinstance(policy, dict) else {}
+    role_conf = (policy.get("roles") or {}).get(role) if isinstance(policy, dict) else {}
+    if not isinstance(global_conf, dict):
+        global_conf = {}
+    if not isinstance(role_conf, dict):
+        role_conf = {}
+
+    require_evidence = bool(global_conf.get("requireEvidence", True))
+    if require_evidence and not has_evidence(note):
+        return {
+            "ok": False,
+            "reasonCode": "missing_evidence",
+            "reason": "缺少可验证证据（文件/日志/链接/命令输出）。",
+        }
+
+    if looks_stage_only(note):
+        return {
+            "ok": False,
+            "reasonCode": "stage_only",
+            "reason": "仅包含阶段性描述，未给出最终验收结果。",
+        }
+
+    required_any = role_conf.get("requireAny")
+    if isinstance(required_any, list) and required_any:
+        lower = note.lower()
+        wanted = [str(x).strip() for x in required_any if str(x).strip()]
+        matched = [kw for kw in wanted if kw.lower() in lower]
+        if not matched:
+            return {
+                "ok": False,
+                "reasonCode": "role_policy_missing_keyword",
+                "reason": f"{role} 交付缺少验收关键词（至少包含其一：{', '.join(wanted[:6])}）。",
+            }
+
+    return {"ok": True, "reasonCode": "accepted", "reason": "通过验收策略"}
 
 
 def find_task_id(text: str) -> str:
@@ -982,6 +1184,9 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
     # Back-compat: --dispatch-manual existed previously; manual is now the default.
     if bool(getattr(args, "dispatch_manual", False)):
         dispatch_spawn = False
+    visibility_mode = str(getattr(args, "visibility_mode", VISIBILITY_MODES[0]) or VISIBILITY_MODES[0])
+    if visibility_mode not in VISIBILITY_MODES:
+        visibility_mode = VISIBILITY_MODES[0]
 
     cmd_body = norm
     if norm.lower().startswith("@orchestrator"):
@@ -1055,9 +1260,35 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             spawn=dispatch_spawn,
             spawn_cmd=args.spawn_cmd,
             spawn_output=args.spawn_output,
+            visibility_mode=visibility_mode,
         )
         rc = cmd_dispatch(d_args)
         return rc
+
+    # Command: @orchestrator autopilot [N]
+    m = re.match(r"^autopilot(?:\s+(\d+))?$", cmd_body, flags=re.IGNORECASE)
+    if m:
+        max_steps = int(m.group(1) or getattr(args, "autopilot_max_steps", 3))
+        spawn_enabled = True
+        if bool(getattr(args, "dispatch_manual", False)):
+            spawn_enabled = False
+        if bool(getattr(args, "dispatch_spawn", False)):
+            spawn_enabled = True
+        a_args = argparse.Namespace(
+            root=args.root,
+            actor="orchestrator",
+            session_id=args.session_id,
+            group_id=args.group_id,
+            account_id=args.account_id,
+            mode=args.mode,
+            timeout_sec=args.timeout_sec,
+            spawn=spawn_enabled,
+            spawn_cmd=args.spawn_cmd,
+            spawn_output=args.spawn_output,
+            max_steps=max_steps,
+            visibility_mode=visibility_mode,
+        )
+        return cmd_autopilot(a_args)
 
     # Command: @orchestrator status [taskId|all|full]
     m = re.match(r"^status(?:\s+([A-Za-z0-9_-]+))?$", cmd_body, flags=re.IGNORECASE)
@@ -1116,6 +1347,7 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             spawn=dispatch_spawn,
             spawn_cmd=args.spawn_cmd,
             spawn_output=args.spawn_output,
+            visibility_mode=visibility_mode,
         )
         return cmd_dispatch(d_args)
 
@@ -1140,6 +1372,19 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
     # Explicit board commands via orchestrator entrance.
     normalized = maybe_normalize_board_command(cmd_body)
     if normalized:
+        acceptance: Optional[Dict[str, Any]] = None
+        m_done = re.match(r"^mark done\s+([A-Za-z0-9_-]+)(?:\s*:\s*(.*))?$", normalized, flags=re.IGNORECASE)
+        if m_done:
+            done_task_id = str(m_done.group(1))
+            done_detail = str(m_done.group(2) or "")
+            acceptance = evaluate_acceptance(args.root, args.actor, done_detail)
+            if not acceptance.get("ok"):
+                blocked_reason = clip(
+                    f"{done_detail or '未提供交付说明'} | {acceptance.get('reason') or '未通过验收策略'}",
+                    120,
+                )
+                normalized = f"block task {done_task_id}: {blocked_reason}"
+
         apply_actor = args.actor
         if args.actor == "orchestrator" and normalized.startswith("claim task"):
             apply_actor = "orchestrator"
@@ -1162,7 +1407,18 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             allow_broadcaster=False,
         )
         ok = bool(apply_obj.get("ok")) and bool(publish.get("ok"))
-        print(json.dumps({"ok": ok, "handled": True, "intent": "board_cmd", "apply": apply_obj, "publish": publish}))
+        print(
+            json.dumps(
+                {
+                    "ok": ok,
+                    "handled": True,
+                    "intent": "board_cmd",
+                    "acceptance": acceptance,
+                    "apply": apply_obj,
+                    "publish": publish,
+                }
+            )
+        )
         return 0 if ok else 1
 
     # Simple Wake-up v1: team member reports with @orchestrator or Feishu <at ...> mention.
@@ -1190,8 +1446,13 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             print(json.dumps({"ok": ok, "handled": True, "intent": "wakeup", "kind": kind, "apply": apply_obj, "publish": publish}))
             return 0 if ok else 1
 
-        if kind == "done" and has_evidence(norm):
-            apply_obj = board_apply(args.root, "orchestrator", f"mark done {task_id}: {clip(norm, 120)}")
+        if kind == "done":
+            accepted = evaluate_acceptance(args.root, args.actor, norm)
+            if accepted.get("ok"):
+                apply_obj = board_apply(args.root, "orchestrator", f"mark done {task_id}: {clip(norm, 120)}")
+            else:
+                detail = clip(f"{norm} | {accepted.get('reason') or '未通过验收策略'}", 120)
+                apply_obj = board_apply(args.root, "orchestrator", f"block task {task_id}: {detail}")
             publish = publish_apply_result(
                 args.root,
                 "orchestrator",
@@ -1202,7 +1463,20 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
                 allow_broadcaster=False,
             )
             ok = bool(apply_obj.get("ok")) and bool(publish.get("ok"))
-            print(json.dumps({"ok": ok, "handled": True, "intent": "wakeup", "kind": kind, "verify": "self-check", "apply": apply_obj, "publish": publish}))
+            print(
+                json.dumps(
+                    {
+                        "ok": ok,
+                        "handled": True,
+                        "intent": "wakeup",
+                        "kind": kind,
+                        "verify": "acceptance-policy",
+                        "acceptance": accepted,
+                        "apply": apply_obj,
+                        "publish": publish,
+                    }
+                )
+            )
             return 0 if ok else 1
 
         verify_prompt = clip(f"verify {task_id} report from {args.actor}: {norm}", 300)
@@ -1220,6 +1494,7 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             spawn=dispatch_spawn,
             spawn_cmd=args.spawn_cmd,
             spawn_output=args.spawn_output,
+            visibility_mode=visibility_mode,
         )
         rc = cmd_dispatch(d_args)
         return rc
@@ -1253,6 +1528,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_dispatch.add_argument("--account-id", default=DEFAULT_ACCOUNT_ID)
     p_dispatch.add_argument("--mode", choices=["send", "dry-run"], default="send")
     p_dispatch.add_argument("--timeout-sec", type=int, default=120)
+    p_dispatch.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=VISIBILITY_MODES[0])
     # A+1 default: manual dispatch (send [CLAIM]/[TASK]) and wait for report.
     # Enable spawn only when explicitly requested.
     p_dispatch.add_argument("--spawn", dest="spawn", action="store_true", default=False)
@@ -1260,6 +1536,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_dispatch.add_argument("--spawn-cmd", default="")
     p_dispatch.add_argument("--spawn-output", default="")
     p_dispatch.set_defaults(func=cmd_dispatch)
+
+    p_autopilot = sub.add_parser("autopilot")
+    p_autopilot.add_argument("--root", required=True)
+    p_autopilot.add_argument("--actor", default="orchestrator")
+    p_autopilot.add_argument("--group-id", default=DEFAULT_GROUP_ID)
+    p_autopilot.add_argument("--account-id", default=DEFAULT_ACCOUNT_ID)
+    p_autopilot.add_argument("--mode", choices=["send", "dry-run"], default="send")
+    p_autopilot.add_argument("--session-id", default="")
+    p_autopilot.add_argument("--timeout-sec", type=int, default=120)
+    p_autopilot.add_argument("--spawn", dest="spawn", action="store_true", default=True)
+    p_autopilot.add_argument("--no-spawn", dest="spawn", action="store_false")
+    p_autopilot.add_argument("--spawn-cmd", default="")
+    p_autopilot.add_argument("--spawn-output", default="")
+    p_autopilot.add_argument("--max-steps", type=int, default=3)
+    p_autopilot.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=VISIBILITY_MODES[0])
+    p_autopilot.set_defaults(func=cmd_autopilot)
 
     p_clarify = sub.add_parser("clarify")
     p_clarify.add_argument("--root", required=True)
@@ -1286,6 +1578,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_feishu.add_argument("--timeout-sec", type=int, default=120)
     p_feishu.add_argument("--dispatch-spawn", action="store_true")
     p_feishu.add_argument("--dispatch-manual", action="store_true")
+    p_feishu.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=VISIBILITY_MODES[0])
+    p_feishu.add_argument("--autopilot-max-steps", type=int, default=3)
     p_feishu.add_argument("--spawn-cmd", default="")
     p_feishu.add_argument("--spawn-output", default="")
     p_feishu.add_argument("--clarify-cooldown-sec", type=int, default=300)

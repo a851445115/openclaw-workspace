@@ -5,3 +5,4 @@ projects/*/.sisyphus/
 # Local-only Feishu bot mapping (contains personal open_ids)
 plugins/multi-agent-orchestrator/config/*.json
 !plugins/multi-agent-orchestrator/config/*.example.json
+!plugins/multi-agent-orchestrator/config/acceptance-policy.json
