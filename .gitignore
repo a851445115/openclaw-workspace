@@ -1,6 +1,7 @@
 plugins/memory-lancedb-pro/
 projects/*/temp/
 projects/*/.sisyphus/
+.worktrees/
 
 # Local-only Feishu bot mapping (contains personal open_ids)
 plugins/multi-agent-orchestrator/config/*.json
