@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 DEFAULT_GROUP_ID = "oc_041146c92a9ccb403a7f4f48fb59701d"
@@ -272,12 +273,30 @@ def load_callback_dedup_state(root: str) -> Dict[str, Any]:
 
 def save_callback_dedup_state(root: str, state: Dict[str, Any]) -> None:
     path = os.path.join(root, CALLBACK_DEDUP_STATE_FILE)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=True, indent=2)
-        f.write("\n")
-    os.replace(tmp, path)
+    state_dir = os.path.dirname(path)
+    os.makedirs(state_dir, exist_ok=True)
+    last_err: Optional[Exception] = None
+    for _ in range(3):
+        tmp = os.path.join(
+            state_dir,
+            f".feishu-card-callback-dedup.{os.getpid()}.{int(time.time() * 1000)}.{uuid.uuid4().hex}.tmp",
+        )
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=True, indent=2)
+                f.write("\n")
+            os.replace(tmp, path)
+            return
+        except FileNotFoundError as err:
+            last_err = err
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+            continue
+    if last_err is not None:
+        raise last_err
 
 
 def remember_callback_once(root: str, dedup_key: str, context: Dict[str, Any], ttl_sec: int) -> bool:
@@ -294,8 +313,14 @@ def remember_callback_once(root: str, dedup_key: str, context: Dict[str, Any], t
     for key, meta in raw_entries.items():
         if not isinstance(meta, dict):
             continue
-        seen_at_ts = int(meta.get("seenAtTs") or 0)
-        entry_ttl = int(meta.get("ttlSec") or CALLBACK_DEDUP_DEFAULT_TTL_SEC)
+        try:
+            seen_at_ts = int(meta.get("seenAtTs") or 0)
+            entry_ttl = int(meta.get("ttlSec") or CALLBACK_DEDUP_DEFAULT_TTL_SEC)
+        except (TypeError, ValueError):
+            # Fail-open for dirty state entries to avoid blocking router flow.
+            continue
+        if entry_ttl <= 0:
+            continue
         if seen_at_ts <= 0:
             continue
         if seen_at_ts + entry_ttl < now:

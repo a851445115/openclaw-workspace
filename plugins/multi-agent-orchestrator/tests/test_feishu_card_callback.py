@@ -1,9 +1,12 @@
+import importlib.machinery
+import importlib.util
 import json
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from unittest.mock import patch
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -37,6 +40,16 @@ def run_inbound(root: Path, raw: str):
         return json.loads(proc.stdout.strip())
     except Exception as err:
         raise AssertionError(f"invalid inbound json: {err}\nstdout={proc.stdout}\nstderr={proc.stderr}")
+
+
+def load_inbound_module():
+    loader = importlib.machinery.SourceFileLoader("feishu_inbound_router_for_test", str(INBOUND))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise AssertionError("failed to create module spec for feishu-inbound-router")
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
 
 
 def make_wrapper(
@@ -291,6 +304,53 @@ class FeishuCardCallbackTests(unittest.TestCase):
                     }
                 },
             },
+        )
+        first = run_inbound(self.root, raw)
+        second = run_inbound(self.root, raw)
+        self.assertTrue(first["ok"], first)
+        self.assertTrue(second["ok"], second)
+        self.assertFalse(bool(first.get("deduplicated")), first)
+        self.assertTrue(bool(second.get("deduplicated")), second)
+
+    def test_save_callback_dedup_state_replace_conflict_does_not_crash(self):
+        module = load_inbound_module()
+        state = {"entries": {"k1": {"seenAtTs": 1, "ttlSec": 60}}}
+        original_replace = module.os.replace
+        calls = {"count": 0}
+
+        def flaky_replace(src, dst):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise FileNotFoundError("simulated tmp race")
+            return original_replace(src, dst)
+
+        with patch.object(module.os, "replace", side_effect=flaky_replace):
+            module.save_callback_dedup_state(str(self.root), state)
+
+        self.assertGreaterEqual(calls["count"], 2)
+        loaded = module.load_callback_dedup_state(str(self.root))
+        self.assertIn("k1", loaded.get("entries") or {}, loaded)
+
+    def test_dirty_dedup_entries_fail_open_and_flow_continues(self):
+        state_file = self.root / "state" / "feishu-card-callback-dedup.json"
+        state_file.write_text(
+            json.dumps(
+                {
+                    "entries": {
+                        "dirty-1": {"seenAtTs": "not-an-int", "ttlSec": "x"},
+                        "dirty-2": {"seenAtTs": {"nested": 1}, "ttlSec": []},
+                    }
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        raw = make_card_callback_wrapper(
+            "@orchestrator create task: dirty-state-safe",
+            message_id="om_dirty_state_safe",
+            action_ts="1700099999",
+            sender_name="Dirty Safe User",
+            sender_open_id="ou_dirty_safe",
         )
         first = run_inbound(self.root, raw)
         second = run_inbound(self.root, raw)
