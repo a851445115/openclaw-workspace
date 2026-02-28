@@ -949,6 +949,120 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(disabled.get("intent"), "scheduler_control", disabled)
         self.assertFalse((disabled.get("state") or {}).get("enabled"), disabled)
 
+    def test_scheduler_daemon_runs_multiple_loops(self):
+        enabled = run_json([
+            "python3",
+            str(MILE),
+            "scheduler-run",
+            "--root",
+            str(self.root),
+            "--action",
+            "enable",
+            "--interval-sec",
+            "60",
+            "--mode",
+            "dry-run",
+            "--no-spawn",
+        ])
+        self.assertTrue(enabled["ok"], enabled)
+        self.assertTrue((enabled.get("state") or {}).get("enabled"), enabled)
+
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-072: daemon loop one",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-073: daemon loop two",
+        ])
+
+        out = run_json([
+            "python3",
+            str(MILE),
+            "scheduler-daemon",
+            "--root",
+            str(self.root),
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"daemon-done","evidence":["logs/daemon.log"]}',
+            "--force",
+            "--poll-sec",
+            "0",
+            "--max-loops",
+            "2",
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out.get("intent"), "scheduler_daemon", out)
+        self.assertEqual(out.get("loops"), 2, out)
+        self.assertEqual(out.get("runs"), 2, out)
+
+        t72 = run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "status T-072",
+        ])
+        t73 = run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "status T-073",
+        ])
+        self.assertEqual((t72.get("task") or {}).get("status"), "done", t72)
+        self.assertEqual((t73.get("task") or {}).get("status"), "done", t73)
+
+    def test_feishu_router_control_panel_card(self):
+        out = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@orchestrator 控制台",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out.get("intent"), "control_panel", out)
+        send = out.get("send") or {}
+        card = ((send.get("payload") or {}).get("card") or {})
+        actions = card.get("actions") if isinstance(card, dict) else []
+        self.assertTrue(isinstance(actions, list) and actions, out)
+        titles = [str((a or {}).get("title") or "") for a in actions]
+        self.assertTrue(any("开始项目" in t for t in titles), out)
+        self.assertTrue(any("推进一次" in t for t in titles), out)
+        self.assertTrue(any("查看阻塞" in t for t in titles), out)
+        self.assertTrue(any("验收摘要" in t for t in titles), out)
+
 
 if __name__ == "__main__":
     unittest.main()

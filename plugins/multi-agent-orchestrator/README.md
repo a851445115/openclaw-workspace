@@ -10,6 +10,7 @@ Implemented in this MVP:
   - `@orchestrator 帮助`
   - `@orchestrator 开始项目 <绝对路径>`
   - `@orchestrator 项目状态`
+  - `@orchestrator 控制台`（卡片按钮入口）
   - `@orchestrator 自动推进 开 [N] | 关 | 状态`
   - `@orchestrator 调度 开 [分钟] | 关 | 状态`（内置连续调度内核）
   - `@orchestrator create project ...`
@@ -48,6 +49,7 @@ Implemented in this MVP:
 - `scripts/lib/task_board.py`: board engine (route/apply/status) with lock discipline.
 - `scripts/lib/milestones.py`: Feishu parser, wake-up flow, milestone publishing, dispatch spawn 闭环。
 - `state/scheduler.kernel.json`: 内置调度内核状态（enabled/intervalSec/maxSteps/nextDueTs）。
+- `state/scheduler.daemon.json`: 调度守护循环状态（pollSec/loops/runs/errors/lastResult）。
 - `scripts/lib/codex_worker_bridge.py`: coder -> Codex CLI bridge (schema-constrained JSON output).
 - `scripts/orchestrator-router`: unified command entrypoint.
 - `scripts/feishu-inbound-router`: parse Feishu inbound wrapper and call router.
@@ -63,9 +65,11 @@ cd ~/.openclaw/workspace/plugins/multi-agent-orchestrator
 ./scripts/init-task-board --root .
 ./scripts/orchestrator-router --root . --actor orchestrator --text "@orchestrator 帮助"
 ./scripts/orchestrator-router --root . --actor orchestrator --text "@orchestrator 开始项目 /absolute/path/to/project"
+./scripts/orchestrator-router --root . --actor orchestrator --text "@orchestrator 控制台"
 ./scripts/orchestrator-router --root . --actor orchestrator --text "@orchestrator 项目状态"
 ./scripts/orchestrator-router --root . --actor orchestrator --text "@orchestrator 自动推进 开 2"
 python3 scripts/lib/milestones.py scheduler-run --root . --action enable --interval-sec 300 --spawn --mode dry-run
+python3 scripts/lib/milestones.py scheduler-daemon --root . --mode dry-run --force --max-loops 3 --poll-sec 1
 ./scripts/orchestrator-router --root . --actor orchestrator --text "@orchestrator status full"
 ```
 
@@ -105,25 +109,29 @@ cat inbound.txt | ./scripts/feishu-inbound-router --root .
    - `@orchestrator 开始项目 /absolute/path/to/project`
 3. 查看项目状态：
    - `@orchestrator 项目状态`
-4. 打开自动推进：
+4. 打开卡片控制台（按钮化操作）：
+   - `@orchestrator 控制台`
+5. 打开自动推进：
    - `@orchestrator 自动推进 开 2`
-5. 查看自动推进状态：
+6. 查看自动推进状态：
    - `@orchestrator 自动推进 状态`
-6. 如需停用自动推进：
+7. 如需停用自动推进：
    - `@orchestrator 自动推进 关`
-7. Confirm board update locally:
+8. Confirm board update locally:
    - `tail -n 20 state/tasks.jsonl`
-8. 调度内核控制（无需外部 cron 也可手动触发）：
+9. 调度内核控制（无需外部 cron）：
    - `@orchestrator 调度 开 5`（每 5 分钟）
    - `@orchestrator 调度 状态`
    - `@orchestrator 调度 关`
-9. Send wake-up completion report from team member (or test account):
+10. 需要常驻轮询时可启动守护循环：
+   - `python3 scripts/lib/milestones.py scheduler-daemon --root . --mode send --max-loops 0 --poll-sec 5`
+11. Send wake-up completion report from team member (or test account):
    - 人工输入可直接用 `@orchestrator T-001 已完成，证据: docs/protocol.md`
    - bot 回报应使用 API mention 标签（由调度模板自动生成），Feishu UI 中 orchestrator 会被高亮@到
-10. Send blocked report:
+12. Send blocked report:
    - `@orchestrator T-001 阻塞，错误日志在 tmp/error.log`
-11. 验证派发闭环（默认 `run` 为手动模式；可使用 `@orchestrator autopilot` 或 `--dispatch-spawn` 触发自动闭环）。
-12. Validate chat output style:
+13. 验证派发闭环（默认 `run` 为手动模式；可使用 `@orchestrator autopilot` 或 `--dispatch-spawn` 触发自动闭环）。
+14. Validate chat output style:
    - `@orchestrator status` returns compact Chinese board summary (counts + blocked/pending top items)
    - `@orchestrator status full` returns a longer but capped list for debugging
    - milestone messages remain concise with `[TASK]`, `[DONE]`, `[BLOCKED]` (no raw CLI logs)

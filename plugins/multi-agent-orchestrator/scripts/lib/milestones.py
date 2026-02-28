@@ -64,6 +64,10 @@ SCHEDULER_DEFAULT_INTERVAL_SEC = 300
 SCHEDULER_MIN_INTERVAL_SEC = 60
 SCHEDULER_MAX_INTERVAL_SEC = 86400
 SCHEDULER_DEFAULT_MAX_STEPS = 1
+SCHEDULER_DAEMON_STATE_FILE = "scheduler.daemon.json"
+SCHEDULER_DAEMON_DEFAULT_POLL_SEC = 5
+SCHEDULER_DAEMON_MIN_POLL_SEC = 0
+SCHEDULER_DAEMON_MAX_POLL_SEC = 3600
 
 
 def now_iso() -> str:
@@ -1376,6 +1380,204 @@ def cmd_scheduler_run(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
+def scheduler_daemon_state_path(root: str) -> str:
+    return os.path.join(root, "state", SCHEDULER_DAEMON_STATE_FILE)
+
+
+def normalize_poll_sec(value: Any, default_poll_sec: float = SCHEDULER_DAEMON_DEFAULT_POLL_SEC) -> float:
+    try:
+        n = float(value)
+    except Exception:
+        n = float(default_poll_sec)
+    if n < SCHEDULER_DAEMON_MIN_POLL_SEC:
+        n = float(SCHEDULER_DAEMON_MIN_POLL_SEC)
+    if n > SCHEDULER_DAEMON_MAX_POLL_SEC:
+        n = float(SCHEDULER_DAEMON_MAX_POLL_SEC)
+    return n
+
+
+def load_scheduler_daemon_state(root: str) -> Dict[str, Any]:
+    data = load_json_file(
+        scheduler_daemon_state_path(root),
+        {
+            "running": False,
+            "pid": 0,
+            "pollSec": SCHEDULER_DAEMON_DEFAULT_POLL_SEC,
+            "maxLoops": 0,
+            "loops": 0,
+            "runs": 0,
+            "skips": 0,
+            "errors": 0,
+            "stopReason": "",
+            "startedAt": "",
+            "endedAt": "",
+            "lastTickAt": "",
+            "lastResult": {},
+            "updatedAt": "",
+        },
+    )
+    return {
+        "running": bool(data.get("running")),
+        "pid": int(data.get("pid") or 0),
+        "pollSec": normalize_poll_sec(data.get("pollSec"), SCHEDULER_DAEMON_DEFAULT_POLL_SEC),
+        "maxLoops": int(data.get("maxLoops") or 0),
+        "loops": int(data.get("loops") or 0),
+        "runs": int(data.get("runs") or 0),
+        "skips": int(data.get("skips") or 0),
+        "errors": int(data.get("errors") or 0),
+        "stopReason": str(data.get("stopReason") or ""),
+        "startedAt": str(data.get("startedAt") or ""),
+        "endedAt": str(data.get("endedAt") or ""),
+        "lastTickAt": str(data.get("lastTickAt") or ""),
+        "lastResult": data.get("lastResult") if isinstance(data.get("lastResult"), dict) else {},
+        "updatedAt": str(data.get("updatedAt") or ""),
+    }
+
+
+def save_scheduler_daemon_state(root: str, state: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = {
+        "running": bool(state.get("running")),
+        "pid": int(state.get("pid") or 0),
+        "pollSec": normalize_poll_sec(state.get("pollSec"), SCHEDULER_DAEMON_DEFAULT_POLL_SEC),
+        "maxLoops": int(state.get("maxLoops") or 0),
+        "loops": int(state.get("loops") or 0),
+        "runs": int(state.get("runs") or 0),
+        "skips": int(state.get("skips") or 0),
+        "errors": int(state.get("errors") or 0),
+        "stopReason": str(state.get("stopReason") or ""),
+        "startedAt": str(state.get("startedAt") or ""),
+        "endedAt": str(state.get("endedAt") or ""),
+        "lastTickAt": str(state.get("lastTickAt") or ""),
+        "lastResult": state.get("lastResult") if isinstance(state.get("lastResult"), dict) else {},
+        "updatedAt": now_iso(),
+    }
+    save_json_file(scheduler_daemon_state_path(root), normalized)
+    return normalized
+
+
+def cmd_scheduler_daemon(args: argparse.Namespace) -> int:
+    if args.actor != "orchestrator":
+        print(json.dumps({"ok": False, "error": "scheduler-daemon is restricted to actor=orchestrator"}, ensure_ascii=True))
+        return 1
+
+    poll_sec = normalize_poll_sec(getattr(args, "poll_sec", SCHEDULER_DAEMON_DEFAULT_POLL_SEC), SCHEDULER_DAEMON_DEFAULT_POLL_SEC)
+    max_loops = int(getattr(args, "max_loops", 0) or 0)
+    if max_loops < 0:
+        max_loops = 0
+
+    loops = 0
+    runs = 0
+    skips = 0
+    errors = 0
+    stop_reason = ""
+
+    daemon_state = {
+        "running": True,
+        "pid": os.getpid(),
+        "pollSec": poll_sec,
+        "maxLoops": max_loops,
+        "loops": 0,
+        "runs": 0,
+        "skips": 0,
+        "errors": 0,
+        "stopReason": "",
+        "startedAt": now_iso(),
+        "endedAt": "",
+        "lastTickAt": "",
+        "lastResult": {},
+    }
+    save_scheduler_daemon_state(args.root, daemon_state)
+
+    try:
+        while True:
+            loops += 1
+            s_args = argparse.Namespace(
+                root=args.root,
+                actor="orchestrator",
+                action="tick",
+                interval_sec=getattr(args, "interval_sec", None),
+                max_steps=getattr(args, "max_steps", None),
+                force=bool(getattr(args, "force", False)),
+                group_id=args.group_id,
+                account_id=args.account_id,
+                mode=args.mode,
+                session_id=args.session_id,
+                timeout_sec=args.timeout_sec,
+                spawn=args.spawn,
+                spawn_cmd=args.spawn_cmd,
+                spawn_output=args.spawn_output,
+                visibility_mode=args.visibility_mode,
+            )
+            tick = scheduler_run_once(s_args)
+            if tick.get("ok"):
+                if tick.get("skipped"):
+                    skips += 1
+                else:
+                    runs += 1
+            else:
+                errors += 1
+
+            daemon_state.update(
+                {
+                    "loops": loops,
+                    "runs": runs,
+                    "skips": skips,
+                    "errors": errors,
+                    "lastTickAt": now_iso(),
+                    "lastResult": tick,
+                }
+            )
+            save_scheduler_daemon_state(args.root, daemon_state)
+
+            if max_loops > 0 and loops >= max_loops:
+                stop_reason = "max_loops_reached"
+                break
+
+            if bool(getattr(args, "exit_when_disabled", False)):
+                sched_state = tick.get("state") if isinstance(tick, dict) else {}
+                if not bool((sched_state or {}).get("enabled")):
+                    stop_reason = "scheduler_disabled"
+                    break
+
+            if poll_sec > 0:
+                time.sleep(poll_sec)
+    except KeyboardInterrupt:
+        stop_reason = "interrupted"
+    except Exception as err:
+        errors += 1
+        stop_reason = f"exception:{clip(str(err), 120)}"
+    finally:
+        daemon_state.update(
+            {
+                "running": False,
+                "loops": loops,
+                "runs": runs,
+                "skips": skips,
+                "errors": errors,
+                "stopReason": stop_reason,
+                "endedAt": now_iso(),
+            }
+        )
+        final_state = save_scheduler_daemon_state(args.root, daemon_state)
+
+    ok = errors == 0
+    result = {
+        "ok": ok,
+        "handled": True,
+        "intent": "scheduler_daemon",
+        "pollSec": poll_sec,
+        "maxLoops": max_loops,
+        "loops": loops,
+        "runs": runs,
+        "skips": skips,
+        "errors": errors,
+        "stopReason": stop_reason or "completed",
+        "state": final_state,
+    }
+    print(json.dumps(result, ensure_ascii=True))
+    return 0 if ok else 1
+
+
 def load_json_file(path: str, default_obj: Dict[str, Any]) -> Dict[str, Any]:
     if not os.path.exists(path):
         return default_obj
@@ -1658,27 +1860,36 @@ def build_user_help_message() -> str:
     return "\n".join(lines)
 
 
-def build_control_panel_card(state: Dict[str, Any]) -> Dict[str, Any]:
+def build_control_panel_card(root: str, state: Dict[str, Any]) -> Dict[str, Any]:
     enabled = bool((state or {}).get("enabled"))
     max_steps = int((state or {}).get("maxSteps") or AUTO_PROGRESS_DEFAULT_MAX_STEPS)
     status_text = "已开启" if enabled else "已关闭"
+    snapshot = load_snapshot(root)
+    tasks = snapshot.get("tasks", {}) if isinstance(snapshot, dict) else {}
+    blocked = len([1 for t in tasks.values() if isinstance(t, dict) and str(t.get("status") or "") == "blocked"])
+    pending_like = len(
+        [1 for t in tasks.values() if isinstance(t, dict) and str(t.get("status") or "") in {"pending", "claimed", "in_progress", "review"}]
+    )
     return {
         "type": "AdaptiveCard",
         "version": "1.4",
         "body": [
             {"type": "TextBlock", "weight": "Bolder", "size": "Medium", "text": "Orchestrator 控制台"},
             {"type": "TextBlock", "wrap": True, "text": f"自动推进: {status_text}（maxSteps={max_steps}）"},
+            {"type": "TextBlock", "wrap": True, "text": f"看板: 进行中={pending_like} | 阻塞={blocked}"},
             {"type": "TextBlock", "wrap": True, "text": "常用命令："},
-            {"type": "TextBlock", "wrap": True, "text": "• @orchestrator 开始项目 /absolute/path"},
+            {"type": "TextBlock", "wrap": True, "text": "• 开始项目请替换绝对路径"},
             {"type": "TextBlock", "wrap": True, "text": "• @orchestrator 项目状态"},
             {"type": "TextBlock", "wrap": True, "text": "• @orchestrator 推进一次"},
             {"type": "TextBlock", "wrap": True, "text": "• @orchestrator 自动推进 开 2 / 关"},
         ],
         "actions": [
-            {"type": "Action.Submit", "title": "项目状态", "data": {"command": "@orchestrator 项目状态"}},
+            {"type": "Action.Submit", "title": "开始项目", "data": {"command": "@orchestrator 开始项目 /absolute/path/to/project"}},
             {"type": "Action.Submit", "title": "推进一次", "data": {"command": "@orchestrator 推进一次"}},
             {"type": "Action.Submit", "title": "自动推进开", "data": {"command": "@orchestrator 自动推进 开 2"}},
             {"type": "Action.Submit", "title": "自动推进关", "data": {"command": "@orchestrator 自动推进 关"}},
+            {"type": "Action.Submit", "title": "查看阻塞", "data": {"command": "@orchestrator status"}},
+            {"type": "Action.Submit", "title": "验收摘要", "data": {"command": "@orchestrator synthesize"}},
         ],
     }
 
@@ -1981,6 +2192,26 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
         msg = build_user_help_message()
         out = send_group_message(args.group_id, args.account_id, msg, args.mode)
         print(json.dumps({"ok": bool(out.get("ok")), "handled": True, "intent": "help", "send": out}))
+        return 0 if out.get("ok") else 1
+
+    # Command: @orchestrator 控制台
+    if re.match(r"^(?:控制台|console|panel)$", cmd_body, flags=re.IGNORECASE):
+        auto_state = load_auto_progress_state(args.root)
+        card = build_control_panel_card(args.root, auto_state)
+        fallback = "[TASK] 控制台已更新，可点击：开始项目 / 推进一次 / 自动推进开关 / 查看阻塞 / 验收摘要。"
+        out = send_group_card(args.group_id, args.account_id, card, args.mode, fallback_text=fallback)
+        print(
+            json.dumps(
+                {
+                    "ok": bool(out.get("ok")),
+                    "handled": True,
+                    "intent": "control_panel",
+                    "state": auto_state,
+                    "send": out,
+                },
+                ensure_ascii=True,
+            )
+        )
         return 0 if out.get("ok") else 1
 
     # Command: @orchestrator 自动推进 开 [N] | 关 | 状态
@@ -2590,6 +2821,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_scheduler.add_argument("--spawn-output", default="")
     p_scheduler.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=VISIBILITY_MODES[0])
     p_scheduler.set_defaults(func=cmd_scheduler_run)
+
+    p_scheduler_daemon = sub.add_parser("scheduler-daemon")
+    p_scheduler_daemon.add_argument("--root", required=True)
+    p_scheduler_daemon.add_argument("--actor", default="orchestrator")
+    p_scheduler_daemon.add_argument("--poll-sec", type=float, default=SCHEDULER_DAEMON_DEFAULT_POLL_SEC)
+    p_scheduler_daemon.add_argument("--max-loops", type=int, default=0)
+    p_scheduler_daemon.add_argument("--exit-when-disabled", action="store_true")
+    p_scheduler_daemon.add_argument("--interval-sec", type=int, default=None)
+    p_scheduler_daemon.add_argument("--max-steps", type=int, default=None)
+    p_scheduler_daemon.add_argument("--force", action="store_true")
+    p_scheduler_daemon.add_argument("--group-id", default=DEFAULT_GROUP_ID)
+    p_scheduler_daemon.add_argument("--account-id", default=DEFAULT_ACCOUNT_ID)
+    p_scheduler_daemon.add_argument("--mode", choices=["send", "dry-run"], default="send")
+    p_scheduler_daemon.add_argument("--session-id", default="")
+    p_scheduler_daemon.add_argument("--timeout-sec", type=int, default=120)
+    p_scheduler_daemon.add_argument("--spawn", dest="spawn", action="store_true", default=True)
+    p_scheduler_daemon.add_argument("--no-spawn", dest="spawn", action="store_false")
+    p_scheduler_daemon.add_argument("--spawn-cmd", default="")
+    p_scheduler_daemon.add_argument("--spawn-output", default="")
+    p_scheduler_daemon.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=VISIBILITY_MODES[0])
+    p_scheduler_daemon.set_defaults(func=cmd_scheduler_daemon)
 
     p_clarify = sub.add_parser("clarify")
     p_clarify.add_argument("--root", required=True)

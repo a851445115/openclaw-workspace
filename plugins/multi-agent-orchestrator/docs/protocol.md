@@ -24,6 +24,7 @@ Milestone publishing format is intentionally low-noise:
 - `state/tasks.jsonl`: append-only event stream.
 - `state/tasks.snapshot.json`: materialized task map used by router/status.
 - `state/scheduler.kernel.json`: 内置调度内核状态（enabled、intervalSec、maxSteps、lastRunTs、nextDueTs）。
+- `state/scheduler.daemon.json`: 调度守护循环状态（loops、runs、errors、lastResult）。
 - `state/locks/`: reserved for future lock hardening.
 
 ## Command Intents
@@ -111,6 +112,7 @@ Prefix command text with `@agent-name` to attach routing metadata:
 
 - `@orchestrator 帮助`
 - `@orchestrator 开始项目 <absolute-path>`
+- `@orchestrator 控制台`
 - `@orchestrator 项目状态`（等价 `status`）
 - `@orchestrator 自动推进 开 [N] | 关 | 状态`
 - `@orchestrator 调度 开 [分钟] | 关 | 状态`
@@ -147,10 +149,14 @@ Inbound wrapper parsing helper: `scripts/feishu-inbound-router` (used by orchest
 - CLI entrypoint:
   - `python3 scripts/lib/milestones.py scheduler-run --root . --action <enable|disable|status|tick>`
   - optional flags: `--interval-sec`, `--max-steps`, `--force`, `--spawn/--no-spawn`
+  - 常驻轮询：`python3 scripts/lib/milestones.py scheduler-daemon --root . --max-loops 0 --poll-sec 5`
 - Feishu control entrypoint:
   - `@orchestrator 调度 开 5`（设置 interval=300s 并立即尝试 tick 一次）
   - `@orchestrator 调度 状态`
   - `@orchestrator 调度 关`
+- Card control entrypoint (Scheme B):
+  - `@orchestrator 控制台`（按钮：开始项目、推进一次、自动推进开关、查看阻塞、验收摘要）
 - Execution model:
   - 调度器本身只决定“是否到期与是否触发”，实际执行仍复用 `autopilot_once`。
   - 默认到期判断：`enabled=true` 且 `nextDueTs<=now`；`--force` 可绕过到期判断。
+  - `scheduler-daemon` 前台循环轮询并持续触发 `scheduler_run_once(action=tick)`，因此无需外部 cron。
