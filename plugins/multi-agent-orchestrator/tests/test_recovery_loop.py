@@ -94,6 +94,52 @@ class RecoveryLoopTests(unittest.TestCase):
         self.assertTrue(second["spawn"]["cooldownActive"], second)
         self.assertEqual(second["spawn"]["action"], "retry", second)
         self.assertEqual(second["spawn"]["nextAssignee"], "debugger", second)
+        self.assertTrue(second["spawn"]["spawnSkipped"], second)
+        self.assertEqual(second["spawn"]["reason"], "cooldown_active", second)
+        self.assertNotIn("spawnResult", second["spawn"], second)
+
+    def test_cooldown_skips_second_autopilot_spawn(self):
+        self._create_task("T-111", "coder", "autopilot cooldown branch")
+        first = run_json([
+            "python3",
+            str(MILE),
+            "autopilot",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--max-steps",
+            "1",
+            "--spawn-output",
+            '{"status":"failed","message":"first fail"}',
+        ])
+        second = run_json([
+            "python3",
+            str(MILE),
+            "autopilot",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--max-steps",
+            "1",
+            "--spawn-output",
+            '{"status":"failed","message":"second fail"}',
+        ])
+
+        self.assertEqual(first["stepsRun"], 1, first)
+        self.assertEqual(second["stepsRun"], 1, second)
+        second_spawn = ((second.get("steps") or [{}])[0].get("dispatch") or {}).get("spawn") or {}
+        self.assertTrue(second_spawn.get("spawnSkipped"), second)
+        self.assertEqual(second_spawn.get("reason"), "cooldown_active", second)
+        self.assertTrue(second_spawn.get("cooldownActive"), second)
+        self.assertNotIn("spawnResult", second_spawn, second)
 
     def test_over_budget_escalates_to_human(self):
         policy_path = self.root / "config" / "recovery-policy.json"
@@ -152,6 +198,13 @@ class RecoveryLoopTests(unittest.TestCase):
         self.assertEqual(spawn.get("action"), "retry", out)
         self.assertEqual(spawn.get("attempt"), 1, out)
         self.assertEqual(spawn.get("nextAssignee"), "debugger", out)
+
+    def test_current_assignee_not_in_chain_uses_chain_head(self):
+        self._create_task("T-140", "qa", "fallback chain head branch")
+        out = self._dispatch("T-140", "qa", '{"status":"failed","message":"qa fail"}')
+        self.assertEqual(out["spawn"]["reasonCode"], "spawn_failed", out)
+        self.assertEqual(out["spawn"]["action"], "retry", out)
+        self.assertEqual(out["spawn"]["nextAssignee"], "coder", out)
 
 
 if __name__ == "__main__":

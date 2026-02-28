@@ -1386,23 +1386,52 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     worker_report: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "visibility mode not enabled"}
 
     if args.spawn:
-        spawn = run_dispatch_spawn(args, agent_prompt)
-        if (
-            not spawn.get("skipped")
-            and not args.spawn_output
-            and spawn.get("decision") == "blocked"
-            and str(spawn.get("reasonCode") or "") in {"incomplete_output", "missing_evidence", "stage_only", "role_policy_missing_keyword"}
-        ):
-            retry_prompt = clip(
-                agent_prompt
-                + "\n\n交付硬性要求：请直接给出最终可验证结果（改动文件/命令输出/commit哈希/验证结论），不要只给阶段性进度。",
-                5000,
+        active_cooldown = recovery_loop.get_active_cooldown(args.root, args.task_id)
+        if isinstance(active_cooldown, dict) and active_cooldown.get("cooldownActive"):
+            next_assignee = str(active_cooldown.get("nextAssignee") or "human")
+            action = str(active_cooldown.get("action") or ("human" if next_assignee == "human" else "retry"))
+            cooldown_until = str(active_cooldown.get("cooldownUntil") or "")
+            detail = clip(
+                f"{args.task_id} 冷却中，跳过重试执行；next={next_assignee} action={action} until={cooldown_until}",
+                200,
             )
-            retry_spawn = run_dispatch_spawn(args, retry_prompt)
-            spawn["retried"] = True
-            spawn["retry"] = retry_spawn
-            if retry_spawn.get("decision") == "done":
-                spawn = retry_spawn
+            spawn = {
+                "ok": True,
+                "skipped": True,
+                "spawnSkipped": True,
+                "reason": "cooldown_active",
+                "decision": "blocked",
+                "detail": detail,
+                "command": [],
+                "stdout": "",
+                "stderr": "",
+                "reasonCode": str(active_cooldown.get("reasonCode") or ""),
+                "attempt": int(active_cooldown.get("attempt") or 0),
+                "nextAssignee": next_assignee,
+                "action": action,
+                "recoveryState": str(active_cooldown.get("recoveryState") or ""),
+                "cooldownActive": True,
+                "cooldownUntil": cooldown_until,
+                "cooldownUntilTs": int(active_cooldown.get("cooldownUntilTs") or 0),
+            }
+        else:
+            spawn = run_dispatch_spawn(args, agent_prompt)
+            if (
+                not spawn.get("skipped")
+                and not args.spawn_output
+                and spawn.get("decision") == "blocked"
+                and str(spawn.get("reasonCode") or "") in {"incomplete_output", "missing_evidence", "stage_only", "role_policy_missing_keyword"}
+            ):
+                retry_prompt = clip(
+                    agent_prompt
+                    + "\n\n交付硬性要求：请直接给出最终可验证结果（改动文件/命令输出/commit哈希/验证结论），不要只给阶段性进度。",
+                    5000,
+                )
+                retry_spawn = run_dispatch_spawn(args, retry_prompt)
+                spawn["retried"] = True
+                spawn["retry"] = retry_spawn
+                if retry_spawn.get("decision") == "done":
+                    spawn = retry_spawn
 
         if spawn.get("skipped"):
             close_apply = {"ok": True, "skipped": True, "reason": spawn.get("reason", "spawn skipped")}
