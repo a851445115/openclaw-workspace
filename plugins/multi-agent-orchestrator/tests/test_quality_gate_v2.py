@@ -110,6 +110,7 @@ class QualityGateV2Tests(unittest.TestCase):
         out = self._dispatch("T-599", "coder", '{"status":"done","summary":"测试未通过，见 logs/t599.log"}')
         self.assertEqual(out["spawn"]["decision"], "blocked", out)
         self.assertNotEqual(out["spawn"]["reasonCode"], "done_with_evidence", out)
+        self.assertEqual(out["spawn"]["acceptanceReasonCode"], "failure_signal_detected", out)
 
     def test_done_summary_with_mixed_pass_fail_result_is_blocked(self):
         self._create_task("T-601", "coder", "mixed pass/fail result must block done acceptance")
@@ -120,6 +121,28 @@ class QualityGateV2Tests(unittest.TestCase):
         )
         self.assertEqual(out["spawn"]["decision"], "blocked", out)
         self.assertNotEqual(out["spawn"]["reasonCode"], "done_with_evidence", out)
+        self.assertEqual(out["spawn"]["acceptanceReasonCode"], "failure_signal_detected", out)
+
+    def test_done_summary_with_error_handling_context_and_passed_evidence_is_accepted(self):
+        self._create_task("T-602", "coder", "error handling wording should not trigger failure signal")
+        out = self._dispatch(
+            "T-602",
+            "coder",
+            json.dumps(
+                {
+                    "status": "done",
+                    "summary": "已完成 error handling / 异常处理优化，并完成回归验证",
+                    "evidence": [
+                        "logs/t602.log",
+                        "pytest -q => 5 passed in 0.08s",
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        self.assertEqual(out["spawn"]["decision"], "done", out)
+        self.assertEqual(out["spawn"]["reasonCode"], "done_with_evidence", out)
+        self.assertNotEqual(out["spawn"]["acceptanceReasonCode"], "failure_signal_detected", out)
 
     def test_done_with_hard_evidence_is_accepted(self):
         self._create_task("T-502", "coder", "has hard evidence")

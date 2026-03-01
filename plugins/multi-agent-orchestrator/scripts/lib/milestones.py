@@ -32,12 +32,12 @@ MILESTONE_PREFIXES = ("[TASK]", "[CLAIM]", "[DONE]", "[BLOCKED]", "[DIAG]", "[RE
 DONE_HINTS = ("[DONE]", " done", "completed", "finish", "完成", "已完成", "verified")
 BLOCKED_HINTS = ("[BLOCKED]", "blocked", "failed", "error", "exception", "失败", "未通过", "阻塞", "卡住", "无法")
 FAILED_SIGNAL_PATTERNS = (
-    re.compile(r"\b[1-9]\d*\s+failed\b", flags=re.IGNORECASE),
-    re.compile(r"\b(?:failed|failure|failures|error|errors|exception|exceptions|traceback)\b", flags=re.IGNORECASE),
-    re.compile(r"(?:未通过|不通过|失败|报错|异常)"),
+    re.compile(r"\b[1-9]\d*\s+(?:failed|failures|errors?|exceptions?)\b", flags=re.IGNORECASE),
+    re.compile(r"\b(?:tests?|test suites?)\s+failed\b", flags=re.IGNORECASE),
+    re.compile(r"(?:测试失败|验证失败|未通过|不通过)"),
 )
 ZERO_FAILURE_COUNTER_RE = re.compile(
-    r"\b0\s+(?:failed|failure|failures|error|errors|exception|exceptions)\b",
+    r"\b0\s+(?:(?:tests?|test suites?)\s+failed|failed|failures|errors?|exceptions?)\b",
     flags=re.IGNORECASE,
 )
 EVIDENCE_HINTS = ("/", ".py", ".md", "http", "截图", "日志", "log", "输出", "result", "测试")
@@ -2699,13 +2699,10 @@ def has_failure_signal(text: str) -> bool:
     normalized = (text or "").strip()
     if not normalized:
         return False
-    if FAILED_SIGNAL_PATTERNS[0].search(normalized):
-        return True
     stripped = ZERO_FAILURE_COUNTER_RE.sub("", normalized)
-    if FAILED_SIGNAL_PATTERNS[1].search(stripped):
-        return True
-    if FAILED_SIGNAL_PATTERNS[2].search(normalized):
-        return True
+    for pattern in FAILED_SIGNAL_PATTERNS:
+        if pattern.search(stripped):
+            return True
     return False
 
 
