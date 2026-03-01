@@ -1,0 +1,268 @@
+import json
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+
+REPO = Path(__file__).resolve().parents[1]
+SCRIPTS = REPO / "scripts"
+BOARD = SCRIPTS / "lib" / "task_board.py"
+MILE = SCRIPTS / "lib" / "milestones.py"
+INIT = SCRIPTS / "init-task-board"
+
+
+def run_json(cmd, cwd=REPO, expect_success=True):
+    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
+    if expect_success and proc.returncode != 0:
+        raise AssertionError(f"command failed: {cmd}\nstdout={proc.stdout}\nstderr={proc.stderr}")
+    try:
+        payload = json.loads((proc.stdout or "").strip())
+    except Exception as err:
+        raise AssertionError(f"invalid json output: {err}\nstdout={proc.stdout}\nstderr={proc.stderr}")
+    return proc.returncode, payload
+
+
+class GovernanceControlsTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        subprocess.run([str(INIT), "--root", str(self.root)], cwd=REPO, check=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _create_task(self, task_id: str, assignee: str = "coder", title: str = "治理测试任务") -> None:
+        _, out = run_json(
+            [
+                "python3",
+                str(BOARD),
+                "apply",
+                "--root",
+                str(self.root),
+                "--actor",
+                "orchestrator",
+                "--text",
+                f"@{assignee} create task {task_id}: {title}",
+            ]
+        )
+        self.assertTrue(out.get("ok"), out)
+
+    def _dispatch(self, task_id: str, expect_success=True):
+        return run_json(
+            [
+                "python3",
+                str(MILE),
+                "dispatch",
+                "--root",
+                str(self.root),
+                "--actor",
+                "orchestrator",
+                "--task-id",
+                task_id,
+                "--agent",
+                "coder",
+                "--mode",
+                "dry-run",
+            ],
+            expect_success=expect_success,
+        )
+
+    def _govern(self, text: str, expect_success=True):
+        return run_json(
+            [
+                "python3",
+                str(MILE),
+                "feishu-router",
+                "--root",
+                str(self.root),
+                "--actor",
+                "orchestrator",
+                "--text",
+                text,
+                "--mode",
+                "dry-run",
+            ],
+            expect_success=expect_success,
+        )
+
+    def _status(self, task_id: str):
+        _, out = run_json(
+            [
+                "python3",
+                str(BOARD),
+                "apply",
+                "--root",
+                str(self.root),
+                "--actor",
+                "orchestrator",
+                "--text",
+                f"status {task_id}",
+            ]
+        )
+        return out
+
+    def _write_governance_control(self, approvals):
+        state_dir = self.root / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "paused": False,
+            "frozen": False,
+            "aborts": {"global": 0, "autopilot": 0, "scheduler": 0, "tasks": {}},
+            "approvals": approvals,
+        }
+        (state_dir / "governance.control.json").write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+
+    def _read_audit(self):
+        path = self.root / "state" / "governance.audit.jsonl"
+        if not path.exists():
+            return []
+        rows = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                rows.append(json.loads(line))
+        return rows
+
+    def test_pause_resume_changes_behavior_and_writes_audit(self):
+        self._create_task("T-801", "coder", "pause/resume")
+
+        _, paused = self._govern("@orchestrator 治理 暂停")
+        self.assertTrue(paused.get("ok"), paused)
+        self.assertEqual(paused.get("intent"), "governance", paused)
+
+        _, auto_paused = run_json(
+            [
+                "python3",
+                str(MILE),
+                "autopilot",
+                "--root",
+                str(self.root),
+                "--actor",
+                "orchestrator",
+                "--mode",
+                "dry-run",
+                "--spawn",
+                "--max-steps",
+                "1",
+                "--spawn-output",
+                '{"status":"done","message":"已完成，证据: logs/pause.log"}',
+            ]
+        )
+        self.assertTrue(auto_paused.get("ok"), auto_paused)
+        self.assertTrue(auto_paused.get("skipped"), auto_paused)
+        self.assertEqual(auto_paused.get("reason"), "governance_paused", auto_paused)
+
+        _, resumed = self._govern("@orchestrator 治理 恢复")
+        self.assertTrue(resumed.get("ok"), resumed)
+
+        _, auto_resumed = run_json(
+            [
+                "python3",
+                str(MILE),
+                "autopilot",
+                "--root",
+                str(self.root),
+                "--actor",
+                "orchestrator",
+                "--mode",
+                "dry-run",
+                "--spawn",
+                "--max-steps",
+                "1",
+                "--spawn-output",
+                '{"status":"done","message":"已完成，证据: logs/resume.log"}',
+            ]
+        )
+        self.assertTrue(auto_resumed.get("ok"), auto_resumed)
+        self.assertEqual(auto_resumed.get("stepsRun"), 1, auto_resumed)
+
+        rows = self._read_audit()
+        self.assertGreaterEqual(len(rows), 2, rows)
+        actions = [str(row.get("action") or "") for row in rows]
+        self.assertIn("pause", actions, rows)
+        self.assertIn("resume", actions, rows)
+        for row in rows:
+            self.assertTrue(row.get("at"), row)
+            self.assertTrue(row.get("actor"), row)
+            self.assertTrue(row.get("action"), row)
+            self.assertIn("result", row, row)
+            self.assertTrue(row.get("hash"), row)
+
+    def test_freeze_blocks_dispatch(self):
+        self._create_task("T-802", "coder", "freeze")
+        _, frozen = self._govern("@orchestrator 治理 冻结")
+        self.assertTrue(frozen.get("ok"), frozen)
+
+        _, blocked = self._dispatch("T-802", expect_success=False)
+        self.assertFalse(blocked.get("ok"), blocked)
+        self.assertEqual(blocked.get("reason"), "governance_frozen", blocked)
+
+        status = self._status("T-802")
+        self.assertEqual((status.get("task") or {}).get("status"), "pending", status)
+
+    def test_abort_task_hits_once_and_is_consumed(self):
+        self._create_task("T-803", "coder", "abort task")
+        _, aborted = self._govern("@orchestrator 治理 中止 T-803")
+        self.assertTrue(aborted.get("ok"), aborted)
+
+        _, first = self._dispatch("T-803", expect_success=False)
+        self.assertFalse(first.get("ok"), first)
+        self.assertEqual(first.get("reason"), "governance_aborted", first)
+
+        _, second = self._dispatch("T-803", expect_success=True)
+        self.assertTrue(second.get("ok"), second)
+
+    def test_dispatch_requires_approval_then_allows_after_approve(self):
+        self._create_task("T-804", "coder", "approval")
+        self._write_governance_control(
+            {
+                "APR-900": {
+                    "id": "APR-900",
+                    "status": "pending",
+                    "target": {"type": "dispatch", "taskId": "T-804"},
+                }
+            }
+        )
+
+        _, waiting = self._dispatch("T-804", expect_success=False)
+        self.assertFalse(waiting.get("ok"), waiting)
+        self.assertEqual(waiting.get("reason"), "approval_required", waiting)
+        self.assertEqual(waiting.get("approvalId"), "APR-900", waiting)
+
+        _, approved = self._govern("@orchestrator 治理 审批 通过 APR-900")
+        self.assertTrue(approved.get("ok"), approved)
+
+        _, passed = self._dispatch("T-804", expect_success=True)
+        self.assertTrue(passed.get("ok"), passed)
+
+    def test_feishu_router_reaches_chinese_governance_commands(self):
+        self._write_governance_control(
+            {
+                "APR-PASS": {"id": "APR-PASS", "status": "pending", "target": {"type": "dispatch", "taskId": "T-999"}},
+                "APR-REJECT": {"id": "APR-REJECT", "status": "pending", "target": {"type": "dispatch", "taskId": "T-999"}},
+            }
+        )
+        cases = [
+            ("@orchestrator 治理 状态", "status"),
+            ("@orchestrator 治理 暂停", "pause"),
+            ("@orchestrator 治理 恢复", "resume"),
+            ("@orchestrator 治理 冻结", "freeze"),
+            ("@orchestrator 治理 解冻", "unfreeze"),
+            ("@orchestrator 治理 中止 调度", "abort"),
+            ("@orchestrator 治理 中止 自动推进", "abort"),
+            ("@orchestrator 治理 中止 全部", "abort"),
+            ("@orchestrator 治理 审批 通过 APR-PASS", "approve"),
+            ("@orchestrator 治理 审批 拒绝 APR-REJECT", "reject"),
+        ]
+
+        for text, action in cases:
+            with self.subTest(text=text):
+                _, out = self._govern(text)
+                self.assertTrue(out.get("ok"), out)
+                self.assertEqual(out.get("intent"), "governance", out)
+                self.assertEqual((out.get("governance") or {}).get("action"), action, out)
+
+
+if __name__ == "__main__":
+    unittest.main()

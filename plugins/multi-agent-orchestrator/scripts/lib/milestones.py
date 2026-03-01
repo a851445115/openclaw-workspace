@@ -19,6 +19,7 @@ if SCRIPT_LIB_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_LIB_DIR)
 import priority_engine
 import recovery_loop
+import governance
 
 DEFAULT_GROUP_ID = "oc_041146c92a9ccb403a7f4f48fb59701d"
 DEFAULT_ACCOUNT_ID = "orchestrator"
@@ -1335,6 +1336,23 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     if not isinstance(task, dict):
         return {"ok": False, "error": f"task not found: {args.task_id}"}
 
+    gate = governance.checkpoint_dispatch(args.root, args.actor, args.task_id, args.agent)
+    if not bool(gate.get("allowed")):
+        out = {
+            "ok": False,
+            "handled": True,
+            "intent": "dispatch",
+            "taskId": args.task_id,
+            "agent": args.agent,
+            "reason": str(gate.get("reason") or "governance_blocked"),
+            "governance": gate,
+        }
+        if gate.get("approvalId"):
+            out["approvalId"] = gate.get("approvalId")
+        if gate.get("consumed"):
+            out["consumed"] = gate.get("consumed")
+        return out
+
     claimed = ensure_claimed(args.root, args.task_id, args.agent)
     if not isinstance(claimed, dict) or not claimed.get("ok"):
         return {
@@ -1575,6 +1593,23 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
 def autopilot_once(args: argparse.Namespace) -> Dict[str, Any]:
     if args.actor != "orchestrator":
         return {"ok": False, "error": "autopilot is restricted to actor=orchestrator"}
+    gate = governance.checkpoint_autopilot(args.root, args.actor)
+    if not bool(gate.get("allowed")):
+        max_steps = max(1, int(args.max_steps))
+        return {
+            "ok": True,
+            "handled": True,
+            "intent": "autopilot",
+            "maxSteps": max_steps,
+            "stepsRun": 0,
+            "summary": {"done": 0, "blocked": 0, "manual": 0},
+            "stopReason": str(gate.get("reason") or "governance_blocked"),
+            "visibilityMode": str(args.visibility_mode),
+            "steps": [],
+            "skipped": True,
+            "reason": str(gate.get("reason") or "governance_blocked"),
+            "governance": gate,
+        }
     max_steps = max(1, int(args.max_steps))
     steps: List[Dict[str, Any]] = []
     summary = {"done": 0, "blocked": 0, "manual": 0}
@@ -1702,7 +1737,15 @@ def scheduler_run_once(args: argparse.Namespace) -> Dict[str, Any]:
 
     run_result: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "status_only"}
     if should_tick:
-        if not state.get("enabled") and not force:
+        gate = governance.checkpoint_scheduler(args.root, args.actor)
+        if not bool(gate.get("allowed")):
+            run_result = {
+                "ok": True,
+                "skipped": True,
+                "reason": str(gate.get("reason") or "governance_blocked"),
+                "governance": gate,
+            }
+        elif not state.get("enabled") and not force:
             run_result = {"ok": True, "skipped": True, "reason": "disabled"}
         elif not force and int(state.get("nextDueTs") or 0) > now_ts:
             run_result = {"ok": True, "skipped": True, "reason": "not_due"}
@@ -2763,6 +2806,33 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
     cmd_body = norm
     if norm.lower().startswith("@orchestrator"):
         cmd_body = norm[len("@orchestrator") :].strip()
+
+    governance_cmd = governance.parse_governance_command(cmd_body)
+    if governance_cmd is not None:
+        if args.actor != "orchestrator":
+            result = {
+                "ok": False,
+                "action": "unauthorized",
+                "error": "governance command requires actor=orchestrator",
+            }
+        else:
+            result = governance.execute_governance_command(args.root, args.actor, governance_cmd)
+        msg = governance.format_governance_message(result)
+        out = send_group_message(args.group_id, args.account_id, msg, args.mode)
+        ok = bool(result.get("ok")) and bool(out.get("ok"))
+        print(
+            json.dumps(
+                {
+                    "ok": ok,
+                    "handled": True,
+                    "intent": "governance",
+                    "governance": result,
+                    "send": out,
+                },
+                ensure_ascii=True,
+            )
+        )
+        return 0 if ok else 1
 
     # Command: @orchestrator 帮助
     if re.match(r"^(?:帮助|help|\?)$", cmd_body, flags=re.IGNORECASE):
