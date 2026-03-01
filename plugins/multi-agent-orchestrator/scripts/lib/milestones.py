@@ -1574,9 +1574,10 @@ def autopilot_once(args: argparse.Namespace) -> Dict[str, Any]:
     summary = {"done": 0, "blocked": 0, "manual": 0}
     stop_reason = "no_runnable_task"
     ok = True
+    excluded_task_ids: set = set()
 
     for idx in range(max_steps):
-        task = choose_task_for_run(args.root, "")
+        task = choose_task_for_run(args.root, "", excluded_task_ids=excluded_task_ids)
         if not isinstance(task, dict):
             stop_reason = "no_runnable_task"
             break
@@ -1620,6 +1621,9 @@ def autopilot_once(args: argparse.Namespace) -> Dict[str, Any]:
             else:
                 summary["blocked"] += 1
         else:
+            spawn = dispatch_result.get("spawn") if isinstance(dispatch_result.get("spawn"), dict) else {}
+            if str(spawn.get("reason") or "") == "cooldown_active":
+                excluded_task_ids.add(task_id)
             summary["manual"] += 1
         stop_reason = "max_steps_reached"
 
@@ -2340,17 +2344,20 @@ def resolve_spawn_plan(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
     }
 
 
-def choose_task_for_run(root: str, requested: str) -> Optional[Dict[str, Any]]:
+def choose_task_for_run(root: str, requested: str, excluded_task_ids: Optional[set] = None) -> Optional[Dict[str, Any]]:
     data = load_snapshot(root)
     tasks = data.get("tasks", {})
+    excluded = excluded_task_ids or set()
     if requested:
         t = tasks.get(requested)
-        if isinstance(t, dict):
+        if isinstance(t, dict) and str(t.get("taskId") or "") not in excluded:
             return t
         return None
     candidates = []
     for t in tasks.values():
         if not isinstance(t, dict):
+            continue
+        if str(t.get("taskId") or "") in excluded:
             continue
         if t.get("status") in {"pending", "claimed", "in_progress", "review"}:
             candidates.append(t)
