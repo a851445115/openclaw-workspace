@@ -112,7 +112,7 @@ class GovernanceControlsTests(unittest.TestCase):
             expect_success=expect_success,
         )
 
-    def _govern(self, text: str, expect_success=True):
+    def _govern(self, text: str, expect_success=True, actor: str = "orchestrator"):
         return run_json(
             [
                 "python3",
@@ -121,7 +121,7 @@ class GovernanceControlsTests(unittest.TestCase):
                 "--root",
                 str(self.root),
                 "--actor",
-                "orchestrator",
+                actor,
                 "--text",
                 text,
                 "--mode",
@@ -146,11 +146,11 @@ class GovernanceControlsTests(unittest.TestCase):
         )
         return out
 
-    def _write_governance_control(self, approvals):
+    def _write_governance_control(self, approvals, version=1):
         state_dir = self.root / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
         payload = {
-            "version": 1,
+            "version": version,
             "paused": False,
             "frozen": False,
             "aborts": {"global": 0, "autopilot": 0, "scheduler": 0, "tasks": {}},
@@ -376,6 +376,37 @@ class GovernanceControlsTests(unittest.TestCase):
         self.assertFalse(blocked.get("ok"), blocked)
         self.assertEqual(blocked.get("reason"), "approval_required", blocked)
         self.assertEqual(blocked.get("approvalId"), "APR-902", blocked)
+
+    def test_governance_status_survives_malformed_control_version(self):
+        self._write_governance_control({}, version="oops")
+
+        _, out = self._govern("@orchestrator 治理 状态")
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(out.get("intent"), "governance", out)
+
+        governance = out.get("governance") or {}
+        self.assertTrue(governance.get("ok"), out)
+        self.assertEqual(governance.get("action"), "status", out)
+        state = governance.get("state") or {}
+        self.assertIn("paused", state, out)
+        self.assertIn("frozen", state, out)
+        self.assertIn("aborts", state, out)
+        self.assertIn("approvalCounts", state, out)
+
+    def test_governance_command_from_non_orchestrator_returns_unauthorized_json(self):
+        self._write_governance_control({}, version="oops")
+
+        code, out = self._govern("@orchestrator 治理 状态", actor="coder", expect_success=False)
+        self.assertEqual(code, 1, out)
+        self.assertFalse(out.get("ok"), out)
+        self.assertTrue(out.get("handled"), out)
+        self.assertEqual(out.get("intent"), "governance", out)
+
+        governance = out.get("governance") or {}
+        self.assertFalse(governance.get("ok"), out)
+        self.assertEqual(governance.get("action"), "unauthorized", out)
+        self.assertEqual(governance.get("error"), "governance command requires actor=orchestrator", out)
+        self.assertTrue((out.get("send") or {}).get("ok"), out)
 
     def test_feishu_router_reaches_chinese_governance_commands(self):
         self._write_governance_control(

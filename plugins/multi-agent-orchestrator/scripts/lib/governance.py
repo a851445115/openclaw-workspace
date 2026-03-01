@@ -43,6 +43,11 @@ def _as_int(value: Any, default: int = 0) -> int:
     return max(0, n)
 
 
+def _as_control_version(value: Any, default: int = 1) -> int:
+    n = _as_int(value, default)
+    return n if n > 0 else int(default)
+
+
 def canonical_agent(agent: Any) -> str:
     return str(agent or "").strip().lower()
 
@@ -94,7 +99,7 @@ def _normalize_approvals(raw: Any) -> Dict[str, Dict[str, Any]]:
 def normalize_control_state(raw: Any) -> Dict[str, Any]:
     data = raw if isinstance(raw, dict) else {}
     return {
-        "version": int(data.get("version") or 1),
+        "version": _as_control_version(data.get("version"), 1),
         "paused": bool(data.get("paused")),
         "frozen": bool(data.get("frozen")),
         "aborts": _normalize_aborts(data.get("aborts")),
@@ -125,7 +130,10 @@ def load_control_state(root: str) -> Dict[str, Any]:
             raw = json.load(f)
     except Exception:
         raw = default_control_state()
-    return normalize_control_state(raw)
+    try:
+        return normalize_control_state(raw)
+    except Exception:
+        return default_control_state()
 
 
 def save_control_state(root: str, state: Dict[str, Any]) -> Dict[str, Any]:
