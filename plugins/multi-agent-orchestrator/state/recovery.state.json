@@ -1,0 +1,27 @@
+{
+  "entries": {
+    "T-1006|spawn_failed": {
+      "taskId": "T-1006",
+      "reasonCode": "spawn_failed",
+      "attempt": 1,
+      "nextAssignee": "debugger",
+      "action": "retry",
+      "recoveryState": "recovery_scheduled",
+      "cooldownUntilTs": 1772386068,
+      "cooldownUntil": "2026-03-01T17:27:48Z",
+      "updatedAt": "2026-03-01T17:24:48Z"
+    },
+    "T-1008|spawn_failed": {
+      "taskId": "T-1008",
+      "reasonCode": "spawn_failed",
+      "attempt": 1,
+      "nextAssignee": "debugger",
+      "action": "retry",
+      "recoveryState": "recovery_scheduled",
+      "cooldownUntilTs": 1772386207,
+      "cooldownUntil": "2026-03-01T17:30:07Z",
+      "updatedAt": "2026-03-01T17:27:07Z"
+    }
+  },
+  "updatedAt": "2026-03-01T17:27:07Z"
+}
