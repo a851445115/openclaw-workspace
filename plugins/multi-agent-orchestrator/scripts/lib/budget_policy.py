@@ -103,9 +103,9 @@ def merge_budget_policy(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[
             if not isinstance(agent, str) or not isinstance(conf, dict):
                 continue
             key = agent.strip().lower()
-            current = dict(merged["agents"].get(key) or {})
-            current.update(conf)
-            merged["agents"][key] = current
+            # Higher-priority policy fully defines the agent scope; missing
+            # fields should fall back to the resolved global policy.
+            merged["agents"][key] = dict(conf)
 
     return merged
 
