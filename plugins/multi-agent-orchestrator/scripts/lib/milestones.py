@@ -1245,35 +1245,48 @@ def nonneg_int(value: Any, default: int = 0) -> int:
     return out if out >= 0 else default
 
 
+def extract_usage_pair(usage: Dict[str, Any]) -> int:
+    prompt_tokens = nonneg_int(usage.get("prompt_tokens"), -1)
+    completion_tokens = nonneg_int(usage.get("completion_tokens"), -1)
+    if prompt_tokens >= 0 or completion_tokens >= 0:
+        return max(0, prompt_tokens) + max(0, completion_tokens)
+
+    input_tokens = nonneg_int(usage.get("input_tokens"), -1)
+    output_tokens = nonneg_int(usage.get("output_tokens"), -1)
+    if input_tokens >= 0 or output_tokens >= 0:
+        return max(0, input_tokens) + max(0, output_tokens)
+
+    return -1
+
+
 def extract_token_usage_from_spawn(payload: Dict[str, Any]) -> int:
     if not isinstance(payload, dict):
         return 0
 
-    for key in ("tokenUsage", "token_usage", "tokens", "totalTokens"):
-        parsed = nonneg_int(payload.get(key), -1)
-        if parsed >= 0:
-            return parsed
-
+    buckets = [payload]
     metrics = payload.get("metrics")
     if isinstance(metrics, dict):
-        for key in ("tokenUsage", "token_usage", "tokens", "totalTokens"):
-            parsed = nonneg_int(metrics.get(key), -1)
+        buckets.append(metrics)
+    usage = payload.get("usage")
+    if isinstance(usage, dict):
+        buckets.append(usage)
+
+    for bucket in buckets:
+        for key in ("total_tokens", "totalTokens"):
+            parsed = nonneg_int(bucket.get(key), -1)
             if parsed >= 0:
                 return parsed
 
-    usage = payload.get("usage")
-    if isinstance(usage, dict):
-        for key in ("total_tokens", "totalTokens"):
-            parsed = nonneg_int(usage.get(key), -1)
+    for bucket in buckets:
+        for key in ("tokenUsage", "token_usage", "tokens"):
+            parsed = nonneg_int(bucket.get(key), -1)
             if parsed >= 0:
                 return parsed
-        prompt_tokens = nonneg_int(usage.get("prompt_tokens"), 0)
-        completion_tokens = nonneg_int(usage.get("completion_tokens"), 0)
-        input_tokens = nonneg_int(usage.get("input_tokens"), 0)
-        output_tokens = nonneg_int(usage.get("output_tokens"), 0)
-        total = prompt_tokens + completion_tokens + input_tokens + output_tokens
-        if total > 0:
-            return total
+
+    for bucket in buckets:
+        paired_usage = extract_usage_pair(bucket)
+        if paired_usage >= 0:
+            return paired_usage
 
     return 0
 

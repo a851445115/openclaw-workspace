@@ -129,35 +129,48 @@ def safe_int(value: Any, default: int = -1) -> int:
     return out if out >= 0 else default
 
 
+def extract_usage_pair(usage: Dict[str, Any]) -> int:
+    prompt = safe_int(usage.get("prompt_tokens"), -1)
+    completion = safe_int(usage.get("completion_tokens"), -1)
+    if prompt >= 0 or completion >= 0:
+        return max(0, prompt) + max(0, completion)
+
+    input_tokens = safe_int(usage.get("input_tokens"), -1)
+    output_tokens = safe_int(usage.get("output_tokens"), -1)
+    if input_tokens >= 0 or output_tokens >= 0:
+        return max(0, input_tokens) + max(0, output_tokens)
+
+    return -1
+
+
 def extract_token_usage(raw: Dict[str, Any]) -> int:
     if not isinstance(raw, dict):
         return 0
 
-    for key in ("tokenUsage", "token_usage", "totalTokens", "tokens"):
-        parsed = safe_int(raw.get(key))
-        if parsed >= 0:
-            return parsed
-
+    buckets = [raw]
     metrics = raw.get("metrics")
     if isinstance(metrics, dict):
-        for key in ("tokenUsage", "token_usage", "totalTokens", "tokens"):
-            parsed = safe_int(metrics.get(key))
+        buckets.append(metrics)
+    usage = raw.get("usage")
+    if isinstance(usage, dict):
+        buckets.append(usage)
+
+    for bucket in buckets:
+        for key in ("total_tokens", "totalTokens"):
+            parsed = safe_int(bucket.get(key))
             if parsed >= 0:
                 return parsed
 
-    usage = raw.get("usage")
-    if isinstance(usage, dict):
-        for key in ("total_tokens", "totalTokens"):
-            parsed = safe_int(usage.get(key))
+    for bucket in buckets:
+        for key in ("tokenUsage", "token_usage", "tokens"):
+            parsed = safe_int(bucket.get(key))
             if parsed >= 0:
                 return parsed
-        prompt = safe_int(usage.get("prompt_tokens"), 0)
-        completion = safe_int(usage.get("completion_tokens"), 0)
-        input_tokens = safe_int(usage.get("input_tokens"), 0)
-        output_tokens = safe_int(usage.get("output_tokens"), 0)
-        sum_usage = prompt + completion + input_tokens + output_tokens
-        if sum_usage > 0:
-            return sum_usage
+
+    for bucket in buckets:
+        paired_usage = extract_usage_pair(bucket)
+        if paired_usage >= 0:
+            return paired_usage
 
     return 0
 
@@ -169,11 +182,8 @@ def attach_metrics(result: Dict[str, Any], raw: Dict[str, Any], start_ms: int) -
         metrics = raw.get("metrics")
         if isinstance(metrics, dict):
             metric_elapsed = safe_int(metrics.get("elapsedMs"))
-            metric_tokens = safe_int(metrics.get("tokenUsage"))
             if metric_elapsed >= 0:
                 elapsed_ms = metric_elapsed
-            if metric_tokens >= 0:
-                token_usage = metric_tokens
     result["metrics"] = {
         "elapsedMs": elapsed_ms,
         "tokenUsage": max(0, token_usage),

@@ -159,6 +159,23 @@ class BudgetGovernanceTests(unittest.TestCase):
         self.assertEqual(spawn["action"], "escalate", out)
         self.assertIn("maxTaskRetries", spawn.get("exceededKeys") or [], out)
 
+    def test_usage_alias_fields_do_not_double_count_or_trigger_budget_exceeded(self):
+        self._write_policy(max_tokens=80, max_time_sec=3600, max_retries=3)
+        self._create_task("T-B604", "coder", "usage alias budget")
+        out = self._dispatch(
+            "T-B604",
+            "coder",
+            (
+                '{"status":"done","summary":"已完成","evidence":["pytest passed"],'
+                '"usage":{"prompt_tokens":25,"completion_tokens":25,"input_tokens":25,"output_tokens":25}}'
+            ),
+        )
+
+        spawn = out["spawn"]
+        self.assertEqual((spawn.get("metrics") or {}).get("tokenUsage"), 50, out)
+        self.assertNotEqual(spawn.get("reasonCode"), "budget_exceeded", out)
+        self.assertEqual(spawn["decision"], "done", out)
+
 
 if __name__ == "__main__":
     unittest.main()
