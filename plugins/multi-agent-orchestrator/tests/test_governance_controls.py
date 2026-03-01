@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.lib.governance import normalize_control_state
+
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO / "scripts"
@@ -146,13 +148,13 @@ class GovernanceControlsTests(unittest.TestCase):
         )
         return out
 
-    def _write_governance_control(self, approvals, version=1):
+    def _write_governance_control(self, approvals, version=1, paused=False, frozen=False):
         state_dir = self.root / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
         payload = {
             "version": version,
-            "paused": False,
-            "frozen": False,
+            "paused": paused,
+            "frozen": frozen,
             "aborts": {"global": 0, "autopilot": 0, "scheduler": 0, "tasks": {}},
             "approvals": approvals,
         }
@@ -167,6 +169,39 @@ class GovernanceControlsTests(unittest.TestCase):
             if line.strip():
                 rows.append(json.loads(line))
         return rows
+
+    def test_normalize_control_state_false_string_and_zero_string_are_false(self):
+        state = normalize_control_state({"paused": "false", "frozen": "0"})
+        self.assertFalse(state.get("paused"), state)
+        self.assertFalse(state.get("frozen"), state)
+
+    def test_normalize_control_state_true_and_one_inputs_are_true(self):
+        state = normalize_control_state({"paused": True, "frozen": 1})
+        self.assertTrue(state.get("paused"), state)
+        self.assertTrue(state.get("frozen"), state)
+
+    def test_malformed_pause_freeze_values_do_not_trigger_false_block(self):
+        self._create_task("T-800X", "coder", "malformed paused/frozen")
+        self._write_governance_control({}, paused="definitely", frozen={"bad": "value"})
+
+        _, dispatch = self._dispatch("T-800X", expect_success=False)
+        self.assertTrue(dispatch.get("ok"), dispatch)
+        self.assertNotEqual(dispatch.get("reason"), "governance_frozen", dispatch)
+
+        _, autopilot = self._autopilot()
+        self.assertTrue(autopilot.get("ok"), autopilot)
+        self.assertNotEqual(autopilot.get("reason"), "governance_frozen", autopilot)
+        self.assertNotEqual(autopilot.get("reason"), "governance_paused", autopilot)
+        self.assertNotEqual(autopilot.get("stopReason"), "governance_frozen", autopilot)
+        self.assertNotEqual(autopilot.get("stopReason"), "governance_paused", autopilot)
+
+        _, scheduler = self._scheduler_run(action="enable")
+        self.assertTrue(scheduler.get("ok"), scheduler)
+        self.assertNotEqual(scheduler.get("reason"), "governance_frozen", scheduler)
+        self.assertNotEqual(scheduler.get("reason"), "governance_paused", scheduler)
+        run = scheduler.get("run") or {}
+        self.assertNotEqual(run.get("reason"), "governance_frozen", scheduler)
+        self.assertNotEqual(run.get("reason"), "governance_paused", scheduler)
 
     def test_pause_resume_changes_behavior_and_writes_audit(self):
         self._create_task("T-801", "coder", "pause/resume")

@@ -43,6 +43,27 @@ def _as_int(value: Any, default: int = 0) -> int:
     return max(0, n)
 
 
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, int):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+        return False
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off", ""}:
+            return False
+        return False
+    return False
+
+
 def _as_control_version(value: Any, default: int = 1) -> int:
     n = _as_int(value, default)
     return n if n > 0 else int(default)
@@ -100,8 +121,8 @@ def normalize_control_state(raw: Any) -> Dict[str, Any]:
     data = raw if isinstance(raw, dict) else {}
     return {
         "version": _as_control_version(data.get("version"), 1),
-        "paused": bool(data.get("paused")),
-        "frozen": bool(data.get("frozen")),
+        "paused": _as_bool(data.get("paused")),
+        "frozen": _as_bool(data.get("frozen")),
         "aborts": _normalize_aborts(data.get("aborts")),
         "approvals": _normalize_approvals(data.get("approvals")),
         "updatedAt": str(data.get("updatedAt") or ""),
