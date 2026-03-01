@@ -29,8 +29,17 @@ OPTIONAL_BROADCASTER = "broadcaster"
 CLARIFY_ROLES = {"coder", "invest-analyst", "debugger", "broadcaster"}
 BOT_ROLES = set(CLARIFY_ROLES) | {"orchestrator"}
 MILESTONE_PREFIXES = ("[TASK]", "[CLAIM]", "[DONE]", "[BLOCKED]", "[DIAG]", "[REVIEW]")
-DONE_HINTS = ("[DONE]", " done", "completed", "finish", "完成", "已完成", "通过", "verified")
-BLOCKED_HINTS = ("[BLOCKED]", "blocked", "failed", "error", "exception", "失败", "阻塞", "卡住", "无法")
+DONE_HINTS = ("[DONE]", " done", "completed", "finish", "完成", "已完成", "verified")
+BLOCKED_HINTS = ("[BLOCKED]", "blocked", "failed", "error", "exception", "失败", "未通过", "阻塞", "卡住", "无法")
+FAILED_SIGNAL_PATTERNS = (
+    re.compile(r"\b[1-9]\d*\s+failed\b", flags=re.IGNORECASE),
+    re.compile(r"\b(?:failed|failure|failures|error|errors|exception|exceptions|traceback)\b", flags=re.IGNORECASE),
+    re.compile(r"(?:未通过|不通过|失败|报错|异常)"),
+)
+ZERO_FAILURE_COUNTER_RE = re.compile(
+    r"\b0\s+(?:failed|failure|failures|error|errors|exception|exceptions)\b",
+    flags=re.IGNORECASE,
+)
 EVIDENCE_HINTS = ("/", ".py", ".md", "http", "截图", "日志", "log", "输出", "result", "测试")
 STAGE_ONLY_HINTS = ("接下来", "下一步", "准备", "我先", "随后", "稍后", "计划", "will", "next", "going to", "plan to")
 BOT_OPENID_CONFIG_CANDIDATES = (
@@ -2686,6 +2695,20 @@ def parse_wakeup_kind(text: str) -> str:
     return "progress"
 
 
+def has_failure_signal(text: str) -> bool:
+    normalized = (text or "").strip()
+    if not normalized:
+        return False
+    if FAILED_SIGNAL_PATTERNS[0].search(normalized):
+        return True
+    stripped = ZERO_FAILURE_COUNTER_RE.sub("", normalized)
+    if FAILED_SIGNAL_PATTERNS[1].search(stripped):
+        return True
+    if FAILED_SIGNAL_PATTERNS[2].search(normalized):
+        return True
+    return False
+
+
 def merge_acceptance_policy(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
     merged: Dict[str, Any] = {
         "global": dict(base.get("global") or {}),
@@ -2848,6 +2871,16 @@ def evaluate_acceptance(
     hard_evidence = normalize_string_list(evidence_ctx.get("hardEvidence"), limit=12, item_limit=260)
     soft_evidence = normalize_string_list(evidence_ctx.get("softEvidence"), limit=12, item_limit=220)
     normalized_note = str(evidence_ctx.get("normalizedText") or note).strip()
+
+    if has_failure_signal(normalized_note):
+        return {
+            "ok": False,
+            "reasonCode": "failure_signal_detected",
+            "reason": "检测到失败信号，done 验收被阻断。",
+            "hardEvidence": hard_evidence,
+            "softEvidence": soft_evidence,
+            "normalizedText": normalized_note,
+        }
 
     require_evidence = bool(global_conf.get("requireEvidence", True))
     if require_evidence and not hard_evidence:

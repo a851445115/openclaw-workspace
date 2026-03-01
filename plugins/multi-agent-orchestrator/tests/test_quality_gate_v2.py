@@ -105,6 +105,22 @@ class QualityGateV2Tests(unittest.TestCase):
         self.assertEqual(out["spawn"]["reasonCode"], "incomplete_output", out)
         self.assertEqual(out["spawn"]["acceptanceReasonCode"], "missing_hard_evidence", out)
 
+    def test_done_summary_with_not_passed_phrase_is_blocked(self):
+        self._create_task("T-599", "coder", "not passed phrase must not be treated as done")
+        out = self._dispatch("T-599", "coder", '{"status":"done","summary":"测试未通过，见 logs/t599.log"}')
+        self.assertEqual(out["spawn"]["decision"], "blocked", out)
+        self.assertNotEqual(out["spawn"]["reasonCode"], "done_with_evidence", out)
+
+    def test_done_summary_with_mixed_pass_fail_result_is_blocked(self):
+        self._create_task("T-601", "coder", "mixed pass/fail result must block done acceptance")
+        out = self._dispatch(
+            "T-601",
+            "coder",
+            '{"status":"done","summary":"pytest -q => 1 passed, 2 failed; logs/t601.log"}',
+        )
+        self.assertEqual(out["spawn"]["decision"], "blocked", out)
+        self.assertNotEqual(out["spawn"]["reasonCode"], "done_with_evidence", out)
+
     def test_done_with_hard_evidence_is_accepted(self):
         self._create_task("T-502", "coder", "has hard evidence")
         out = self._dispatch(
