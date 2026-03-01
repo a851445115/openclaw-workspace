@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 SCRIPT_LIB_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_LIB_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_LIB_DIR)
+import priority_engine
 import recovery_loop
 
 DEFAULT_GROUP_ID = "oc_041146c92a9ccb403a7f4f48fb59701d"
@@ -1530,6 +1531,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                 worker_report = {"ok": True, "skipped": True, "reason": "spawn not done or visibility hidden"}
 
     auto_close = bool(args.spawn and not spawn.get("skipped"))
+    selection = getattr(args, "selection", None)
     ok = (
         bool(claimed.get("ok"))
         and bool(claim_send.get("ok"))
@@ -1538,7 +1540,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         and bool(close_publish.get("ok"))
         and bool(worker_report.get("ok"))
     )
-    return {
+    result = {
         "ok": ok,
         "handled": True,
         "intent": "dispatch",
@@ -1558,6 +1560,9 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         "reportTemplate": report_template,
         "agentPrompt": agent_prompt,
     }
+    if isinstance(selection, dict):
+        result["selection"] = selection
+    return result
 
 
 def cmd_dispatch(args: argparse.Namespace) -> int:
@@ -1582,6 +1587,7 @@ def autopilot_once(args: argparse.Namespace) -> Dict[str, Any]:
             stop_reason = "no_runnable_task"
             break
         task_id = str(task.get("taskId") or "").strip()
+        selection = task.get("_prioritySelection") if isinstance(task.get("_prioritySelection"), dict) else {}
         if not task_id:
             stop_reason = "invalid_task"
             ok = False
@@ -1606,9 +1612,18 @@ def autopilot_once(args: argparse.Namespace) -> Dict[str, Any]:
             spawn_cmd=args.spawn_cmd,
             spawn_output=args.spawn_output,
             visibility_mode=args.visibility_mode,
+            selection=selection,
         )
         dispatch_result = dispatch_once(d_args)
-        steps.append({"index": idx + 1, "taskId": task_id, "agent": agent, "dispatch": dispatch_result})
+        steps.append(
+            {
+                "index": idx + 1,
+                "taskId": task_id,
+                "agent": agent,
+                "selection": selection,
+                "dispatch": dispatch_result,
+            }
+        )
 
         if not dispatch_result.get("ok"):
             ok = False
@@ -2348,23 +2363,42 @@ def choose_task_for_run(root: str, requested: str, excluded_task_ids: Optional[s
     data = load_snapshot(root)
     tasks = data.get("tasks", {})
     excluded = excluded_task_ids or set()
-    if requested:
-        t = tasks.get(requested)
-        if isinstance(t, dict) and str(t.get("taskId") or "") not in excluded:
-            return t
-        return None
-    candidates = []
-    for t in tasks.values():
-        if not isinstance(t, dict):
-            continue
-        if str(t.get("taskId") or "") in excluded:
-            continue
-        if t.get("status") in {"pending", "claimed", "in_progress", "review"}:
-            candidates.append(t)
-    if not candidates:
-        return None
-    candidates.sort(key=lambda x: x.get("taskId") or "")
-    return candidates[0]
+    try:
+        selected = priority_engine.select_task(tasks, requested_task_id=requested, excluded_task_ids=excluded)
+        picked = selected.get("selectedTask")
+        if not isinstance(picked, dict):
+            return None
+        out = dict(picked)
+        sel = selected.get("selection") if isinstance(selected.get("selection"), dict) else {}
+        ready_queue = selected.get("readyQueue") if isinstance(selected.get("readyQueue"), list) else []
+        out["_prioritySelection"] = {
+            "taskId": str(sel.get("taskId") or out.get("taskId") or ""),
+            "score": sel.get("score"),
+            "reasonCode": str(sel.get("reasonCode") or ""),
+            "reason": str(sel.get("reason") or ""),
+            "readyQueueSize": len(ready_queue),
+            "readyQueueTop": ready_queue[:3],
+        }
+        return out
+    except Exception:
+        # Backward-compatible fallback path if priority engine fails unexpectedly.
+        if requested:
+            t = tasks.get(requested)
+            if isinstance(t, dict) and str(t.get("taskId") or "") not in excluded:
+                return t
+            return None
+        candidates = []
+        for t in tasks.values():
+            if not isinstance(t, dict):
+                continue
+            if str(t.get("taskId") or "") in excluded:
+                continue
+            if t.get("status") in {"pending", "claimed", "in_progress", "review"}:
+                candidates.append(t)
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: x.get("taskId") or "")
+        return candidates[0]
 
 
 def has_evidence(text: str) -> bool:
@@ -2852,6 +2886,7 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             return 0 if sent.get("ok") else 1
         task_id = str(task.get("taskId"))
         agent = str(task.get("assigneeHint") or "coder")
+        selection = task.get("_prioritySelection") if isinstance(task.get("_prioritySelection"), dict) else {}
         d_args = argparse.Namespace(
             root=args.root,
             task_id=task_id,
@@ -2867,6 +2902,7 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             spawn_cmd=args.spawn_cmd,
             spawn_output=args.spawn_output,
             visibility_mode=visibility_mode,
+            selection=selection,
         )
         rc = cmd_dispatch(d_args)
         return rc
