@@ -771,6 +771,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(out["ok"], out)
         self.assertEqual(out.get("intent"), "start_project", out)
         self.assertGreaterEqual(out.get("createdCount", 0), 2, out)
+        self.assertGreaterEqual(out.get("decompositionCount", 0), 2, out)
+        self.assertIsInstance(out.get("confidenceSummary"), dict, out)
         self.assertTrue((out.get("bootstrap") or {}).get("ok"), out)
 
         t001 = run_json([
@@ -785,6 +787,21 @@ class RuntimeTests(unittest.TestCase):
             "status T-001",
         ])
         self.assertEqual(t001["task"]["status"], "done", t001)
+
+        created_ids = out.get("createdTaskIds") or []
+        if len(created_ids) >= 2:
+            second = run_json([
+                "python3",
+                str(BOARD),
+                "apply",
+                "--root",
+                str(self.root),
+                "--actor",
+                "orchestrator",
+                "--text",
+                f"status {created_ids[1]}",
+            ])
+            self.assertIn(created_ids[0], second["task"].get("dependsOn") or [], second)
 
     def test_scheme_b_coder_dispatch_uses_codex_worker_executor(self):
         run_json([

@@ -22,6 +22,7 @@ import recovery_loop
 import budget_policy
 import governance
 import evidence_normalizer
+import task_decomposer
 
 DEFAULT_GROUP_ID = "oc_041146c92a9ccb403a7f4f48fb59701d"
 DEFAULT_ACCOUNT_ID = "orchestrator"
@@ -2366,15 +2367,102 @@ def extract_project_bootstrap_tasks(doc_text: str) -> List[str]:
 def build_project_bootstrap(project_path: str) -> Dict[str, Any]:
     doc_path, doc_text = read_project_doc(project_path)
     project_name = infer_project_name(project_path, doc_text)
-    tasks = extract_project_bootstrap_tasks(doc_text)
+    decomposed = task_decomposer.decompose_project(project_path, project_name, doc_text)
+    tasks: List[Dict[str, Any]] = []
+    for item in decomposed:
+        if not isinstance(item, dict):
+            continue
+        title = clip(str(item.get("title") or ""), 120)
+        if not title:
+            continue
+        owner_hint = governance.canonical_agent(str(item.get("ownerHint") or "")) or suggest_agent_from_title(title)
+        depends_on = [str(dep).strip() for dep in (item.get("dependsOn") or []) if str(dep).strip()]
+        try:
+            confidence = max(0.0, min(1.0, float(item.get("confidence"))))
+        except Exception:
+            confidence = 0.0
+        tasks.append(
+            {
+                "title": title,
+                "ownerHint": owner_hint,
+                "dependsOn": depends_on,
+                "confidence": round(confidence, 2),
+            }
+        )
     if not tasks:
-        tasks = list(DEFAULT_PROJECT_BOOTSTRAP_TASKS)
+        for title in list(DEFAULT_PROJECT_BOOTSTRAP_TASKS):
+            tasks.append(
+                {
+                    "title": clip(title, 120),
+                    "ownerHint": suggest_agent_from_title(title),
+                    "dependsOn": [],
+                    "confidence": 0.55,
+                }
+            )
+
+    confidence_values = [float(task.get("confidence") or 0.0) for task in tasks]
+    confidence_summary = {
+        "count": len(confidence_values),
+        "min": round(min(confidence_values), 2) if confidence_values else 0.0,
+        "max": round(max(confidence_values), 2) if confidence_values else 0.0,
+        "avg": round((sum(confidence_values) / len(confidence_values)), 2) if confidence_values else 0.0,
+    }
+
     return {
         "projectPath": project_path,
         "projectName": project_name,
         "docPath": doc_path,
-        "tasks": tasks,
+        "tasks": [str(task.get("title") or "") for task in tasks],
+        "decompositionTasks": tasks,
+        "decompositionCount": len(tasks),
+        "confidenceSummary": confidence_summary,
     }
+
+
+def write_project_depends_on(root: str, created_tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not created_tasks:
+        return {"updatedTasks": 0, "tasksWithDependsOn": 0}
+
+    _, snapshot_path = ensure_state(root)
+    data = load_snapshot(root)
+    tasks_obj = data.get("tasks")
+    if not isinstance(tasks_obj, dict):
+        return {"updatedTasks": 0, "tasksWithDependsOn": 0}
+
+    title_to_tid: Dict[str, str] = {}
+    for item in created_tasks:
+        tid = str(item.get("taskId") or "").strip()
+        title = str(item.get("title") or "").strip()
+        if not tid or not title:
+            continue
+        key = task_decomposer.normalize_task_title(title)
+        if key and key not in title_to_tid:
+            title_to_tid[key] = tid
+
+    updated = 0
+    linked = 0
+    for item in created_tasks:
+        tid = str(item.get("taskId") or "").strip()
+        if not tid:
+            continue
+        task = tasks_obj.get(tid)
+        if not isinstance(task, dict):
+            continue
+        dep_ids: List[str] = []
+        for dep_title in item.get("dependsOn") or []:
+            dep_key = task_decomposer.normalize_task_title(str(dep_title))
+            dep_tid = title_to_tid.get(dep_key, "")
+            if dep_tid and dep_tid != tid and dep_tid not in dep_ids:
+                dep_ids.append(dep_tid)
+        task["dependsOn"] = dep_ids
+        task["updatedAt"] = now_iso()
+        updated += 1
+        if dep_ids:
+            linked += 1
+
+    if updated > 0:
+        save_json_file(snapshot_path, data)
+    return {"updatedTasks": updated, "tasksWithDependsOn": linked}
 
 
 def auto_progress_state_path(root: str) -> str:
@@ -3384,16 +3472,35 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
 
         bootstrap = build_project_bootstrap(project_path)
         project_name = str(bootstrap.get("projectName") or "未命名项目")
+        decomposition_tasks = bootstrap.get("decompositionTasks") if isinstance(bootstrap.get("decompositionTasks"), list) else []
+        if not decomposition_tasks:
+            decomposition_tasks = [
+                {
+                    "title": clip(str(item), 120),
+                    "ownerHint": suggest_agent_from_title(str(item)),
+                    "dependsOn": [],
+                    "confidence": 0.55,
+                }
+                for item in bootstrap.get("tasks", [])
+                if str(item).strip()
+            ]
+
         created: List[Dict[str, Any]] = []
         created_ids: List[str] = []
-        for item in bootstrap.get("tasks", []):
-            assignee = suggest_agent_from_title(str(item))
-            apply_obj = board_apply(args.root, "orchestrator", f"@{assignee} create task: [{project_name}] {clip(str(item), 120)}")
+        created_specs: List[Dict[str, Any]] = []
+        for item in decomposition_tasks:
+            title = clip(str(item.get("title") or ""), 120)
+            if not title:
+                continue
+            assignee = governance.canonical_agent(str(item.get("ownerHint") or "")) or suggest_agent_from_title(title)
+            depends_on = [str(dep).strip() for dep in (item.get("dependsOn") or []) if str(dep).strip()]
+            apply_obj = board_apply(args.root, "orchestrator", f"@{assignee} create task: [{project_name}] {title}")
             if isinstance(apply_obj, dict) and apply_obj.get("ok"):
                 tid = str(apply_obj.get("taskId") or "")
                 if tid:
                     created_ids.append(tid)
                     bind_task_project_context(args.root, tid, project_path, project_name)
+                    created_specs.append({"taskId": tid, "title": title, "dependsOn": depends_on})
             publish = publish_apply_result(
                 args.root,
                 "orchestrator",
@@ -3404,6 +3511,8 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
                 allow_broadcaster=False,
             )
             created.append({"apply": apply_obj, "publish": publish})
+
+        depends_sync = write_project_depends_on(args.root, created_specs)
 
         spawn_enabled = True
         if bool(getattr(args, "dispatch_manual", False)):
@@ -3435,7 +3544,12 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
 
         doc_path = str(bootstrap.get("docPath") or "")
         doc_hint = f"文档={doc_path}" if doc_path else "文档=未找到PRD/README（使用默认任务模板）"
-        msg = f"[TASK] 项目启动完成: {project_name} | 新建任务={len(created_ids)}\n{doc_hint}\n可用命令: @orchestrator 项目状态"
+        decomposition_count = int(bootstrap.get("decompositionCount") or len(decomposition_tasks))
+        confidence_summary = bootstrap.get("confidenceSummary") if isinstance(bootstrap.get("confidenceSummary"), dict) else {}
+        msg = (
+            f"[TASK] 项目启动完成: {project_name} | 新建任务={len(created_ids)} | 自动拆解={decomposition_count}\n"
+            f"{doc_hint}\n可用命令: @orchestrator 项目状态"
+        )
         ack = send_group_message(args.group_id, args.account_id, msg, args.mode)
         ok = all(c.get("apply", {}).get("ok") and c.get("publish", {}).get("ok") for c in created) and bool(ack.get("ok")) and bool(kickoff.get("ok"))
         print(
@@ -3450,6 +3564,9 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
                     "createdCount": len(created_ids),
                     "createdTaskIds": created_ids,
                     "created": created,
+                    "decompositionCount": decomposition_count,
+                    "confidenceSummary": confidence_summary,
+                    "dependsOnSync": depends_sync,
                     "bootstrap": kickoff,
                     "ack": ack,
                 },

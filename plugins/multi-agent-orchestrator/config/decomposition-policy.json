@@ -1,0 +1,17 @@
+{
+  "maxTasks": 8,
+  "minConfidence": 0.45,
+  "requireHumanConfirm": false,
+  "ownerRules": {
+    "调研": "invest-analyst",
+    "分析": "invest-analyst",
+    "research": "invest-analyst",
+    "测试": "debugger",
+    "验证": "debugger",
+    "修复": "debugger",
+    "异常": "debugger",
+    "发布": "broadcaster",
+    "公告": "broadcaster",
+    "summary": "broadcaster"
+  }
+}

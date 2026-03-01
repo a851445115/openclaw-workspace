@@ -38,6 +38,10 @@ Implemented in this MVP:
   - 被指派成员也可通过 `@orchestrator` 主动汇报完成/阻塞，仍会更新看板并发布低噪里程碑
   - bot 对 bot 派发模板自动插入 Feishu API mention 标签（`<at user_id="...">name</at>`），确保真实@到 orchestrator
   - 内置 bot 回环保护与 clarify 节流，避免群内噪声和循环触发。
+- Goal-to-Task Auto-Decomposition:
+  - `@orchestrator 开始项目 <path>` 会从项目 PRD/README 自动拆出结构化任务（`title/ownerHint/dependsOn/confidence`）
+  - 默认读取 `config/decomposition-policy.json`（支持 `maxTasks/minConfidence/ownerRules`）
+  - 若文档不足以拆解，会自动回退到默认 bootstrap 任务模板
 - Feishu inbound wiring helper for orchestrator agent:
   - `scripts/feishu-inbound-router` parses OpenClaw Feishu wrapper text
   - routes `@orchestrator` mentions into `scripts/orchestrator-router`
@@ -57,6 +61,7 @@ Implemented in this MVP:
 - `scripts/dry-run-mvp`: minimal dry-run verification flow.
 - `config/feishu-bot-openids.json`: bot role/accountId -> Feishu open_id 映射（用于 API mention 标签）。
 - `config/acceptance-policy.json`: done 验收策略（全局证据要求 + 角色关键词门禁）。
+- `config/decomposition-policy.json`: 项目启动自动拆解策略（任务数上限、置信度门槛、负责人规则）。
 
 ## Quick Start
 
@@ -107,6 +112,7 @@ cat inbound.txt | ./scripts/feishu-inbound-router --root .
    - `@orchestrator 帮助`
 2. 一键启动项目：
    - `@orchestrator 开始项目 /absolute/path/to/project`
+   - 行为：读取 `PRD.md/readme.md`，自动拆解任务并创建看板卡片；返回值中包含 `decompositionCount/confidenceSummary`，并回写 `dependsOn` 依赖链到 snapshot。
 3. 查看项目状态：
    - `@orchestrator 项目状态`
 4. 打开卡片控制台（按钮化操作）：
