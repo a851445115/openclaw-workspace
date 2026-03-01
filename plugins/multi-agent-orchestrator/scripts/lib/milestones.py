@@ -23,6 +23,7 @@ import budget_policy
 import governance
 import evidence_normalizer
 import task_decomposer
+import ops_metrics
 
 DEFAULT_GROUP_ID = "oc_041146c92a9ccb403a7f4f48fb59701d"
 DEFAULT_ACCOUNT_ID = "orchestrator"
@@ -98,6 +99,14 @@ SCHEDULER_DAEMON_MAX_POLL_SEC = 3600
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def record_ops_event(root: str, event: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    try:
+        return ops_metrics.append_event(root, event, data)
+    except Exception:
+        return {"ok": False, "event": event, "error": "metrics_write_failed"}
 
 
 def clip(text: Optional[str], limit: int = 160) -> str:
@@ -1781,6 +1790,40 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     }
     if isinstance(selection, dict):
         result["selection"] = selection
+
+    if args.spawn and not spawn.get("skipped"):
+        spawn_metrics = spawn.get("metrics") if isinstance(spawn.get("metrics"), dict) else {}
+        cycle_ms = nonneg_int(spawn_metrics.get("elapsedMs"), 0)
+        decision = str(spawn.get("decision") or "").strip().lower()
+        event_payload = {
+            "taskId": args.task_id,
+            "agent": args.agent,
+            "decision": decision,
+            "reasonCode": str(spawn.get("reasonCode") or ""),
+            "cycleMs": cycle_ms,
+            "autoClose": auto_close,
+            "dispatchMode": "spawn",
+        }
+        if decision == "done":
+            record_ops_event(args.root, "dispatch_done", event_payload)
+        elif decision == "blocked":
+            record_ops_event(args.root, "dispatch_blocked", event_payload)
+
+        recovery_action = str(spawn.get("action") or "").strip().lower()
+        if decision != "done" and recovery_action:
+            recovery_payload = {
+                "taskId": args.task_id,
+                "agent": args.agent,
+                "reasonCode": str(spawn.get("reasonCode") or ""),
+                "recoveryAction": recovery_action,
+                "recoveryState": str(spawn.get("recoveryState") or ""),
+                "nextAssignee": str(spawn.get("nextAssignee") or ""),
+            }
+            if recovery_action == "retry":
+                record_ops_event(args.root, "recovery_scheduled", recovery_payload)
+            else:
+                record_ops_event(args.root, "recovery_escalated", recovery_payload)
+
     return result
 
 
@@ -1796,7 +1839,7 @@ def autopilot_once(args: argparse.Namespace) -> Dict[str, Any]:
     gate = governance.checkpoint_autopilot(args.root, args.actor)
     if not bool(gate.get("allowed")):
         max_steps = max(1, int(args.max_steps))
-        return {
+        out = {
             "ok": True,
             "handled": True,
             "intent": "autopilot",
@@ -1810,6 +1853,20 @@ def autopilot_once(args: argparse.Namespace) -> Dict[str, Any]:
             "reason": str(gate.get("reason") or "governance_blocked"),
             "governance": gate,
         }
+        record_ops_event(
+            args.root,
+            "autopilot_cycle",
+            {
+                "maxSteps": max_steps,
+                "stepsRun": 0,
+                "done": 0,
+                "blocked": 0,
+                "manual": 0,
+                "stopReason": str(out.get("stopReason") or "governance_blocked"),
+                "skipped": True,
+            },
+        )
+        return out
     max_steps = max(1, int(args.max_steps))
     steps: List[Dict[str, Any]] = []
     summary = {"done": 0, "blocked": 0, "manual": 0}
@@ -1889,6 +1946,20 @@ def autopilot_once(args: argparse.Namespace) -> Dict[str, Any]:
         "visibilityMode": str(args.visibility_mode),
         "steps": steps,
     }
+    record_ops_event(
+        args.root,
+        "autopilot_cycle",
+        {
+            "maxSteps": max_steps,
+            "stepsRun": len(steps),
+            "done": int(summary.get("done") or 0),
+            "blocked": int(summary.get("blocked") or 0),
+            "manual": int(summary.get("manual") or 0),
+            "stopReason": stop_reason,
+            "ok": bool(ok),
+            "spawnEnabled": bool(args.spawn),
+        },
+    )
     return result
 
 
@@ -1974,7 +2045,7 @@ def scheduler_run_once(args: argparse.Namespace) -> Dict[str, Any]:
 
     state = save_scheduler_state(args.root, state)
     ok = bool(run_result.get("ok"))
-    return {
+    out = {
         "ok": ok,
         "handled": True,
         "intent": "scheduler_run",
@@ -1984,6 +2055,22 @@ def scheduler_run_once(args: argparse.Namespace) -> Dict[str, Any]:
         "skipped": bool(run_result.get("skipped")),
         "reason": str(run_result.get("reason") or ""),
     }
+    if should_tick:
+        run_obj = run_result if isinstance(run_result, dict) else {}
+        record_ops_event(
+            args.root,
+            "scheduler_tick",
+            {
+                "action": action,
+                "force": force,
+                "skipped": bool(run_obj.get("skipped")),
+                "reason": str(run_obj.get("reason") or ""),
+                "stepsRun": int(run_obj.get("stepsRun") or 0),
+                "enabled": bool(state.get("enabled")),
+                "maxSteps": int(state.get("maxSteps") or SCHEDULER_DEFAULT_MAX_STEPS),
+            },
+        )
+    return out
 
 
 def cmd_scheduler_run(args: argparse.Namespace) -> int:
@@ -3703,6 +3790,13 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             return 0 if out.get("ok") else 1
 
         msg, counts = format_status_summary_message(tasks, full=full_mode)
+        ops_summary: Dict[str, Any] = {}
+        if full_mode:
+            try:
+                ops_summary = ops_metrics.aggregate_metrics(args.root, days=7)
+                msg = msg + "\n" + ops_metrics.format_core_summary(ops_summary, days=7)
+            except Exception:
+                ops_summary = {}
         out = send_group_message(args.group_id, args.account_id, msg, args.mode)
         print(
             json.dumps(
@@ -3712,6 +3806,7 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
                     "intent": "status",
                     "full": full_mode,
                     "counts": counts,
+                    "opsMetrics": ops_summary if full_mode else {},
                     "send": out,
                 }
             )
