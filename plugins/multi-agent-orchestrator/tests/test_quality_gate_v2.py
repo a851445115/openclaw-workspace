@@ -123,6 +123,28 @@ class QualityGateV2Tests(unittest.TestCase):
         self.assertNotEqual(out["spawn"]["reasonCode"], "done_with_evidence", out)
         self.assertEqual(out["spawn"]["acceptanceReasonCode"], "failure_signal_detected", out)
 
+    def test_done_summary_with_pytest_failed_nodeid_is_blocked(self):
+        self._create_task("T-603", "coder", "pytest FAILED nodeid must block done acceptance")
+        out = self._dispatch(
+            "T-603",
+            "coder",
+            '{"status":"done","summary":"FAILED tests/test_demo.py::test_x; logs/t603.log"}',
+        )
+        self.assertEqual(out["spawn"]["decision"], "blocked", out)
+        self.assertNotEqual(out["spawn"]["reasonCode"], "done_with_evidence", out)
+        self.assertEqual(out["spawn"]["acceptanceReasonCode"], "failure_signal_detected", out)
+
+    def test_done_summary_with_traceback_signal_is_blocked(self):
+        self._create_task("T-604", "coder", "traceback signal must block done acceptance")
+        out = self._dispatch(
+            "T-604",
+            "coder",
+            '{"status":"done","summary":"Traceback (most recent call last) at logs/t604.log"}',
+        )
+        self.assertEqual(out["spawn"]["decision"], "blocked", out)
+        self.assertNotEqual(out["spawn"]["reasonCode"], "done_with_evidence", out)
+        self.assertEqual(out["spawn"]["acceptanceReasonCode"], "failure_signal_detected", out)
+
     def test_done_summary_with_error_handling_context_and_passed_evidence_is_accepted(self):
         self._create_task("T-602", "coder", "error handling wording should not trigger failure signal")
         out = self._dispatch(

@@ -34,6 +34,8 @@ BLOCKED_HINTS = ("[BLOCKED]", "blocked", "failed", "error", "exception", "失败
 FAILED_SIGNAL_PATTERNS = (
     re.compile(r"\b[1-9]\d*\s+(?:failed|failures|errors?|exceptions?)\b", flags=re.IGNORECASE),
     re.compile(r"\b(?:tests?|test suites?)\s+failed\b", flags=re.IGNORECASE),
+    re.compile(r"\bFAILED\s+tests?/[^\s;]+", flags=re.IGNORECASE),
+    re.compile(r"\bTraceback\s+\(most recent call last\)", flags=re.IGNORECASE),
     re.compile(r"(?:测试失败|验证失败|未通过|不通过)"),
 )
 ZERO_FAILURE_COUNTER_RE = re.compile(
