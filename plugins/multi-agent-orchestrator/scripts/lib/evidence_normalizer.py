@@ -11,11 +11,12 @@ TEST_CMD_RE = re.compile(
     r"\b(pytest|python\s+-m\s+unittest|unittest|go\s+test|cargo\s+test|npm\s+test|pnpm\s+test|yarn\s+test)\b",
     flags=re.IGNORECASE,
 )
-TEST_PASS_RE = re.compile(
-    r"(\b\d+\s+passed\b|\ball tests? passed\b|\btests?\s+passed\b|\btest passed\b|测试通过|验证通过|ran\s+\d+\s+tests?.*\bok\b|exit\s*=\s*0)",
+TEST_OUTPUT_RE = re.compile(
+    r"(\b\d+\s+passed\b|ran\s+\d+\s+tests?.*\bok\b|exit\s*=\s*0)",
     flags=re.IGNORECASE,
 )
 UNITTEST_OK_RE = re.compile(r"^ran\s+\d+\s+tests?.*\n?ok$", flags=re.IGNORECASE)
+TEST_PASSED_WORD_RE = re.compile(r"\bpassed\b", flags=re.IGNORECASE)
 SOFT_HINTS = (
     "evidence",
     "proof",
@@ -79,7 +80,17 @@ def _looks_file_like(token: str) -> bool:
     if s.lower().startswith("http://") or s.lower().startswith("https://"):
         return False
     if "/" in s or "\\" in s:
-        return bool(re.search(r"[A-Za-z0-9]", s))
+        normalized = s.replace("\\", "/")
+        parts = [part for part in normalized.split("/") if part and part not in {".", ".."}]
+        if not parts:
+            return False
+        if normalized.startswith(("/", "./", "../", "~/")) or re.match(r"^[A-Za-z]:[\\/]", s):
+            return bool(re.search(r"[A-Za-z0-9]", normalized))
+        if all(len(part) <= 2 for part in parts):
+            return False
+        if not any(re.search(r"[A-Za-z]", part) for part in parts):
+            return False
+        return True
     if "." not in s:
         return False
     stem, _, ext = s.rpartition(".")
@@ -138,8 +149,9 @@ def _extract_hard_evidence(normalized_text: str) -> List[str]:
             continue
         lower = line.lower()
         has_cmd = bool(TEST_CMD_RE.search(lower))
-        has_pass = bool(TEST_PASS_RE.search(lower))
-        if (has_cmd and has_pass) or TEST_PASS_RE.search(lower) or UNITTEST_OK_RE.search(lower):
+        has_output = bool(TEST_OUTPUT_RE.search(lower))
+        has_passed_word = bool(TEST_PASSED_WORD_RE.search(lower))
+        if has_output or UNITTEST_OK_RE.search(lower) or (has_cmd and has_passed_word):
             _append_unique(hard, seen, f"test:{line}", limit=240)
 
     return hard
@@ -173,4 +185,3 @@ def normalize_evidence(structured: Optional[Dict[str, Any]] = None, text: str = 
         "softEvidence": soft,
         "normalizedText": normalized_text,
     }
-

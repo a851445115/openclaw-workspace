@@ -78,6 +78,20 @@ class QualityGateV2Tests(unittest.TestCase):
         self.assertEqual(out["spawn"]["reasonCode"], "incomplete_output", out)
         self.assertEqual(out["spawn"]["acceptanceReasonCode"], "missing_hard_evidence", out)
 
+    def test_done_summary_with_fraction_like_token_is_blocked(self):
+        self._create_task("T-505", "coder", "fraction token should not count as hard evidence")
+        out = self._dispatch("T-505", "coder", '{"status":"done","summary":"已完成，输出 1/2"}')
+        self.assertEqual(out["spawn"]["decision"], "blocked", out)
+        self.assertEqual(out["spawn"]["reasonCode"], "incomplete_output", out)
+        self.assertEqual(out["spawn"]["acceptanceReasonCode"], "missing_hard_evidence", out)
+
+    def test_done_summary_with_plain_verify_phrase_is_blocked(self):
+        self._create_task("T-506", "coder", "plain verify phrase should not count as hard evidence")
+        out = self._dispatch("T-506", "coder", '{"status":"done","summary":"已完成，验证通过"}')
+        self.assertEqual(out["spawn"]["decision"], "blocked", out)
+        self.assertEqual(out["spawn"]["reasonCode"], "incomplete_output", out)
+        self.assertEqual(out["spawn"]["acceptanceReasonCode"], "missing_hard_evidence", out)
+
     def test_done_with_hard_evidence_is_accepted(self):
         self._create_task("T-502", "coder", "has hard evidence")
         out = self._dispatch(
