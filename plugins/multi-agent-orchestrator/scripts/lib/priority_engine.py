@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import math
 import re
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -11,23 +12,26 @@ STATUS_BONUS = {
     "in_progress": 3.0,
     "review": 1.0,
 }
-TASK_ID_PATTERN = re.compile(r"^T-\d+$", flags=re.IGNORECASE)
+TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$", flags=re.IGNORECASE)
 
 
 def _to_number(value: Any, default: float = 0.0) -> float:
+    fallback = float(default)
     if value is None:
-        return default
+        return fallback
     if isinstance(value, bool):
         return float(int(value))
     if isinstance(value, (int, float)):
-        return float(value)
+        num = float(value)
+        return num if math.isfinite(num) else fallback
     text = str(value).strip()
     if not text:
-        return default
+        return fallback
     try:
-        return float(text)
+        num = float(text)
+        return num if math.isfinite(num) else fallback
     except Exception:
-        return default
+        return fallback
 
 
 def _as_text(value: Any) -> str:
@@ -117,10 +121,12 @@ def _blocked_by_reasons(blocked_by: Sequence[str], tasks: Dict[str, Dict[str, An
         normalized = _normalize_task_id(token)
         if _is_task_id(normalized):
             ref_task = tasks.get(normalized)
-            ref_status = _status_of(ref_task)
             if ref_task is None:
-                unresolved.append(f"{normalized}(missing)")
+                # Keep text blocker semantics for unknown refs while still allowing
+                # non T-### task IDs to resolve against existing tasks.
+                unresolved.append(token)
                 continue
+            ref_status = _status_of(ref_task)
             if ref_status != "done":
                 unresolved.append(f"{normalized}({ref_status or 'unknown'})")
             continue
@@ -199,7 +205,7 @@ def evaluate_task(task: Dict[str, Any], all_tasks: Dict[str, Dict[str, Any]]) ->
 
 def _task_sort_key_for_ready(item: Dict[str, Any]) -> Tuple[float, str]:
     # Stable deterministic selection: highest score first, then taskId ascending.
-    return (-float(item.get("score") or 0.0), _normalize_task_id(item.get("taskId")))
+    return (-_to_number(item.get("score"), 0.0), _normalize_task_id(item.get("taskId")))
 
 
 def select_task(
@@ -230,20 +236,43 @@ def select_task(
                 "reason": f"requested task unavailable: {req_id}",
                 "readyQueue": [],
                 "evaluations": {},
+                "selection": {
+                    "taskId": req_id,
+                    "score": None,
+                    "reasonCode": "requested_not_found_or_excluded",
+                    "reason": f"requested task unavailable: {req_id}",
+                },
             }
         eval_obj = evaluate_task(req_task, normalized_tasks)
+        if not bool(eval_obj.get("ready")):
+            reason = str(eval_obj.get("reason") or "requested task is not ready")
+            return {
+                "selectedTaskId": "",
+                "selectedTask": None,
+                "selectedScore": None,
+                "reasonCode": "requested_task_not_ready",
+                "reason": reason,
+                "readyQueue": [],
+                "evaluations": {req_id: eval_obj},
+                "selection": {
+                    "taskId": req_id,
+                    "score": None,
+                    "reasonCode": "requested_task_not_ready",
+                    "reason": reason,
+                },
+            }
         selection = {
             "taskId": req_id,
-            "score": eval_obj.get("score"),
-            "reasonCode": "requested_task",
-            "reason": "requested task selected directly",
+            "score": _to_number(eval_obj.get("score"), 0.0),
+            "reasonCode": "requested_task_selected",
+            "reason": "requested task selected from ready state",
         }
         return {
             "selectedTaskId": req_id,
             "selectedTask": req_task,
-            "selectedScore": eval_obj.get("score"),
-            "reasonCode": "requested_task",
-            "reason": "requested task selected directly",
+            "selectedScore": selection["score"],
+            "reasonCode": "requested_task_selected",
+            "reason": "requested task selected from ready state",
             "readyQueue": [],
             "evaluations": {req_id: eval_obj},
             "selection": selection,
@@ -262,7 +291,7 @@ def select_task(
             ready_rows.append(
                 {
                     "taskId": task_id,
-                    "score": float(eval_obj.get("score") or 0.0),
+                    "score": _to_number(eval_obj.get("score"), 0.0),
                     "reason": str(eval_obj.get("reason") or ""),
                     "reasonCode": str(eval_obj.get("reasonCode") or ""),
                 }
@@ -292,7 +321,7 @@ def select_task(
     selected_task = normalized_tasks.get(selected_id)
     selection = {
         "taskId": selected_id,
-        "score": float(top.get("score") or 0.0),
+        "score": _to_number(top.get("score"), 0.0),
         "reasonCode": str(top.get("reasonCode") or "ready_scored"),
         "reason": str(top.get("reason") or ""),
     }
@@ -306,4 +335,3 @@ def select_task(
         "evaluations": evaluations,
         "selection": selection,
     }
-

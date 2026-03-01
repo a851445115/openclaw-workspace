@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -71,21 +72,27 @@ def _normalize_ref_list(raw):
 
 
 def _normalize_int(raw, default=0):
+    fallback = int(default)
     if raw is None:
-        return int(default)
+        return fallback
     if isinstance(raw, bool):
         return int(raw)
     if isinstance(raw, int):
         return raw
     if isinstance(raw, float):
+        if not math.isfinite(raw):
+            return fallback
         return int(raw)
     text = _to_text(raw)
     if not text:
-        return int(default)
+        return fallback
     try:
-        return int(float(text))
+        parsed = float(text)
+        if not math.isfinite(parsed):
+            return fallback
+        return int(parsed)
     except Exception:
-        return int(default)
+        return fallback
 
 
 def ensure_priority_fields(task):

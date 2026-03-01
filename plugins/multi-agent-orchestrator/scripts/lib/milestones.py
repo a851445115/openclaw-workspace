@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 import os
 import re
 import shlex
@@ -2359,6 +2360,156 @@ def resolve_spawn_plan(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
     }
 
 
+FALLBACK_RUNNABLE_STATUSES = {"pending", "claimed", "in_progress", "review"}
+FALLBACK_STATUS_BONUS = {
+    "pending": 0.0,
+    "claimed": 2.0,
+    "in_progress": 3.0,
+    "review": 1.0,
+}
+FALLBACK_TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$", flags=re.IGNORECASE)
+
+
+def _fallback_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _fallback_normalize_task_id(value: Any) -> str:
+    return _fallback_text(value).upper()
+
+
+def _fallback_number(value: Any, default: float = 0.0) -> float:
+    fallback = float(default)
+    if value is None:
+        return fallback
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        num = float(value)
+        return num if math.isfinite(num) else fallback
+    text = _fallback_text(value)
+    if not text:
+        return fallback
+    try:
+        num = float(text)
+        return num if math.isfinite(num) else fallback
+    except Exception:
+        return fallback
+
+
+def _fallback_dedupe(values: List[str]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for raw in values:
+        token = _fallback_text(raw)
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
+
+
+def _fallback_normalize_refs(raw: Any) -> List[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple, set)):
+        return _fallback_dedupe([_fallback_text(item) for item in raw])
+    if isinstance(raw, dict):
+        refs: List[str] = []
+        for key in ("taskId", "id", "ref", "value"):
+            if key in raw:
+                refs.extend(_fallback_normalize_refs(raw.get(key)))
+        return _fallback_dedupe(refs)
+    text = _fallback_text(raw)
+    if not text:
+        return []
+    if text.startswith("[") and text.endswith("]"):
+        try:
+            parsed = json.loads(text)
+            return _fallback_normalize_refs(parsed)
+        except Exception:
+            pass
+    tokens = re.split(r"[\s,;]+", text)
+    return _fallback_dedupe(tokens)
+
+
+def _fallback_status(task: Any) -> str:
+    if not isinstance(task, dict):
+        return ""
+    return _fallback_text(task.get("status")).lower()
+
+
+def _fallback_task_is_ready(task: Dict[str, Any], tasks_by_id: Dict[str, Dict[str, Any]]) -> bool:
+    status = _fallback_status(task)
+    if status not in FALLBACK_RUNNABLE_STATUSES:
+        return False
+
+    for dep in _fallback_normalize_refs(task.get("dependsOn")):
+        dep_id = _fallback_normalize_task_id(dep)
+        dep_task = tasks_by_id.get(dep_id)
+        if not isinstance(dep_task, dict):
+            return False
+        if _fallback_status(dep_task) != "done":
+            return False
+
+    for blocker in _fallback_normalize_refs(task.get("blockedBy")):
+        token = _fallback_text(blocker)
+        if not token:
+            continue
+        blocker_id = _fallback_normalize_task_id(token)
+        if FALLBACK_TASK_ID_PATTERN.match(blocker_id):
+            ref_task = tasks_by_id.get(blocker_id)
+            if isinstance(ref_task, dict):
+                if _fallback_status(ref_task) != "done":
+                    return False
+                continue
+        # Non-task text blockers remain blocking in fallback.
+        return False
+
+    return True
+
+
+def _fallback_score(task: Dict[str, Any]) -> float:
+    status = _fallback_status(task)
+    priority = _fallback_number(task.get("priority"), 0.0)
+    impact = _fallback_number(task.get("impact"), 0.0)
+    raw = (priority * 10.0) + (impact * 5.0) + FALLBACK_STATUS_BONUS.get(status, 0.0)
+    return round(raw, 6) if math.isfinite(raw) else 0.0
+
+
+def _fallback_prepare_tasks(raw_tasks: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for raw in (raw_tasks or {}).values():
+        if not isinstance(raw, dict):
+            continue
+        task_id = _fallback_normalize_task_id(raw.get("taskId"))
+        if not task_id:
+            continue
+        normalized[task_id] = raw
+    return normalized
+
+
+def _attach_fallback_selection(
+    task: Dict[str, Any],
+    score: float,
+    reason_code: str,
+    reason: str,
+    ready_queue: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    out = dict(task)
+    out["_prioritySelection"] = {
+        "taskId": str(task.get("taskId") or ""),
+        "score": score,
+        "reasonCode": reason_code,
+        "reason": reason,
+        "readyQueueSize": len(ready_queue),
+        "readyQueueTop": ready_queue[:3],
+    }
+    return out
+
+
 def choose_task_for_run(root: str, requested: str, excluded_task_ids: Optional[set] = None) -> Optional[Dict[str, Any]]:
     data = load_snapshot(root)
     tasks = data.get("tasks", {})
@@ -2382,23 +2533,59 @@ def choose_task_for_run(root: str, requested: str, excluded_task_ids: Optional[s
         return out
     except Exception:
         # Backward-compatible fallback path if priority engine fails unexpectedly.
+        # Keep fallback dependency-aware; only ready tasks are eligible.
+        normalized_tasks = _fallback_prepare_tasks(tasks)
+        excluded_norm = {_fallback_normalize_task_id(tid) for tid in excluded if _fallback_text(tid)}
+        ready_queue: List[Dict[str, Any]] = []
+
+        for task_id in sorted(normalized_tasks.keys()):
+            if task_id in excluded_norm:
+                continue
+            task = normalized_tasks[task_id]
+            if not _fallback_task_is_ready(task, normalized_tasks):
+                continue
+            score = _fallback_score(task)
+            ready_queue.append(
+                {
+                    "taskId": str(task.get("taskId") or task_id),
+                    "score": score,
+                    "reasonCode": "fallback_ready_scored",
+                    "reason": "selected by dependency-aware fallback",
+                }
+            )
+
+        ready_queue.sort(key=lambda row: (-_fallback_number(row.get("score"), 0.0), _fallback_normalize_task_id(row.get("taskId"))))
+
         if requested:
-            t = tasks.get(requested)
-            if isinstance(t, dict) and str(t.get("taskId") or "") not in excluded:
-                return t
+            requested_id = _fallback_normalize_task_id(requested)
+            task = normalized_tasks.get(requested_id)
+            if not isinstance(task, dict) or requested_id in excluded_norm:
+                return None
+            if not _fallback_task_is_ready(task, normalized_tasks):
+                return None
+            score = _fallback_score(task)
+            return _attach_fallback_selection(
+                task,
+                score,
+                "requested_task_selected_fallback",
+                "requested task selected by dependency-aware fallback",
+                ready_queue,
+            )
+
+        if not ready_queue:
             return None
-        candidates = []
-        for t in tasks.values():
-            if not isinstance(t, dict):
-                continue
-            if str(t.get("taskId") or "") in excluded:
-                continue
-            if t.get("status") in {"pending", "claimed", "in_progress", "review"}:
-                candidates.append(t)
-        if not candidates:
+
+        selected_id = _fallback_normalize_task_id(ready_queue[0].get("taskId"))
+        selected_task = normalized_tasks.get(selected_id)
+        if not isinstance(selected_task, dict):
             return None
-        candidates.sort(key=lambda x: x.get("taskId") or "")
-        return candidates[0]
+        return _attach_fallback_selection(
+            selected_task,
+            _fallback_number(ready_queue[0].get("score"), 0.0),
+            "selected_from_fallback_ready_queue",
+            "selected top ready task from dependency-aware fallback queue",
+            ready_queue,
+        )
 
 
 def has_evidence(text: str) -> bool:

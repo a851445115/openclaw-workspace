@@ -54,6 +54,7 @@ class PriorityEngineTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         subprocess.run([str(INIT), "--root", str(self.root)], cwd=REPO, check=True)
         self.milestones = load_milestones_module()
+        self.priority_engine = self.milestones.priority_engine
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -95,6 +96,166 @@ class PriorityEngineTests(unittest.TestCase):
         ready_top = selection.get("readyQueueTop") or []
         ready_ids = [str(x.get("taskId") or "") for x in ready_top if isinstance(x, dict)]
         self.assertNotIn("T-001", ready_ids, selection)
+
+    def test_requested_task_not_ready_is_rejected(self):
+        tasks = {
+            "T-100": {
+                "taskId": "T-100",
+                "title": "requested but blocked by dependency",
+                "status": "pending",
+                "dependsOn": ["T-101"],
+                "priority": 9,
+                "impact": 9,
+            },
+            "T-101": {
+                "taskId": "T-101",
+                "title": "dependency still running",
+                "status": "in_progress",
+            },
+            "T-102": {
+                "taskId": "T-102",
+                "title": "ready task",
+                "status": "pending",
+                "priority": 1,
+                "impact": 1,
+            },
+        }
+        selected = self.priority_engine.select_task(tasks, requested_task_id="T-100")
+        self.assertEqual(selected.get("selectedTaskId"), "", selected)
+        self.assertIsNone(selected.get("selectedTask"), selected)
+        self.assertEqual(selected.get("reasonCode"), "requested_task_not_ready", selected)
+
+        write_snapshot(self.root, tasks)
+        picked = self.milestones.choose_task_for_run(str(self.root), "T-100")
+        self.assertIsNone(picked)
+
+    def test_blocked_by_non_t_numeric_task_id_can_be_resolved(self):
+        write_snapshot(
+            self.root,
+            {
+                "BUG-1": {
+                    "taskId": "BUG-1",
+                    "title": "blocking bug",
+                    "status": "in_progress",
+                },
+                "T-200": {
+                    "taskId": "T-200",
+                    "title": "blocked by BUG-1",
+                    "status": "pending",
+                    "blockedBy": ["BUG-1"],
+                    "priority": 7,
+                    "impact": 7,
+                },
+                "T-201": {
+                    "taskId": "T-201",
+                    "title": "always ready fallback",
+                    "status": "pending",
+                    "priority": 1,
+                    "impact": 1,
+                },
+            },
+        )
+        first = self.milestones.choose_task_for_run(str(self.root), "")
+        self.assertIsNotNone(first)
+        self.assertEqual(first.get("taskId"), "T-201", first)
+
+        write_snapshot(
+            self.root,
+            {
+                "BUG-1": {
+                    "taskId": "BUG-1",
+                    "title": "blocking bug",
+                    "status": "done",
+                },
+                "T-200": {
+                    "taskId": "T-200",
+                    "title": "blocked by BUG-1",
+                    "status": "pending",
+                    "blockedBy": ["BUG-1"],
+                    "priority": 7,
+                    "impact": 7,
+                },
+                "T-201": {
+                    "taskId": "T-201",
+                    "title": "always ready fallback",
+                    "status": "pending",
+                    "priority": 1,
+                    "impact": 1,
+                },
+            },
+        )
+        second = self.milestones.choose_task_for_run(str(self.root), "")
+        self.assertIsNotNone(second)
+        self.assertEqual(second.get("taskId"), "T-200", second)
+
+    def test_non_finite_priority_or_impact_cannot_beat_finite_high_score(self):
+        tasks = {
+            "T-300": {
+                "taskId": "T-300",
+                "title": "finite high score",
+                "status": "pending",
+                "priority": 9,
+                "impact": 9,
+            },
+            "T-301": {
+                "taskId": "T-301",
+                "title": "infinite score should be sanitized",
+                "status": "pending",
+                "priority": float("inf"),
+                "impact": 0,
+            },
+            "T-302": {
+                "taskId": "T-302",
+                "title": "nan score should be sanitized",
+                "status": "pending",
+                "priority": "NaN",
+                "impact": 0,
+            },
+        }
+        selected = self.priority_engine.select_task(tasks)
+        self.assertEqual(selected.get("selectedTaskId"), "T-300", selected)
+
+    def test_choose_task_fallback_keeps_dependency_aware_filtering(self):
+        write_snapshot(
+            self.root,
+            {
+                "T-400": {
+                    "taskId": "T-400",
+                    "title": "blocked in fallback path",
+                    "status": "pending",
+                    "dependsOn": ["T-401"],
+                    "priority": 10,
+                    "impact": 10,
+                },
+                "T-401": {
+                    "taskId": "T-401",
+                    "title": "dependency not done",
+                    "status": "in_progress",
+                },
+                "T-402": {
+                    "taskId": "T-402",
+                    "title": "ready fallback candidate",
+                    "status": "pending",
+                    "priority": 1,
+                    "impact": 1,
+                },
+            },
+        )
+        original_select = self.milestones.priority_engine.select_task
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("forced priority engine failure")
+
+        self.milestones.priority_engine.select_task = boom
+        try:
+            picked = self.milestones.choose_task_for_run(str(self.root), "")
+            self.assertIsNotNone(picked)
+            self.assertEqual(picked.get("taskId"), "T-402", picked)
+
+            requested = self.milestones.choose_task_for_run(str(self.root), "T-400")
+            self.assertIsNone(requested)
+        finally:
+            self.milestones.priority_engine.select_task = original_select
 
     def test_decision_is_reproducible_for_same_snapshot(self):
         write_snapshot(
@@ -249,6 +410,36 @@ class PriorityEngineTests(unittest.TestCase):
         self.assertIn("impact", task, task)
         self.assertEqual(task.get("dependsOn"), [], task)
         self.assertEqual(task.get("blockedBy"), [], task)
+        self.assertEqual(task.get("priority"), 0, task)
+        self.assertEqual(task.get("impact"), 0, task)
+
+    def test_task_board_non_finite_priority_and_impact_fallback_to_default(self):
+        write_snapshot(
+            self.root,
+            {
+                "T-500": {
+                    "taskId": "T-500",
+                    "title": "non finite values",
+                    "status": "pending",
+                    "priority": float("nan"),
+                    "impact": float("inf"),
+                }
+            },
+        )
+        status = run_json(
+            [
+                "python3",
+                str(BOARD),
+                "apply",
+                "--root",
+                str(self.root),
+                "--actor",
+                "orchestrator",
+                "--text",
+                "status T-500",
+            ]
+        )
+        task = status.get("task") or {}
         self.assertEqual(task.get("priority"), 0, task)
         self.assertEqual(task.get("impact"), 0, task)
 
