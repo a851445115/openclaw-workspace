@@ -19,6 +19,7 @@ if SCRIPT_LIB_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_LIB_DIR)
 import priority_engine
 import recovery_loop
+import budget_policy
 import governance
 import evidence_normalizer
 
@@ -1236,7 +1237,75 @@ def classify_spawn_result(root: str, task_id: str, role: str, spawn_obj: Dict[st
     }
 
 
+def nonneg_int(value: Any, default: int = 0) -> int:
+    try:
+        out = int(value)
+    except Exception:
+        return default
+    return out if out >= 0 else default
+
+
+def extract_token_usage_from_spawn(payload: Dict[str, Any]) -> int:
+    if not isinstance(payload, dict):
+        return 0
+
+    for key in ("tokenUsage", "token_usage", "tokens", "totalTokens"):
+        parsed = nonneg_int(payload.get(key), -1)
+        if parsed >= 0:
+            return parsed
+
+    metrics = payload.get("metrics")
+    if isinstance(metrics, dict):
+        for key in ("tokenUsage", "token_usage", "tokens", "totalTokens"):
+            parsed = nonneg_int(metrics.get(key), -1)
+            if parsed >= 0:
+                return parsed
+
+    usage = payload.get("usage")
+    if isinstance(usage, dict):
+        for key in ("total_tokens", "totalTokens"):
+            parsed = nonneg_int(usage.get(key), -1)
+            if parsed >= 0:
+                return parsed
+        prompt_tokens = nonneg_int(usage.get("prompt_tokens"), 0)
+        completion_tokens = nonneg_int(usage.get("completion_tokens"), 0)
+        input_tokens = nonneg_int(usage.get("input_tokens"), 0)
+        output_tokens = nonneg_int(usage.get("output_tokens"), 0)
+        total = prompt_tokens + completion_tokens + input_tokens + output_tokens
+        if total > 0:
+            return total
+
+    return 0
+
+
+def extract_elapsed_ms_from_spawn(payload: Dict[str, Any], fallback_ms: int = 0) -> int:
+    if not isinstance(payload, dict):
+        return max(0, int(fallback_ms))
+
+    for key in ("elapsedMs", "elapsed_ms", "durationMs", "duration_ms"):
+        parsed = nonneg_int(payload.get(key), -1)
+        if parsed >= 0:
+            return parsed
+
+    metrics = payload.get("metrics")
+    if isinstance(metrics, dict):
+        for key in ("elapsedMs", "elapsed_ms", "durationMs", "duration_ms"):
+            parsed = nonneg_int(metrics.get(key), -1)
+            if parsed >= 0:
+                return parsed
+
+    return max(0, int(fallback_ms))
+
+
+def collect_spawn_metrics(payload: Dict[str, Any], fallback_elapsed_ms: int = 0) -> Dict[str, int]:
+    return {
+        "elapsedMs": extract_elapsed_ms_from_spawn(payload, fallback_ms=fallback_elapsed_ms),
+        "tokenUsage": extract_token_usage_from_spawn(payload),
+    }
+
+
 def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, Any]:
+    start_ms = int(time.time() * 1000)
     plan = resolve_spawn_plan(args, task_prompt)
     executor = str(plan.get("executor") or "openclaw_agent")
     planned_cmd = list(plan.get("command") or [])
@@ -1253,6 +1322,7 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
             "plannedCommand": planned_cmd,
             "decision": "",
             "detail": "",
+            "metrics": {"elapsedMs": 0, "tokenUsage": 0},
         }
 
     if args.spawn_output:
@@ -1261,6 +1331,7 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
             if not isinstance(obj, dict):
                 obj = {"raw": args.spawn_output}
             decision = classify_spawn_result(args.root, args.task_id, args.agent, obj, fallback_text=args.spawn_output)
+            metrics = collect_spawn_metrics(obj, fallback_elapsed_ms=max(0, int(time.time() * 1000) - start_ms))
             return {
                 "ok": True,
                 "simulated": True,
@@ -1275,6 +1346,7 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
                 "reasonCode": decision.get("reasonCode", "classified"),
                 "acceptanceReasonCode": decision.get("acceptanceReasonCode", ""),
                 "normalizedReport": decision.get("report"),
+                "metrics": metrics,
             }
         except Exception as err:
             return {
@@ -1288,6 +1360,7 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
                 "decision": "blocked",
                 "detail": clip(str(err), 200),
                 "reasonCode": "invalid_spawn_output",
+                "metrics": {"elapsedMs": max(0, int(time.time() * 1000) - start_ms), "tokenUsage": 0},
             }
 
     cmd = planned_cmd
@@ -1303,11 +1376,13 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
             "decision": "blocked",
             "detail": "spawn command is empty",
             "reasonCode": "spawn_command_empty",
+            "metrics": {"elapsedMs": 0, "tokenUsage": 0},
         }
 
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=max(10, args.timeout_sec + 5))
     stdout = (proc.stdout or "").strip()
     stderr = (proc.stderr or "").strip()
+    elapsed_ms = max(0, int(time.time() * 1000) - start_ms)
 
     parsed: Dict[str, Any] = {}
     if stdout:
@@ -1319,6 +1394,8 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
                 parsed = {"output": obj}
         except Exception:
             parsed = {"output": stdout}
+
+    metrics = collect_spawn_metrics(parsed, fallback_elapsed_ms=elapsed_ms)
 
     if proc.returncode != 0:
         detail = clip(stderr or stdout or f"spawn exit={proc.returncode}", 200)
@@ -1334,6 +1411,7 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
             "decision": "blocked",
             "detail": detail,
             "reasonCode": "spawn_failed",
+            "metrics": metrics,
         }
 
     decision = classify_spawn_result(args.root, args.task_id, args.agent, parsed or {"output": stdout}, fallback_text=stdout)
@@ -1350,6 +1428,7 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
         "reasonCode": decision.get("reasonCode", "classified"),
         "acceptanceReasonCode": decision.get("acceptanceReasonCode", ""),
         "normalizedReport": decision.get("report"),
+        "metrics": metrics,
     }
 
 
@@ -1434,10 +1513,14 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         "command": [],
         "stdout": "",
         "stderr": "",
+        "metrics": {"elapsedMs": 0, "tokenUsage": 0},
     }
     close_apply: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "spawn disabled"}
     close_publish: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "spawn disabled"}
     worker_report: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "visibility mode not enabled"}
+    spawn_attempt_count = 0
+    aggregate_elapsed_ms = 0
+    aggregate_token_usage = 0
 
     if args.spawn:
         reason_code_hint = ""
@@ -1486,29 +1569,74 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                 "cooldownActive": True,
                 "cooldownUntil": cooldown_until,
                 "cooldownUntilTs": int(active_cooldown.get("cooldownUntilTs") or 0),
+                "metrics": {"elapsedMs": 0, "tokenUsage": 0},
             }
             claim_send = {"ok": True, "skipped": True, "reason": "cooldown_active"}
             task_send = {"ok": True, "skipped": True, "reason": "cooldown_active"}
         else:
-            claim_send = send_group_message(args.group_id, args.account_id, claim_text, args.mode)
-            task_send = send_group_message(args.group_id, args.account_id, task_text, args.mode)
-            spawn = run_dispatch_spawn(args, agent_prompt)
-            if (
-                not spawn.get("skipped")
-                and not args.spawn_output
-                and spawn.get("decision") == "blocked"
-                and str(spawn.get("reasonCode") or "") in {"incomplete_output", "missing_evidence", "stage_only", "role_policy_missing_keyword"}
-            ):
-                retry_prompt = clip(
-                    agent_prompt
-                    + "\n\n交付硬性要求：请直接给出最终可验证结果（改动文件/命令输出/commit哈希/验证结论），不要只给阶段性进度。",
-                    5000,
+            precheck = budget_policy.precheck_budget(args.root, args.task_id, args.agent)
+            if not bool(precheck.get("allowed")):
+                exceeded_keys = [str(x) for x in (precheck.get("exceededKeys") or []) if str(x)]
+                degrade_action = str(precheck.get("degradeAction") or "manual_handoff")
+                detail = clip(
+                    f"{args.task_id} 预算超限（precheck）: {','.join(exceeded_keys) or 'unknown'}",
+                    200,
                 )
-                retry_spawn = run_dispatch_spawn(args, retry_prompt)
-                spawn["retried"] = True
-                spawn["retry"] = retry_spawn
-                if retry_spawn.get("decision") == "done":
-                    spawn = retry_spawn
+                spawn = {
+                    "ok": False,
+                    "skipped": False,
+                    "spawnSkipped": True,
+                    "precheckBlocked": True,
+                    "reason": "budget_precheck_blocked",
+                    "decision": "blocked",
+                    "detail": detail,
+                    "command": [],
+                    "stdout": "",
+                    "stderr": "",
+                    "executor": "budget_guard",
+                    "plannedCommand": [],
+                    "reasonCode": "budget_exceeded",
+                    "exceededKeys": exceeded_keys,
+                    "degradeAction": degrade_action,
+                    "nextAssignee": str(precheck.get("nextAssignee") or "human"),
+                    "action": "escalate",
+                    "budgetSnapshot": precheck.get("budgetSnapshot"),
+                    "metrics": {"elapsedMs": 0, "tokenUsage": 0},
+                }
+                claim_send = {"ok": True, "skipped": True, "reason": "budget_precheck_blocked"}
+                task_send = {"ok": True, "skipped": True, "reason": "budget_precheck_blocked"}
+            else:
+                claim_send = send_group_message(args.group_id, args.account_id, claim_text, args.mode)
+                task_send = send_group_message(args.group_id, args.account_id, task_text, args.mode)
+                spawn = run_dispatch_spawn(args, agent_prompt)
+                spawn_attempt_count = 0 if spawn.get("skipped") else 1
+                metrics = spawn.get("metrics") if isinstance(spawn.get("metrics"), dict) else {}
+                aggregate_elapsed_ms += nonneg_int(metrics.get("elapsedMs"), 0)
+                aggregate_token_usage += nonneg_int(metrics.get("tokenUsage"), 0)
+                if (
+                    not spawn.get("skipped")
+                    and not args.spawn_output
+                    and spawn.get("decision") == "blocked"
+                    and str(spawn.get("reasonCode") or "") in {"incomplete_output", "missing_evidence", "stage_only", "role_policy_missing_keyword"}
+                ):
+                    retry_prompt = clip(
+                        agent_prompt
+                        + "\n\n交付硬性要求：请直接给出最终可验证结果（改动文件/命令输出/commit哈希/验证结论），不要只给阶段性进度。",
+                        5000,
+                    )
+                    retry_spawn = run_dispatch_spawn(args, retry_prompt)
+                    spawn_attempt_count += 1
+                    retry_metrics = retry_spawn.get("metrics") if isinstance(retry_spawn.get("metrics"), dict) else {}
+                    aggregate_elapsed_ms += nonneg_int(retry_metrics.get("elapsedMs"), 0)
+                    aggregate_token_usage += nonneg_int(retry_metrics.get("tokenUsage"), 0)
+                    spawn["retried"] = True
+                    spawn["retry"] = retry_spawn
+                    if retry_spawn.get("decision") == "done":
+                        spawn = retry_spawn
+                spawn["metrics"] = {
+                    "elapsedMs": aggregate_elapsed_ms,
+                    "tokenUsage": aggregate_token_usage,
+                }
     else:
         claim_send = send_group_message(args.group_id, args.account_id, claim_text, args.mode)
         task_send = send_group_message(args.group_id, args.account_id, task_text, args.mode)
@@ -1518,6 +1646,30 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
             close_apply = {"ok": True, "skipped": True, "reason": spawn.get("reason", "spawn skipped")}
             close_publish = {"ok": True, "skipped": True, "reason": "spawn skipped"}
         else:
+            if not bool(spawn.get("precheckBlocked")) and spawn_attempt_count > 0:
+                metrics = spawn.get("metrics") if isinstance(spawn.get("metrics"), dict) else {}
+                budget_check = budget_policy.record_and_check_budget(
+                    args.root,
+                    args.task_id,
+                    args.agent,
+                    nonneg_int(metrics.get("tokenUsage"), 0),
+                    nonneg_int(metrics.get("elapsedMs"), 0),
+                    spawn_attempt_count,
+                )
+                spawn["budgetSnapshot"] = budget_check.get("budgetSnapshot")
+                if not bool(budget_check.get("allowed")):
+                    exceeded_keys = [str(x) for x in (budget_check.get("exceededKeys") or []) if str(x)]
+                    degrade_action = str(budget_check.get("degradeAction") or "manual_handoff")
+                    base_detail = clip(spawn.get("detail") or f"{args.task_id} 超预算", 120)
+                    tail = f"budget_exceeded:{','.join(exceeded_keys) or 'unknown'}"
+                    spawn["decision"] = "blocked"
+                    spawn["reasonCode"] = "budget_exceeded"
+                    spawn["exceededKeys"] = exceeded_keys
+                    spawn["degradeAction"] = degrade_action
+                    spawn["nextAssignee"] = str(budget_check.get("nextAssignee") or "human")
+                    spawn["action"] = "escalate"
+                    spawn["detail"] = clip(f"{base_detail} | {tail} | degrade:{degrade_action}", 200)
+
             decision = spawn.get("decision") or "blocked"
             detail = clip(spawn.get("detail") or f"{args.task_id} 子代理执行结果未明确", 200)
             recovery_decision: Optional[Dict[str, Any]] = None

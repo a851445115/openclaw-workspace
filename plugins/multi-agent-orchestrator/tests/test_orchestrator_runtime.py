@@ -821,6 +821,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(spawn.get("executor"), "codex_cli", out)
         planned = spawn.get("plannedCommand") or []
         self.assertTrue(any("codex_worker_bridge.py" in str(x) for x in planned), out)
+        metrics = spawn.get("metrics") or {}
+        self.assertIn("tokenUsage", metrics, out)
 
     def test_scheme_b_non_coder_dispatch_keeps_openclaw_executor(self):
         run_json([

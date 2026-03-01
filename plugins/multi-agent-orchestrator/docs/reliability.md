@@ -119,3 +119,27 @@ Validation checks during replay:
   - 可恢复时输出下一跳负责人与尝试次数
   - 超预算进入 `escalated_to_human`
   - `incomplete_output` 的 `retry` 默认保持 `blocked` 并附带 `recovery_pending:<nextAssignee>`，兼容既有阻塞门禁
+
+## 7) Cost/Budget Governance (Batch 6)
+
+- 策略文件：`config/budget-policy.json`
+  - `global.maxTaskTokens`：单任务累计 token 上限
+  - `global.maxTaskWallTimeSec`：单任务累计执行时长上限（秒）
+  - `global.maxTaskRetries`：单任务累计 spawn 重试/执行次数上限
+  - `global.degradePolicy`：降级动作序列（支持 `reduced_context` / `manual_handoff` / `stop_run`）
+  - `global.onExceeded`：超预算时默认降级动作
+  - `agents.coder`：可按 agent 覆盖上述字段
+- 状态文件：`state/budget.state.json`
+  - 维度：`taskId + agent`
+  - 记录字段：`tokenUsage`、`elapsedMs`、`retryCount`、`updatedAt`
+- 执行时机
+  - spawn 前：`precheck_budget`，若已耗尽预算则直接 `blocked`
+  - spawn 后：`record_and_check_budget`，累积 `token/time/retry` 并判断是否超限
+- 超限行为
+  - 统一 `reasonCode=budget_exceeded`
+  - `nextAssignee=human`
+  - `action=escalate`
+  - 输出 `degradeAction` 与 `exceededKeys` 便于观测
+- 派发输出增强
+  - `spawn.metrics.elapsedMs`
+  - `spawn.metrics.tokenUsage`

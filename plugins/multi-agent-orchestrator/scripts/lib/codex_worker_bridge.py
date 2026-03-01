@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 from typing import Any, Dict, List
 
 TASK_CONTEXT_STATE_FILE = "task-context-map.json"
@@ -120,6 +121,66 @@ def normalize_result(task_id: str, agent: str, raw: Dict[str, Any], fallback_tex
     }
 
 
+def safe_int(value: Any, default: int = -1) -> int:
+    try:
+        out = int(value)
+    except Exception:
+        return default
+    return out if out >= 0 else default
+
+
+def extract_token_usage(raw: Dict[str, Any]) -> int:
+    if not isinstance(raw, dict):
+        return 0
+
+    for key in ("tokenUsage", "token_usage", "totalTokens", "tokens"):
+        parsed = safe_int(raw.get(key))
+        if parsed >= 0:
+            return parsed
+
+    metrics = raw.get("metrics")
+    if isinstance(metrics, dict):
+        for key in ("tokenUsage", "token_usage", "totalTokens", "tokens"):
+            parsed = safe_int(metrics.get(key))
+            if parsed >= 0:
+                return parsed
+
+    usage = raw.get("usage")
+    if isinstance(usage, dict):
+        for key in ("total_tokens", "totalTokens"):
+            parsed = safe_int(usage.get(key))
+            if parsed >= 0:
+                return parsed
+        prompt = safe_int(usage.get("prompt_tokens"), 0)
+        completion = safe_int(usage.get("completion_tokens"), 0)
+        input_tokens = safe_int(usage.get("input_tokens"), 0)
+        output_tokens = safe_int(usage.get("output_tokens"), 0)
+        sum_usage = prompt + completion + input_tokens + output_tokens
+        if sum_usage > 0:
+            return sum_usage
+
+    return 0
+
+
+def attach_metrics(result: Dict[str, Any], raw: Dict[str, Any], start_ms: int) -> Dict[str, Any]:
+    elapsed_ms = max(0, int(time.time() * 1000) - int(start_ms))
+    token_usage = extract_token_usage(raw)
+    if isinstance(raw, dict):
+        metrics = raw.get("metrics")
+        if isinstance(metrics, dict):
+            metric_elapsed = safe_int(metrics.get("elapsedMs"))
+            metric_tokens = safe_int(metrics.get("tokenUsage"))
+            if metric_elapsed >= 0:
+                elapsed_ms = metric_elapsed
+            if metric_tokens >= 0:
+                token_usage = metric_tokens
+    result["metrics"] = {
+        "elapsedMs": elapsed_ms,
+        "tokenUsage": max(0, token_usage),
+    }
+    return result
+
+
 def build_schema() -> Dict[str, Any]:
     return {
         "type": "object",
@@ -143,6 +204,14 @@ def build_schema() -> Dict[str, Any]:
             "evidence": {"type": "array", "items": {"type": "string"}},
             "risks": {"type": "array", "items": {"type": "string"}},
             "nextActions": {"type": "array", "items": {"type": "string"}},
+            "metrics": {
+                "type": "object",
+                "additionalProperties": True,
+                "properties": {
+                    "elapsedMs": {"type": "integer"},
+                    "tokenUsage": {"type": "integer"},
+                },
+            },
         },
         "required": ["status", "summary"],
     }
@@ -170,6 +239,7 @@ def main() -> int:
     parser.add_argument("--timeout-sec", type=int, default=120)
     parser.add_argument("--workspace", default="")
     args = parser.parse_args()
+    start_ms = int(time.time() * 1000)
 
     fake = os.environ.get("CODEX_WORKER_FAKE_OUTPUT", "").strip()
     if fake:
@@ -180,7 +250,8 @@ def main() -> int:
             result = normalize_result(args.task_id, args.agent, obj, fallback_text=fake)
         except Exception as err:
             result = blocked(args.task_id, args.agent, f"fake output parse failed: {err}", [fake])
-        print(json.dumps(result, ensure_ascii=False))
+            obj = {}
+        print(json.dumps(attach_metrics(result, obj, start_ms), ensure_ascii=False))
         return 0
 
     workspace = resolve_workspace(args)
@@ -217,7 +288,7 @@ def main() -> int:
             )
         except Exception as err:
             result = blocked(args.task_id, args.agent, f"codex exec failed: {err}", [])
-            print(json.dumps(result, ensure_ascii=False))
+            print(json.dumps(attach_metrics(result, {}, start_ms), ensure_ascii=False))
             return 0
 
         stdout = (proc.stdout or "").strip()
@@ -249,16 +320,16 @@ def main() -> int:
                 f"codex exec exit={proc.returncode}",
                 [clip(stderr, 220), clip(stdout, 220)],
             )
-            print(json.dumps(result, ensure_ascii=False))
+            print(json.dumps(attach_metrics(result, raw_obj, start_ms), ensure_ascii=False))
             return 0
 
         if not raw_obj:
             result = blocked(args.task_id, args.agent, "codex output is empty or invalid", [clip(stdout, 220), clip(stderr, 220)])
-            print(json.dumps(result, ensure_ascii=False))
+            print(json.dumps(attach_metrics(result, {}, start_ms), ensure_ascii=False))
             return 0
 
         result = normalize_result(args.task_id, args.agent, raw_obj, fallback_text=stdout)
-        print(json.dumps(result, ensure_ascii=False))
+        print(json.dumps(attach_metrics(result, raw_obj, start_ms), ensure_ascii=False))
         return 0
 
 
