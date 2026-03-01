@@ -154,7 +154,7 @@ cat inbound.txt | ./scripts/feishu-inbound-router --root .
 行为影响：
 
 - `暂停`/`恢复` 只影响运行推进链路：`autopilot` 与 `scheduler`。暂停后会返回 `governance_paused` 并跳过推进。
-- `冻结`/`解冻` 只影响派发链路：`dispatch`。冻结后 dispatch 会被阻断并返回 `governance_frozen`。
+- `冻结`/`解冻` 会影响推进链路：`dispatch`、`autopilot` 与 `scheduler`。冻结后会阻断这些入口并返回 `governance_frozen`。
 - `中止` 是一次性消费标记：命中一次后返回 `governance_aborted`，并立即扣减/清除对应计数（global/autopilot/scheduler/task）。
 
 状态与审计文件：

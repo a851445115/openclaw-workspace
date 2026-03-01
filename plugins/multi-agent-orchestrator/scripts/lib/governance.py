@@ -432,12 +432,26 @@ def execute_governance_command(root: str, actor: str, command: Dict[str, Any]) -
 
     if action == "freeze":
         state["frozen"] = True
-        saved = _save_and_audit(root, actor, action, {"scope": "dispatch"}, state, {"ok": True, "frozen": True})
+        saved = _save_and_audit(
+            root,
+            actor,
+            action,
+            {"scope": "dispatch/autopilot/scheduler"},
+            state,
+            {"ok": True, "frozen": True},
+        )
         return {"ok": True, "action": action, "state": summarize_state(saved)}
 
     if action == "unfreeze":
         state["frozen"] = False
-        saved = _save_and_audit(root, actor, action, {"scope": "dispatch"}, state, {"ok": True, "frozen": False})
+        saved = _save_and_audit(
+            root,
+            actor,
+            action,
+            {"scope": "dispatch/autopilot/scheduler"},
+            state,
+            {"ok": True, "frozen": False},
+        )
         return {"ok": True, "action": action, "state": summarize_state(saved)}
 
     if action == "abort":
@@ -520,9 +534,9 @@ def format_governance_message(result: Dict[str, Any]) -> str:
     if action == "resume":
         return "[TASK] 治理已恢复：自动推进与调度推进可继续。"
     if action == "freeze":
-        return "[TASK] 治理已冻结：dispatch 已阻断。"
+        return "[TASK] 治理已冻结：dispatch、自动推进与调度已阻断。"
     if action == "unfreeze":
-        return "[TASK] 治理已解冻：dispatch 可继续执行。"
+        return "[TASK] 治理已解冻：dispatch、自动推进与调度可继续。"
     if action == "abort":
         return f"[TASK] 已登记中止标记：{result.get('target') or '-'}（命中后一次性消费）。"
     if action == "approve":

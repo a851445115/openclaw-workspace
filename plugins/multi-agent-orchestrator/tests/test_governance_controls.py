@@ -264,6 +264,50 @@ class GovernanceControlsTests(unittest.TestCase):
         self.assertTrue(run.get("skipped"), scheduler)
         self.assertEqual(run.get("reason"), "governance_frozen", scheduler)
 
+    def test_freeze_then_unfreeze_recovers_autopilot_and_scheduler(self):
+        self._create_task("T-802B", "coder", "freeze/unfreeze recovery")
+        _, frozen = self._govern("@orchestrator 治理 冻结")
+        self.assertTrue(frozen.get("ok"), frozen)
+
+        _, auto_frozen = self._autopilot()
+        self.assertEqual(auto_frozen.get("reason"), "governance_frozen", auto_frozen)
+
+        _, scheduler_frozen = self._scheduler_run(action="enable")
+        self.assertEqual(scheduler_frozen.get("reason"), "governance_frozen", scheduler_frozen)
+
+        _, unfrozen = self._govern("@orchestrator 治理 解冻")
+        self.assertTrue(unfrozen.get("ok"), unfrozen)
+
+        _, auto_unfrozen = self._autopilot()
+        self.assertTrue(auto_unfrozen.get("ok"), auto_unfrozen)
+        self.assertNotEqual(auto_unfrozen.get("reason"), "governance_frozen", auto_unfrozen)
+        self.assertNotEqual(auto_unfrozen.get("stopReason"), "governance_frozen", auto_unfrozen)
+
+        _, scheduler_unfrozen = self._scheduler_run(action="enable")
+        self.assertTrue(scheduler_unfrozen.get("ok"), scheduler_unfrozen)
+        self.assertNotEqual(scheduler_unfrozen.get("reason"), "governance_frozen", scheduler_unfrozen)
+        run = scheduler_unfrozen.get("run") or {}
+        self.assertNotEqual(run.get("reason"), "governance_frozen", scheduler_unfrozen)
+
+    def test_freeze_unfreeze_message_and_audit_scope_cover_runtime(self):
+        _, frozen = self._govern("@orchestrator 治理 冻结")
+        self.assertTrue(frozen.get("ok"), frozen)
+        frozen_text = str((((frozen.get("send") or {}).get("payload") or {}).get("text") or ""))
+        self.assertEqual(frozen_text, "[TASK] 治理已冻结：dispatch、自动推进与调度已阻断。", frozen)
+
+        _, unfrozen = self._govern("@orchestrator 治理 解冻")
+        self.assertTrue(unfrozen.get("ok"), unfrozen)
+        unfrozen_text = str((((unfrozen.get("send") or {}).get("payload") or {}).get("text") or ""))
+        self.assertEqual(unfrozen_text, "[TASK] 治理已解冻：dispatch、自动推进与调度可继续。", unfrozen)
+
+        rows = self._read_audit()
+        freeze_rows = [row for row in rows if str(row.get("action") or "") == "freeze"]
+        unfreeze_rows = [row for row in rows if str(row.get("action") or "") == "unfreeze"]
+        self.assertTrue(freeze_rows, rows)
+        self.assertTrue(unfreeze_rows, rows)
+        self.assertEqual((freeze_rows[-1].get("target") or {}).get("scope"), "dispatch/autopilot/scheduler", freeze_rows[-1])
+        self.assertEqual((unfreeze_rows[-1].get("target") or {}).get("scope"), "dispatch/autopilot/scheduler", unfreeze_rows[-1])
+
     def test_abort_task_hits_once_and_is_consumed(self):
         self._create_task("T-803", "coder", "abort task")
         _, aborted = self._govern("@orchestrator 治理 中止 T-803")
