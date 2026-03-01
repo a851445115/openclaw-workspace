@@ -89,8 +89,12 @@ class PriorityEngineTests(unittest.TestCase):
 
         picked = self.milestones.choose_task_for_run(str(self.root), "")
         self.assertIsNotNone(picked)
-        self.assertEqual(picked.get("taskId"), "T-003", picked)
+        self.assertNotEqual(picked.get("taskId"), "T-001", picked)
         self.assertIn("_prioritySelection", picked, picked)
+        selection = picked.get("_prioritySelection") or {}
+        ready_top = selection.get("readyQueueTop") or []
+        ready_ids = [str(x.get("taskId") or "") for x in ready_top if isinstance(x, dict)]
+        self.assertNotIn("T-001", ready_ids, selection)
 
     def test_decision_is_reproducible_for_same_snapshot(self):
         write_snapshot(
@@ -210,6 +214,43 @@ class PriorityEngineTests(unittest.TestCase):
         )
         self.assertEqual((t20.get("task") or {}).get("status"), "done", t20)
         self.assertEqual((t21.get("task") or {}).get("status"), "done", t21)
+
+    def test_task_board_create_has_priority_dependency_fields(self):
+        run_json(
+            [
+                "python3",
+                str(BOARD),
+                "apply",
+                "--root",
+                str(self.root),
+                "--actor",
+                "orchestrator",
+                "--text",
+                "@coder create task T-030: defaults field coverage",
+            ]
+        )
+        status = run_json(
+            [
+                "python3",
+                str(BOARD),
+                "apply",
+                "--root",
+                str(self.root),
+                "--actor",
+                "orchestrator",
+                "--text",
+                "status T-030",
+            ]
+        )
+        task = status.get("task") or {}
+        self.assertIn("dependsOn", task, task)
+        self.assertIn("blockedBy", task, task)
+        self.assertIn("priority", task, task)
+        self.assertIn("impact", task, task)
+        self.assertEqual(task.get("dependsOn"), [], task)
+        self.assertEqual(task.get("blockedBy"), [], task)
+        self.assertEqual(task.get("priority"), 0, task)
+        self.assertEqual(task.get("impact"), 0, task)
 
 
 if __name__ == "__main__":

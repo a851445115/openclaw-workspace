@@ -33,6 +33,71 @@ LOCK_WAIT_SEC = 8
 LOCK_POLL_SEC = 0.12
 
 
+def _to_text(value) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _dedupe_keep_order(values):
+    out = []
+    seen = set()
+    for raw in values:
+        token = _to_text(raw)
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
+
+
+def _normalize_ref_list(raw):
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple, set)):
+        return _dedupe_keep_order(raw)
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return []
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = json.loads(text)
+                return _normalize_ref_list(parsed)
+            except Exception:
+                pass
+        return _dedupe_keep_order(re.split(r"[\s,;]+", text))
+    return []
+
+
+def _normalize_int(raw, default=0):
+    if raw is None:
+        return int(default)
+    if isinstance(raw, bool):
+        return int(raw)
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        return int(raw)
+    text = _to_text(raw)
+    if not text:
+        return int(default)
+    try:
+        return int(float(text))
+    except Exception:
+        return int(default)
+
+
+def ensure_priority_fields(task):
+    if not isinstance(task, dict):
+        return task
+    task["dependsOn"] = _normalize_ref_list(task.get("dependsOn"))
+    task["blockedBy"] = _normalize_ref_list(task.get("blockedBy"))
+    task["priority"] = _normalize_int(task.get("priority"), 0)
+    task["impact"] = _normalize_int(task.get("impact"), 0)
+    return task
+
+
 def now_iso():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -136,6 +201,8 @@ def load_snapshot(path):
         data = json.load(f)
     if "tasks" not in data or not isinstance(data["tasks"], dict):
         raise ValueError("invalid snapshot format: tasks must be object")
+    for task in data["tasks"].values():
+        ensure_priority_fields(task)
     return data
 
 
@@ -292,6 +359,7 @@ def cmd_apply(args):
                 "projectId": None,
                 "history": [],
             }
+            ensure_priority_fields(task)
             event = make_event(
                 task_id,
                 "task_created",
@@ -456,6 +524,7 @@ def cmd_apply(args):
                 "projectId": task.get("projectId"),
                 "history": [],
             }
+            ensure_priority_fields(diag)
             ev = make_event(
                 diag_task_id,
                 "diag_task_created",

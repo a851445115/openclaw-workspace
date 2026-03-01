@@ -27,6 +27,21 @@ Milestone publishing format is intentionally low-noise:
 - `state/scheduler.daemon.json`: 调度守护循环状态（loops、runs、errors、lastResult）。
 - `state/locks/`: reserved for future lock hardening.
 
+### Task Priority Fields (Batch 3)
+
+Task snapshot entries support these scheduling fields (with backward-compatible defaults):
+
+- `dependsOn: string[]` (default `[]`): prerequisite task ids; only `done` prerequisites are treated as satisfied.
+- `blockedBy: string[]` (default `[]`): explicit blockers. If value references task ids, blocker is cleared only when that task is `done`; plain text blockers are always unresolved until edited out.
+- `priority: number` (default `0`)
+- `impact: number` (default `0`)
+
+Scheduler behavior:
+
+- Ready queue includes only runnable tasks whose `dependsOn`/`blockedBy` are fully satisfied.
+- Selection from ready queue is deterministic for the same snapshot (stable score then `taskId` tie-break).
+- `run`/`autopilot` dry-run payloads include `selection` with `score` and `reason`.
+
 ## Command Intents
 
 The command router maps plain text (or direct override text) to intents:
