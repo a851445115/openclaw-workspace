@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "paused": false,
+  "frozen": false,
+  "aborts": {
+    "global": 0,
+    "autopilot": 0,
+    "scheduler": 0,
+    "tasks": {}
+  },
+  "approvals": {}
+}

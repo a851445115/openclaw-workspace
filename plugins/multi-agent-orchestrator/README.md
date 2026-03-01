@@ -136,6 +136,32 @@ cat inbound.txt | ./scripts/feishu-inbound-router --root .
    - `@orchestrator status full` returns a longer but capped list for debugging
    - milestone messages remain concise with `[TASK]`, `[DONE]`, `[BLOCKED]` (no raw CLI logs)
 
+## Governance 运维（Batch 4）
+
+治理命令统一通过 `@orchestrator 治理 ...` 入口执行。
+
+支持命令：
+
+- 状态：`@orchestrator 治理 状态`
+- 暂停：`@orchestrator 治理 暂停`
+- 恢复：`@orchestrator 治理 恢复`
+- 冻结：`@orchestrator 治理 冻结`
+- 解冻：`@orchestrator 治理 解冻`
+- 中止（一次）：`@orchestrator 治理 中止 全部 | 自动推进 | 调度 | T-xxxx`
+- 审批通过：`@orchestrator 治理 审批 通过 APR-xxxx`
+- 审批拒绝：`@orchestrator 治理 审批 拒绝 APR-xxxx`
+
+行为影响：
+
+- `暂停`/`恢复` 只影响运行推进链路：`autopilot` 与 `scheduler`。暂停后会返回 `governance_paused` 并跳过推进。
+- `冻结`/`解冻` 只影响派发链路：`dispatch`。冻结后 dispatch 会被阻断并返回 `governance_frozen`。
+- `中止` 是一次性消费标记：命中一次后返回 `governance_aborted`，并立即扣减/清除对应计数（global/autopilot/scheduler/task）。
+
+状态与审计文件：
+
+- `state/governance.control.json`：治理控制面当前状态（`paused`、`frozen`、`aborts`、`approvals`）。
+- `state/governance.audit.jsonl`：治理审计流水（append-only）。每行都带 `prevHash` 与 `hash`，形成 `control/audit append-only hash chain`，用于追溯命令与检查点决策。
+
 ## Hello World Example
 
 Run `python3 examples/hello_world.py`.
