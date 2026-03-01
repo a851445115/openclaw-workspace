@@ -20,6 +20,7 @@ if SCRIPT_LIB_DIR not in sys.path:
 import priority_engine
 import recovery_loop
 import governance
+import evidence_normalizer
 
 DEFAULT_GROUP_ID = "oc_041146c92a9ccb403a7f4f48fb59701d"
 DEFAULT_ACCOUNT_ID = "orchestrator"
@@ -1112,12 +1113,22 @@ def normalize_spawn_report(task_id: str, role: str, spawn_obj: Dict[str, Any], f
     acceptance_chunks.extend([f"{c.get('path')}: {c.get('summary')}" for c in changes if c.get("path") or c.get("summary")])
     acceptance_chunks.extend(evidence)
     acceptance_text = "\n".join([c for c in acceptance_chunks if c]).strip()
+    normalized_evidence = evidence_normalizer.normalize_evidence(base, acceptance_text)
+    hard_evidence = normalize_string_list(normalized_evidence.get("hardEvidence"), limit=8, item_limit=240)
+    soft_evidence = normalize_string_list(normalized_evidence.get("softEvidence"), limit=8, item_limit=220)
+    normalized_text = str(normalized_evidence.get("normalizedText") or acceptance_text).strip()
+    if normalized_text:
+        acceptance_text = normalized_text
 
     detail_parts: List[str] = []
     if summary:
         detail_parts.append(summary)
-    if evidence:
+    if hard_evidence:
+        detail_parts.append("硬证据: " + "; ".join(hard_evidence[:2]))
+    elif evidence:
         detail_parts.append("证据: " + "; ".join(evidence[:2]))
+    elif soft_evidence:
+        detail_parts.append("线索: " + "; ".join(soft_evidence[:2]))
     if changes:
         first_changes = [c for c in changes[:2] if c.get("path") or c.get("summary")]
         if first_changes:
@@ -1138,6 +1149,9 @@ def normalize_spawn_report(task_id: str, role: str, spawn_obj: Dict[str, Any], f
         "changes": changes,
         "risks": risks,
         "nextActions": next_actions,
+        "hardEvidence": hard_evidence,
+        "softEvidence": soft_evidence,
+        "normalizedText": normalized_text,
         "acceptanceText": acceptance_text,
         "detail": detail,
         "structured": structured,
@@ -1175,21 +1189,23 @@ def classify_spawn_result(root: str, task_id: str, role: str, spawn_obj: Dict[st
         "succeeded",
     } or kind == "done"
     if maybe_done:
-        accepted = evaluate_acceptance(root, role, text or detail)
+        accepted = evaluate_acceptance(root, role, text or detail, structured_report=report)
         if accepted.get("ok"):
             return {
                 "decision": "done",
                 "detail": clip(detail or text or f"{task_id} 子代理返回完成", 200),
                 "reasonCode": "done_with_evidence",
+                "acceptanceReasonCode": str(accepted.get("reasonCode") or "accepted"),
                 "report": report,
             }
         return {
             "decision": "blocked",
             "detail": clip(
-                f"{detail or text or f'{task_id} 子代理结果未通过验收'} | {accepted.get('reason') or '未通过验收策略'}",
+                f"{accepted.get('reason') or '未通过验收策略'} | {clip(detail or text or f'{task_id} 子代理结果未通过验收', 120)}",
                 200,
             ),
             "reasonCode": "incomplete_output",
+            "acceptanceReasonCode": str(accepted.get("reasonCode") or "acceptance_failed"),
             "report": report,
         }
 
@@ -1246,6 +1262,7 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
                 "decision": decision["decision"],
                 "detail": decision["detail"],
                 "reasonCode": decision.get("reasonCode", "classified"),
+                "acceptanceReasonCode": decision.get("acceptanceReasonCode", ""),
                 "normalizedReport": decision.get("report"),
             }
         except Exception as err:
@@ -1320,6 +1337,7 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
         "decision": decision["decision"],
         "detail": decision["detail"],
         "reasonCode": decision.get("reasonCode", "classified"),
+        "acceptanceReasonCode": decision.get("acceptanceReasonCode", ""),
         "normalizedReport": decision.get("report"),
     }
 
@@ -2636,15 +2654,27 @@ def choose_task_for_run(root: str, requested: str, excluded_task_ids: Optional[s
         )
 
 
-def has_evidence(text: str) -> bool:
-    lower = (text or "").lower()
-    return any(h.lower() in lower for h in EVIDENCE_HINTS)
+def _normalize_acceptance_evidence(text: str, structured_report: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    normalized = evidence_normalizer.normalize_evidence(structured_report or {}, text or "")
+    hard_evidence = normalize_string_list(normalized.get("hardEvidence"), limit=12, item_limit=260)
+    soft_evidence = normalize_string_list(normalized.get("softEvidence"), limit=12, item_limit=220)
+    normalized_text = str(normalized.get("normalizedText") or text or "").strip()
+    return {
+        "hardEvidence": hard_evidence,
+        "softEvidence": soft_evidence,
+        "normalizedText": normalized_text,
+    }
 
 
-def looks_stage_only(text: str) -> bool:
+def has_evidence(text: str, structured_report: Optional[Dict[str, Any]] = None) -> bool:
+    normalized = _normalize_acceptance_evidence(text, structured_report=structured_report)
+    return bool(normalized.get("hardEvidence"))
+
+
+def looks_stage_only(text: str, structured_report: Optional[Dict[str, Any]] = None) -> bool:
     lower = (text or "").lower()
     has_stage = any(h.lower() in lower for h in STAGE_ONLY_HINTS)
-    return has_stage and not has_evidence(text)
+    return has_stage and not has_evidence(text, structured_report=structured_report)
 
 
 def parse_wakeup_kind(text: str) -> str:
@@ -2682,7 +2712,7 @@ def merge_acceptance_policy(base: Dict[str, Any], override: Dict[str, Any]) -> D
 
 def load_acceptance_policy(root: str) -> Dict[str, Any]:
     script_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    search_roots = [root, script_root]
+    search_roots = [script_root, root]
     policy = DEFAULT_ACCEPTANCE_POLICY
     for base in search_roots:
         for rel in ACCEPTANCE_POLICY_CONFIG_CANDIDATES:
@@ -2699,7 +2729,112 @@ def load_acceptance_policy(root: str) -> Dict[str, Any]:
     return policy
 
 
-def evaluate_acceptance(root: str, role: str, text: str) -> Dict[str, Any]:
+def _to_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _normalize_verify_commands(global_conf: Dict[str, Any], role_conf: Dict[str, Any]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    default_timeout = max(
+        1,
+        _to_int(
+            global_conf.get("verifyTimeoutSec", global_conf.get("evidenceTimeoutSec", 20)),
+            20,
+        ),
+    )
+    raw_entries: List[Any] = []
+    for source in (global_conf.get("verifyCommands"), role_conf.get("verifyCommands")):
+        if isinstance(source, list):
+            raw_entries.extend(source)
+
+    for entry in raw_entries:
+        if isinstance(entry, str):
+            cmd = entry.strip()
+            if not cmd:
+                continue
+            out.append(
+                {
+                    "cmd": cmd,
+                    "expectExitCode": 0,
+                    "timeoutSec": default_timeout,
+                }
+            )
+            continue
+        if isinstance(entry, dict):
+            cmd = str(entry.get("cmd") or "").strip()
+            if not cmd:
+                continue
+            out.append(
+                {
+                    "cmd": cmd,
+                    "expectExitCode": _to_int(entry.get("expectExitCode", 0), 0),
+                    "timeoutSec": max(1, _to_int(entry.get("timeoutSec"), default_timeout)),
+                }
+            )
+    return out
+
+
+def _run_verify_commands(root: str, commands: List[Dict[str, Any]]) -> Dict[str, Any]:
+    results: List[Dict[str, Any]] = []
+    for idx, item in enumerate(commands):
+        cmd = str(item.get("cmd") or "").strip()
+        expect = _to_int(item.get("expectExitCode"), 0)
+        timeout_sec = max(1, _to_int(item.get("timeoutSec"), 20))
+        if not cmd:
+            continue
+        started = time.time()
+        try:
+            proc = subprocess.run(
+                ["/bin/sh", "-lc", cmd],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout_sec,
+            )
+        except subprocess.TimeoutExpired:
+            duration_ms = int((time.time() - started) * 1000)
+            reason = f"verify command timeout: `{cmd}` timeout={timeout_sec}s"
+            results.append(
+                {
+                    "index": idx,
+                    "cmd": cmd,
+                    "ok": False,
+                    "timeout": True,
+                    "timeoutSec": timeout_sec,
+                    "durationMs": duration_ms,
+                }
+            )
+            return {"ok": False, "reason": reason, "results": results}
+
+        duration_ms = int((time.time() - started) * 1000)
+        one = {
+            "index": idx,
+            "cmd": cmd,
+            "ok": proc.returncode == expect,
+            "exitCode": proc.returncode,
+            "expectExitCode": expect,
+            "timeoutSec": timeout_sec,
+            "durationMs": duration_ms,
+            "stdout": clip(proc.stdout or "", 200),
+            "stderr": clip(proc.stderr or "", 200),
+        }
+        results.append(one)
+        if proc.returncode != expect:
+            reason = f"verify command failed: `{cmd}` exit={proc.returncode} expected={expect}"
+            return {"ok": False, "reason": reason, "results": results}
+    return {"ok": True, "reason": "verify commands passed", "results": results}
+
+
+def evaluate_acceptance(
+    root: str,
+    role: str,
+    text: str,
+    structured_report: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     note = (text or "").strip()
     policy = load_acceptance_policy(root)
     global_conf = policy.get("global") if isinstance(policy, dict) else {}
@@ -2709,24 +2844,35 @@ def evaluate_acceptance(root: str, role: str, text: str) -> Dict[str, Any]:
     if not isinstance(role_conf, dict):
         role_conf = {}
 
+    evidence_ctx = _normalize_acceptance_evidence(note, structured_report=structured_report)
+    hard_evidence = normalize_string_list(evidence_ctx.get("hardEvidence"), limit=12, item_limit=260)
+    soft_evidence = normalize_string_list(evidence_ctx.get("softEvidence"), limit=12, item_limit=220)
+    normalized_note = str(evidence_ctx.get("normalizedText") or note).strip()
+
     require_evidence = bool(global_conf.get("requireEvidence", True))
-    if require_evidence and not has_evidence(note):
+    if require_evidence and not hard_evidence:
         return {
             "ok": False,
-            "reasonCode": "missing_evidence",
-            "reason": "缺少可验证证据（文件/日志/链接/命令输出）。",
+            "reasonCode": "missing_hard_evidence",
+            "reason": "缺少硬证据（URL/文件路径或文件名/测试通过痕迹）。",
+            "hardEvidence": hard_evidence,
+            "softEvidence": soft_evidence,
+            "normalizedText": normalized_note,
         }
 
-    if looks_stage_only(note):
+    if looks_stage_only(normalized_note, structured_report=structured_report):
         return {
             "ok": False,
             "reasonCode": "stage_only",
             "reason": "仅包含阶段性描述，未给出最终验收结果。",
+            "hardEvidence": hard_evidence,
+            "softEvidence": soft_evidence,
+            "normalizedText": normalized_note,
         }
 
     required_any = role_conf.get("requireAny")
     if isinstance(required_any, list) and required_any:
-        lower = note.lower()
+        lower = normalized_note.lower()
         wanted = [str(x).strip() for x in required_any if str(x).strip()]
         matched = [kw for kw in wanted if kw.lower() in lower]
         if not matched:
@@ -2734,9 +2880,33 @@ def evaluate_acceptance(root: str, role: str, text: str) -> Dict[str, Any]:
                 "ok": False,
                 "reasonCode": "role_policy_missing_keyword",
                 "reason": f"{role} 交付缺少验收关键词（至少包含其一：{', '.join(wanted[:6])}）。",
+                "hardEvidence": hard_evidence,
+                "softEvidence": soft_evidence,
+                "normalizedText": normalized_note,
             }
 
-    return {"ok": True, "reasonCode": "accepted", "reason": "通过验收策略"}
+    verify_commands = _normalize_verify_commands(global_conf, role_conf)
+    verify_result = _run_verify_commands(root, verify_commands) if verify_commands else {"ok": True, "results": []}
+    if not verify_result.get("ok"):
+        return {
+            "ok": False,
+            "reasonCode": "verify_command_failed",
+            "reason": str(verify_result.get("reason") or "verify command failed"),
+            "hardEvidence": hard_evidence,
+            "softEvidence": soft_evidence,
+            "normalizedText": normalized_note,
+            "verify": verify_result,
+        }
+
+    return {
+        "ok": True,
+        "reasonCode": "accepted",
+        "reason": "通过验收策略",
+        "hardEvidence": hard_evidence,
+        "softEvidence": soft_evidence,
+        "normalizedText": normalized_note,
+        "verify": verify_result,
+    }
 
 
 def find_task_id(text: str) -> str:

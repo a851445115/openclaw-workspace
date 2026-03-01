@@ -17,8 +17,34 @@ The scaffold exposes a minimal schema in `openclaw.plugin.json`.
 - Task board source of truth remains local files (`state/tasks.jsonl` + snapshot).
 - Milestone broadcasts are concise Chinese status messages from orchestrator router.
 - `config/feishu-bot-openids.json` maps bot role/accountId to Feishu open_id, used to generate real `<at user_id="...">name</at>` mention tags in bot dispatch templates.
-- `config/acceptance-policy.json` controls done gate policy (global evidence requirement + role keyword requirements).
+- `config/acceptance-policy.json` controls done gate policy (hard evidence gate + role keyword requirements + optional verify commands).
 - Validation remains conservative and status-driven.
+
+## Acceptance Policy v2
+
+`config/acceptance-policy.json` now supports:
+
+- `global.requireEvidence`:
+  - `true` means done reports must contain **hard evidence** (URL / file path or filename / test-passed traces).
+- `global.evidenceMode`:
+  - default `hard` (reserved for future mode extension; current gate enforces hard evidence when `requireEvidence=true`).
+- `global.evidenceTimeoutSec`:
+  - default timeout hint for evidence-related validation.
+- `global.verifyTimeoutSec`:
+  - default timeout for verify command execution.
+- `global.verifyCommands` and `roles.<role>.verifyCommands`:
+  - merged during acceptance (`global + role`).
+  - supports `string` command (default `expectExitCode=0`) or object:
+    - `{ "cmd": "...", "expectExitCode": 0, "timeoutSec": 20 }`
+
+Reason code semantics in spawn acceptance:
+
+- `spawn.reasonCode` remains `incomplete_output` for acceptance rejection to keep recovery-loop compatibility.
+- `spawn.acceptanceReasonCode` carries fine-grained cause:
+  - `missing_hard_evidence`
+  - `verify_command_failed`
+  - `stage_only`
+  - `role_policy_missing_keyword`
 
 ## TODO Milestone B/C
 

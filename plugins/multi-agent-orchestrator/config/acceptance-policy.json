@@ -1,6 +1,10 @@
 {
   "global": {
-    "requireEvidence": true
+    "requireEvidence": true,
+    "evidenceMode": "hard",
+    "evidenceTimeoutSec": 20,
+    "verifyTimeoutSec": 20,
+    "verifyCommands": []
   },
   "roles": {
     "coder": {
@@ -13,7 +17,8 @@
         "log",
         "输出",
         "result"
-      ]
+      ],
+      "verifyCommands": []
     },
     "debugger": {
       "requireAny": [
