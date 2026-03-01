@@ -15,7 +15,7 @@ OpenClaw is a personal AI assistant framework with the following capabilities:
 
 | File | Purpose |
 |------|---------|
-| `IDENTITY.md` | AI persona definition (name: 钢镚儿, Abyssinian cat) |
+| `IDENTITY.md` | AI persona definition (name: Oracle, trusted decision advisor) |
 | `SOUL.md` | Core behavioral principles and boundaries |
 | `USER.md` | User profile and context |
 | `AGENTS.md` | Workspace rules, memory protocols, heartbeat guidelines |
@@ -68,10 +68,10 @@ OpenClaw is a personal AI assistant framework with the following capabilities:
 
 ## AI Persona
 
-- **Name**: 钢镚儿
-- **Creature**: Abyssinian Cat
-- **Personality**: Cheerful, lively, cute, skilled in project design and agent orchestration
-- **Emoji**: 😼
+- **Name**: Oracle
+- **Role**: Trusted decision advisor
+- **Personality**: Calm, strategic, practical, gives multi-option recommendations
+- **Emoji**: 🔮
 
 ## Session Protocol
 
