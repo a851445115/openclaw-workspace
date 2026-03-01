@@ -906,6 +906,84 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(second.get("skipped"), second)
         self.assertEqual(second.get("reason"), "not_due", second)
 
+    def test_scheduler_run_skipped_does_not_advance_timestamps(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-071: scheduler skip 不推进时间戳",
+        ])
+
+        enabled = run_json([
+            "python3",
+            str(MILE),
+            "scheduler-run",
+            "--root",
+            str(self.root),
+            "--action",
+            "enable",
+            "--interval-sec",
+            "60",
+            "--max-steps",
+            "1",
+            "--spawn",
+            "--mode",
+            "dry-run",
+            "--spawn-output",
+            '{"status":"done","summary":"scheduler-enable","evidence":["logs/enable.log"]}',
+        ])
+        self.assertTrue(enabled.get("ok"), enabled)
+        before = enabled.get("state") or {}
+        before_last_run = int(before.get("lastRunTs") or 0)
+        before_next_due = int(before.get("nextDueTs") or 0)
+        self.assertGreater(before_last_run, 0, enabled)
+        self.assertGreater(before_next_due, before_last_run, enabled)
+
+        frozen = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@orchestrator 治理 冻结",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(frozen.get("ok"), frozen)
+
+        skipped = run_json([
+            "python3",
+            str(MILE),
+            "scheduler-run",
+            "--root",
+            str(self.root),
+            "--action",
+            "tick",
+            "--force",
+            "--spawn",
+            "--mode",
+            "dry-run",
+            "--spawn-output",
+            '{"status":"done","summary":"scheduler-force","evidence":["logs/force.log"]}',
+        ])
+        self.assertTrue(skipped.get("ok"), skipped)
+        self.assertTrue(skipped.get("skipped"), skipped)
+        self.assertEqual(skipped.get("reason"), "governance_frozen", skipped)
+        run = skipped.get("run") or {}
+        self.assertTrue(run.get("skipped"), skipped)
+        self.assertEqual(run.get("reason"), "governance_frozen", skipped)
+        after = skipped.get("state") or {}
+        self.assertEqual(int(after.get("lastRunTs") or 0), before_last_run, skipped)
+        self.assertEqual(int(after.get("nextDueTs") or 0), before_next_due, skipped)
+
     def test_feishu_router_scheduler_control_commands(self):
         enabled = run_json([
             "python3",

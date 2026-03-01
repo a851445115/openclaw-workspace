@@ -1336,6 +1336,11 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     if not isinstance(task, dict):
         return {"ok": False, "error": f"task not found: {args.task_id}"}
 
+    agent = governance.canonical_agent(getattr(args, "agent", ""))
+    if not agent:
+        return {"ok": False, "error": "agent is required"}
+    args.agent = agent
+
     gate = governance.checkpoint_dispatch(args.root, args.actor, args.task_id, args.agent)
     if not bool(gate.get("allowed")):
         out = {
@@ -1629,9 +1634,9 @@ def autopilot_once(args: argparse.Namespace) -> Dict[str, Any]:
             ok = False
             break
 
-        agent = str(task.get("owner") or task.get("assigneeHint") or "coder")
+        agent = governance.canonical_agent(task.get("owner") or task.get("assigneeHint") or "coder") or "coder"
         if agent not in BOT_ROLES:
-            agent = suggest_agent_from_title(str(task.get("title") or ""))
+            agent = governance.canonical_agent(suggest_agent_from_title(str(task.get("title") or ""))) or "coder"
 
         d_args = argparse.Namespace(
             root=args.root,
@@ -1766,8 +1771,8 @@ def scheduler_run_once(args: argparse.Namespace) -> Dict[str, Any]:
             )
             auto = autopilot_once(a_args)
             run_result = dict(auto)
-            run_result["skipped"] = False
-            if auto.get("ok"):
+            run_result["skipped"] = bool(run_result.get("skipped"))
+            if auto.get("ok") and not run_result["skipped"]:
                 state["lastRunTs"] = now_ts
                 state["lastRunAt"] = now_iso()
                 state["nextDueTs"] = now_ts + int(state.get("intervalSec") or SCHEDULER_DEFAULT_INTERVAL_SEC)

@@ -68,6 +68,50 @@ class GovernanceControlsTests(unittest.TestCase):
             expect_success=expect_success,
         )
 
+    def _autopilot(self, expect_success=True):
+        return run_json(
+            [
+                "python3",
+                str(MILE),
+                "autopilot",
+                "--root",
+                str(self.root),
+                "--actor",
+                "orchestrator",
+                "--mode",
+                "dry-run",
+                "--spawn",
+                "--max-steps",
+                "1",
+                "--spawn-output",
+                '{"status":"done","message":"已完成，证据: logs/governance.log"}',
+            ],
+            expect_success=expect_success,
+        )
+
+    def _scheduler_run(self, action: str = "tick", expect_success=True):
+        return run_json(
+            [
+                "python3",
+                str(MILE),
+                "scheduler-run",
+                "--root",
+                str(self.root),
+                "--action",
+                action,
+                "--interval-sec",
+                "60",
+                "--max-steps",
+                "1",
+                "--mode",
+                "dry-run",
+                "--spawn",
+                "--spawn-output",
+                '{"status":"done","summary":"scheduler", "evidence":["logs/scheduler.log"]}',
+            ],
+            expect_success=expect_success,
+        )
+
     def _govern(self, text: str, expect_success=True):
         return run_json(
             [
@@ -201,6 +245,25 @@ class GovernanceControlsTests(unittest.TestCase):
         status = self._status("T-802")
         self.assertEqual((status.get("task") or {}).get("status"), "pending", status)
 
+    def test_freeze_blocks_autopilot_and_scheduler_with_skipped_reason(self):
+        self._create_task("T-802A", "coder", "freeze autopilot scheduler")
+        _, frozen = self._govern("@orchestrator 治理 冻结")
+        self.assertTrue(frozen.get("ok"), frozen)
+
+        _, auto = self._autopilot()
+        self.assertTrue(auto.get("ok"), auto)
+        self.assertTrue(auto.get("skipped"), auto)
+        self.assertEqual(auto.get("reason"), "governance_frozen", auto)
+        self.assertEqual(auto.get("stopReason"), "governance_frozen", auto)
+
+        _, scheduler = self._scheduler_run(action="enable")
+        self.assertTrue(scheduler.get("ok"), scheduler)
+        self.assertTrue(scheduler.get("skipped"), scheduler)
+        self.assertEqual(scheduler.get("reason"), "governance_frozen", scheduler)
+        run = scheduler.get("run") or {}
+        self.assertTrue(run.get("skipped"), scheduler)
+        self.assertEqual(run.get("reason"), "governance_frozen", scheduler)
+
     def test_abort_task_hits_once_and_is_consumed(self):
         self._create_task("T-803", "coder", "abort task")
         _, aborted = self._govern("@orchestrator 治理 中止 T-803")
@@ -235,6 +298,40 @@ class GovernanceControlsTests(unittest.TestCase):
 
         _, passed = self._dispatch("T-804", expect_success=True)
         self.assertTrue(passed.get("ok"), passed)
+
+    def test_approval_rejected_blocks_dispatch(self):
+        self._create_task("T-805", "coder", "approval rejected")
+        self._write_governance_control(
+            {
+                "APR-901": {
+                    "id": "APR-901",
+                    "status": "rejected",
+                    "target": {"type": "dispatch", "taskId": "T-805"},
+                }
+            }
+        )
+
+        _, blocked = self._dispatch("T-805", expect_success=False)
+        self.assertFalse(blocked.get("ok"), blocked)
+        self.assertEqual(blocked.get("reason"), "approval_rejected", blocked)
+        self.assertEqual(blocked.get("approvalId"), "APR-901", blocked)
+
+    def test_dispatch_approval_agent_match_is_case_insensitive(self):
+        self._create_task("T-806", "coder", "approval case-insensitive agent")
+        self._write_governance_control(
+            {
+                "APR-902": {
+                    "id": "APR-902",
+                    "status": "pending",
+                    "target": {"type": "dispatch", "taskId": "T-806", "agent": "CoDeR"},
+                }
+            }
+        )
+
+        _, blocked = self._dispatch("T-806", expect_success=False)
+        self.assertFalse(blocked.get("ok"), blocked)
+        self.assertEqual(blocked.get("reason"), "approval_required", blocked)
+        self.assertEqual(blocked.get("approvalId"), "APR-902", blocked)
 
     def test_feishu_router_reaches_chinese_governance_commands(self):
         self._write_governance_control(

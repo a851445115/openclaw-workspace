@@ -43,6 +43,10 @@ def _as_int(value: Any, default: int = 0) -> int:
     return max(0, n)
 
 
+def canonical_agent(agent: Any) -> str:
+    return str(agent or "").strip().lower()
+
+
 def _normalize_aborts(raw: Any) -> Dict[str, Any]:
     data = raw if isinstance(raw, dict) else {}
     tasks_raw = data.get("tasks") if isinstance(data.get("tasks"), dict) else {}
@@ -239,6 +243,7 @@ def checkpoint_dispatch(root: str, actor: str, task_id: str, agent: str) -> Dict
     aborts = state.get("aborts") if isinstance(state.get("aborts"), dict) else {}
     consumed: Optional[Dict[str, Any]] = None
     task_norm = str(task_id or "").strip().upper()
+    agent_norm = canonical_agent(agent)
     if _consume_task_abort(aborts, task_norm):
         consumed = {"scope": "task", "taskId": task_norm}
     elif _consume_abort_counter(aborts, "global"):
@@ -250,7 +255,7 @@ def checkpoint_dispatch(root: str, actor: str, task_id: str, agent: str) -> Dict
             root,
             actor,
             "checkpoint.dispatch",
-            {"taskId": task_norm, "agent": str(agent or "")},
+            {"taskId": task_norm, "agent": agent_norm},
             {"allowed": False, "reason": "governance_aborted", "consumed": consumed},
         )
         return {
@@ -269,8 +274,8 @@ def checkpoint_dispatch(root: str, actor: str, task_id: str, agent: str) -> Dict
         target_task = str(target.get("taskId") or "").strip().upper()
         if target_task and target_task != task_norm:
             continue
-        target_agent = str(target.get("agent") or "").strip()
-        if target_agent and target_agent != str(agent or ""):
+        target_agent = canonical_agent(target.get("agent"))
+        if target_agent and target_agent != agent_norm:
             continue
         status = str(item.get("status") or "pending").strip().lower()
         if status == "pending":
@@ -292,6 +297,8 @@ def checkpoint_dispatch(root: str, actor: str, task_id: str, agent: str) -> Dict
 
 def checkpoint_autopilot(root: str, actor: str) -> Dict[str, Any]:
     state = load_control_state(root)
+    if bool(state.get("frozen")):
+        return {"allowed": False, "reason": "governance_frozen", "state": summarize_state(state)}
     if bool(state.get("paused")):
         return {"allowed": False, "reason": "governance_paused", "state": summarize_state(state)}
 
@@ -322,6 +329,8 @@ def checkpoint_autopilot(root: str, actor: str) -> Dict[str, Any]:
 
 def checkpoint_scheduler(root: str, actor: str) -> Dict[str, Any]:
     state = load_control_state(root)
+    if bool(state.get("frozen")):
+        return {"allowed": False, "reason": "governance_frozen", "state": summarize_state(state)}
     if bool(state.get("paused")):
         return {"allowed": False, "reason": "governance_paused", "state": summarize_state(state)}
 
