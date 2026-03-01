@@ -85,6 +85,19 @@ class QualityGateV2Tests(unittest.TestCase):
         self.assertEqual(out["spawn"]["reasonCode"], "incomplete_output", out)
         self.assertEqual(out["spawn"]["acceptanceReasonCode"], "missing_hard_evidence", out)
 
+    def test_done_summary_with_valid_short_path_is_accepted(self):
+        self._create_task("T-507", "coder", "valid short path should count as hard evidence")
+        out = self._dispatch("T-507", "coder", '{"status":"done","summary":"已完成，输出 ui/v1"}')
+        self.assertEqual(out["spawn"]["decision"], "done", out)
+        self.assertEqual(out["spawn"]["reasonCode"], "done_with_evidence", out)
+
+    def test_done_summary_with_single_char_short_path_is_blocked(self):
+        self._create_task("T-508", "coder", "single-char short path should not count as hard evidence")
+        out = self._dispatch("T-508", "coder", '{"status":"done","summary":"已完成，输出 a/b"}')
+        self.assertEqual(out["spawn"]["decision"], "blocked", out)
+        self.assertEqual(out["spawn"]["reasonCode"], "incomplete_output", out)
+        self.assertEqual(out["spawn"]["acceptanceReasonCode"], "missing_hard_evidence", out)
+
     def test_done_summary_with_plain_verify_phrase_is_blocked(self):
         self._create_task("T-506", "coder", "plain verify phrase should not count as hard evidence")
         out = self._dispatch("T-506", "coder", '{"status":"done","summary":"已完成，验证通过"}')

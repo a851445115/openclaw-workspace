@@ -86,7 +86,7 @@ def _looks_file_like(token: str) -> bool:
             return False
         if normalized.startswith(("/", "./", "../", "~/")) or re.match(r"^[A-Za-z]:[\\/]", s):
             return bool(re.search(r"[A-Za-z0-9]", normalized))
-        if all(len(part) <= 2 for part in parts):
+        if all(len(part) == 1 for part in parts):
             return False
         if not any(re.search(r"[A-Za-z]", part) for part in parts):
             return False
