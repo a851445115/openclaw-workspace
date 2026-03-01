@@ -3791,26 +3791,27 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
 
         msg, counts = format_status_summary_message(tasks, full=full_mode)
         ops_summary: Dict[str, Any] = {}
+        ops_metrics_error = ""
         if full_mode:
             try:
                 ops_summary = ops_metrics.aggregate_metrics(args.root, days=7)
                 msg = msg + "\n" + ops_metrics.format_core_summary(ops_summary, days=7)
-            except Exception:
+            except Exception as exc:
                 ops_summary = {}
+                ops_metrics_error = f"{type(exc).__name__}: {exc}"
         out = send_group_message(args.group_id, args.account_id, msg, args.mode)
-        print(
-            json.dumps(
-                {
-                    "ok": bool(out.get("ok")),
-                    "handled": True,
-                    "intent": "status",
-                    "full": full_mode,
-                    "counts": counts,
-                    "opsMetrics": ops_summary if full_mode else {},
-                    "send": out,
-                }
-            )
-        )
+        result = {
+            "ok": bool(out.get("ok")),
+            "handled": True,
+            "intent": "status",
+            "full": full_mode,
+            "counts": counts,
+            "opsMetrics": ops_summary if full_mode else {},
+            "send": out,
+        }
+        if full_mode and ops_metrics_error:
+            result["opsMetricsError"] = ops_metrics_error
+        print(json.dumps(result))
         return 0 if out.get("ok") else 1
 
     # Command: @orchestrator dispatch T-xxx role: task...

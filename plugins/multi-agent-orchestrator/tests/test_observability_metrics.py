@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import math
 import subprocess
 import tempfile
 import unittest
@@ -111,6 +112,41 @@ class ObservabilityMetricsTests(unittest.TestCase):
         self.assertEqual(report.get("throughputCompleted"), 1, payload)
         self.assertIn("successRate", report, payload)
         self.assertIn("blockedReasonDistribution", report, payload)
+
+    def test_aggregate_metrics_filters_non_finite_values_and_invalid_ts(self):
+        ops_metrics = load_ops_metrics_module()
+        now = datetime.now(timezone.utc)
+        rows = [
+            {"event": "dispatch_done", "at": self._iso(now - timedelta(minutes=9)), "taskId": "T-201", "cycleMs": 1500},
+            {"event": "dispatch_done", "ts": "NaN", "at": self._iso(now - timedelta(minutes=8)), "taskId": "T-202", "cycleMs": 500},
+            {
+                "event": "dispatch_blocked",
+                "ts": "Infinity",
+                "at": self._iso(now - timedelta(minutes=7)),
+                "taskId": "T-203",
+                "reasonCode": "incomplete_output",
+                "cycleMs": 800,
+            },
+            {
+                "event": "dispatch_blocked",
+                "at": self._iso(now - timedelta(minutes=6)),
+                "taskId": "T-204",
+                "reasonCode": "budget_exceeded",
+                "cycleMs": "nan",
+            },
+            {"event": "dispatch_done", "at": self._iso(now - timedelta(minutes=5)), "taskId": "T-205", "cycleMs": "inf"},
+            {"event": "dispatch_done", "at": self._iso(now - timedelta(minutes=4)), "taskId": "T-206", "cycleMs": "-inf"},
+            {"event": "dispatch_done", "at": self._iso(now - timedelta(minutes=3)), "taskId": "T-207", "cycleMs": "oops"},
+        ]
+        self._write_events(rows)
+
+        summary = ops_metrics.aggregate_metrics(str(self.root), days=7, now_ts=now.timestamp())
+
+        self.assertEqual(summary["eventsConsidered"], 5, summary)
+        self.assertEqual(summary["throughputCompleted"], 4, summary)
+        self.assertEqual(summary["blockedReasonDistribution"], {"budget_exceeded": 1}, summary)
+        self.assertTrue(math.isfinite(summary["averageCycleMs"]), summary)
+        self.assertEqual(summary["averageCycleMs"], 1500.0, summary)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,7 @@
+import argparse
+import contextlib
 import json
+import io
 import os
 import subprocess
 import tempfile
@@ -1170,6 +1173,85 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(any("推进一次" in t for t in titles), out)
         self.assertTrue(any("查看阻塞" in t for t in titles), out)
         self.assertTrue(any("验收摘要" in t for t in titles), out)
+
+    def test_status_full_includes_ops_metrics(self):
+        now_ts = int(time.time())
+        metrics_path = self.root / "state" / "ops.metrics.jsonl"
+        metrics_path.write_text(
+            json.dumps(
+                {
+                    "event": "dispatch_done",
+                    "at": "2026-03-01T00:00:00Z",
+                    "ts": now_ts,
+                    "taskId": "T-OPS-1",
+                    "cycleMs": 1200,
+                },
+                ensure_ascii=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        out = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@orchestrator status full",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertTrue(out.get("full"), out)
+        self.assertIn("opsMetrics", out, out)
+        self.assertEqual((out.get("opsMetrics") or {}).get("windowDays"), 7, out)
+        self.assertEqual((out.get("opsMetrics") or {}).get("throughputCompleted"), 1, out)
+
+    def test_status_full_surfaces_ops_metrics_error(self):
+        module = load_milestone_module()
+        real_aggregate = module.ops_metrics.aggregate_metrics
+        out_buffer = io.StringIO()
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("ops metrics exploded")
+
+        args = argparse.Namespace(
+            root=str(self.root),
+            actor="orchestrator",
+            text="@orchestrator status full",
+            group_id="oc_041146c92a9ccb403a7f4f48fb59701d",
+            account_id="orchestrator",
+            mode="dry-run",
+            session_id="",
+            timeout_sec=120,
+            dispatch_spawn=False,
+            dispatch_manual=False,
+            visibility_mode="milestone_only",
+            autopilot_max_steps=3,
+            spawn_cmd="",
+            spawn_output="",
+            clarify_cooldown_sec=300,
+            clarify_state_file="",
+        )
+
+        try:
+            module.ops_metrics.aggregate_metrics = boom
+            with contextlib.redirect_stdout(out_buffer):
+                rc = module.cmd_feishu_router(args)
+        finally:
+            module.ops_metrics.aggregate_metrics = real_aggregate
+
+        self.assertEqual(rc, 0)
+        payload = json.loads(out_buffer.getvalue().strip())
+        self.assertEqual(payload.get("intent"), "status", payload)
+        self.assertTrue(payload.get("full"), payload)
+        self.assertEqual(payload.get("opsMetrics"), {}, payload)
+        self.assertIn("opsMetricsError", payload)
+        self.assertIn("ops metrics exploded", str(payload.get("opsMetricsError")), payload)
 
     def test_send_group_card_prefers_direct_feishu_api_before_text_fallback(self):
         module = load_milestone_module()

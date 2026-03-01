@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import time
 from datetime import datetime, timezone
@@ -21,6 +22,8 @@ def _as_nonneg_float(value: Any) -> Optional[float]:
         parsed = float(value)
     except Exception:
         return None
+    if not math.isfinite(parsed):
+        return None
     if parsed < 0:
         return None
     return parsed
@@ -28,8 +31,10 @@ def _as_nonneg_float(value: Any) -> Optional[float]:
 
 def _event_ts(row: Dict[str, Any]) -> Optional[float]:
     ts = row.get("ts")
-    parsed_ts = _as_nonneg_float(ts)
-    if parsed_ts is not None:
+    if ts is not None:
+        parsed_ts = _as_nonneg_float(ts)
+        if parsed_ts is None:
+            return None
         return parsed_ts
 
     at = str(row.get("at") or "").strip()
