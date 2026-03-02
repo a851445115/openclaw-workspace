@@ -22,6 +22,17 @@ DEFAULT_DECOMPOSITION_POLICY: Dict[str, Any] = {
         "发布": "broadcaster",
         "公告": "broadcaster",
         "summary": "broadcaster",
+        "知识": "knowledge-curator",
+        "归档": "knowledge-curator",
+        "标签": "knowledge-curator",
+        "paper ingest": "paper-ingestor",
+        "ingest": "paper-ingestor",
+        "采集": "paper-ingestor",
+        "下载论文": "paper-ingestor",
+        "paper summary": "paper-summarizer",
+        "summarize": "paper-summarizer",
+        "摘要": "paper-summarizer",
+        "总结": "paper-summarizer",
         "review": "debugger",
         "测试": "debugger",
         "验证": "debugger",
@@ -143,12 +154,26 @@ def normalize_task_title(title: str) -> str:
 
 def _canonical_owner(agent: str) -> str:
     v = _to_text(agent).lower()
-    if v in {"coder", "debugger", "invest-analyst", "broadcaster"}:
+    if v in {
+        "coder",
+        "debugger",
+        "invest-analyst",
+        "broadcaster",
+        "knowledge-curator",
+        "paper-ingestor",
+        "paper-summarizer",
+    }:
         return v
     if v in {"invest", "analyst", "invest_analyst", "researcher"}:
         return "invest-analyst"
     if v in {"broadcast", "reporter", "announcer"}:
         return "broadcaster"
+    if v in {"knowledge", "curator", "knowledge_curator"}:
+        return "knowledge-curator"
+    if v in {"paper_ingestor", "paper-ingestor", "ingestor"}:
+        return "paper-ingestor"
+    if v in {"paper_summarizer", "paper-summarizer", "summarizer"}:
+        return "paper-summarizer"
     if v in {"dev", "developer", "engineer"}:
         return "coder"
     return "coder"

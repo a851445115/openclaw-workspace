@@ -1,0 +1,78 @@
+{
+  "byRole": {
+    "orchestrator": {
+      "open_id": "ou_f938eaffd79cf1837c3c7c6cd5089235",
+      "name": "orchestrator"
+    },
+    "coder": {
+      "open_id": "ou_0991106b8c19b021e1c9af96e869f3fc",
+      "name": "coder"
+    },
+    "debugger": {
+      "open_id": "ou_d4b917265da330a17a655c0eac97a151",
+      "name": "debugger"
+    },
+    "broadcaster": {
+      "open_id": "ou_43ad0e018e5e442a99da64ce6a6f85aa",
+      "name": "broadcaster"
+    },
+    "invest-analyst": {
+      "open_id": "ou_0f250fdbbbcc905725550e1756f44eac",
+      "name": "invest-analyst"
+    },
+    "knowledge-curator": {
+      "open_id": "ou_3cbe6c4a6b38b04c36b870553419916f",
+      "name": "knowledge-curator"
+    },
+    "paper-ingestor": {
+      "open_id": "ou_1798b2335b8fdea8c8a448dd05943e8a",
+      "name": "paper-ingestor"
+    },
+    "paper-summarizer": {
+      "open_id": "ou_b68a4992ef0f069828e6c3938b7cff34",
+      "name": "paper-summarizer"
+    },
+    "legacy-main": {
+      "open_id": "ou_d964fbbb9bc65214ed8ed537b93c301b",
+      "name": "legacy-main"
+    }
+  },
+  "byAccountId": {
+    "orchestrator": {
+      "open_id": "ou_f938eaffd79cf1837c3c7c6cd5089235",
+      "name": "orchestrator"
+    },
+    "coder": {
+      "open_id": "ou_0991106b8c19b021e1c9af96e869f3fc",
+      "name": "coder"
+    },
+    "debugger": {
+      "open_id": "ou_d4b917265da330a17a655c0eac97a151",
+      "name": "debugger"
+    },
+    "broadcaster": {
+      "open_id": "ou_43ad0e018e5e442a99da64ce6a6f85aa",
+      "name": "broadcaster"
+    },
+    "invest-analyst": {
+      "open_id": "ou_0f250fdbbbcc905725550e1756f44eac",
+      "name": "invest-analyst"
+    },
+    "knowledge-curator": {
+      "open_id": "ou_3cbe6c4a6b38b04c36b870553419916f",
+      "name": "knowledge-curator"
+    },
+    "paper-ingestor": {
+      "open_id": "ou_1798b2335b8fdea8c8a448dd05943e8a",
+      "name": "paper-ingestor"
+    },
+    "paper-summarizer": {
+      "open_id": "ou_b68a4992ef0f069828e6c3938b7cff34",
+      "name": "paper-summarizer"
+    },
+    "legacy-main": {
+      "open_id": "ou_d964fbbb9bc65214ed8ed537b93c301b",
+      "name": "legacy-main"
+    }
+  }
+}

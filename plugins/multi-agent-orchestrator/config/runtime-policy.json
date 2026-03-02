@@ -3,7 +3,10 @@
     "coder",
     "debugger",
     "invest-analyst",
-    "broadcaster"
+    "broadcaster",
+    "knowledge-curator",
+    "paper-ingestor",
+    "paper-summarizer"
   ],
   "orchestrator": {
     "maxConcurrentSpawns": 3,

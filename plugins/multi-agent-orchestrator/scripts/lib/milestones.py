@@ -31,7 +31,15 @@ DEFAULT_GROUP_ID = "oc_041146c92a9ccb403a7f4f48fb59701d"
 DEFAULT_ACCOUNT_ID = "orchestrator"
 DEFAULT_ALLOWED_BROADCASTERS = {"orchestrator"}
 OPTIONAL_BROADCASTER = "broadcaster"
-CLARIFY_ROLES = {"coder", "invest-analyst", "debugger", "broadcaster"}
+CLARIFY_ROLES = {
+    "coder",
+    "invest-analyst",
+    "debugger",
+    "broadcaster",
+    "knowledge-curator",
+    "paper-ingestor",
+    "paper-summarizer",
+}
 BOT_ROLES = set(CLARIFY_ROLES) | {"orchestrator"}
 MILESTONE_PREFIXES = ("[TASK]", "[CLAIM]", "[DONE]", "[BLOCKED]", "[DIAG]", "[REVIEW]")
 DONE_HINTS = ("[DONE]", " done", "completed", "finish", "完成", "已完成", "verified")
@@ -74,6 +82,15 @@ DEFAULT_ACCEPTANCE_POLICY: Dict[str, Any] = {
         },
         "broadcaster": {
             "requireAny": ["公告", "发布", "summary", "broadcast", "同步"],
+        },
+        "knowledge-curator": {
+            "requireAny": ["知识", "knowledge", "整理", "归档", "标签", "tag"],
+        },
+        "paper-ingestor": {
+            "requireAny": ["论文", "paper", "ingest", "采集", "下载", "来源"],
+        },
+        "paper-summarizer": {
+            "requireAny": ["摘要", "summary", "总结", "要点", "结论", "insight"],
         },
     },
 }
