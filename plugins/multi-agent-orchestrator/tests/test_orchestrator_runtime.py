@@ -41,6 +41,8 @@ def run_json(cmd, cwd=REPO):
 
 
 class RuntimeTests(unittest.TestCase):
+    XHS_STAGE_COUNT = 16
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -987,13 +989,13 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(out["ok"], out)
         self.assertEqual(out.get("intent"), "xhs_bootstrap", out)
         created_ids = out.get("createdTaskIds") or []
-        self.assertEqual(len(created_ids), 10, out)
+        self.assertEqual(len(created_ids), self.XHS_STAGE_COUNT, out)
         self.assertIn("dependsOnSync", out, out)
         self.assertIn("bootstrap", out, out)
 
         context_state = json.loads((self.root / "state" / "task-context-map.json").read_text(encoding="utf-8"))
         context_tasks = context_state.get("tasks") or {}
-        self.assertEqual(len(context_tasks), 10, context_state)
+        self.assertEqual(len(context_tasks), self.XHS_STAGE_COUNT, context_state)
 
         for idx, task_id in enumerate(created_ids):
             entry = context_tasks.get(task_id) or {}
@@ -1118,7 +1120,7 @@ class RuntimeTests(unittest.TestCase):
             ])
             self.assertTrue(out["ok"], out)
             self.assertEqual(out.get("intent"), "xhs_bootstrap", out)
-            self.assertEqual(len(out.get("createdTaskIds") or []), 10, out)
+            self.assertEqual(len(out.get("createdTaskIds") or []), self.XHS_STAGE_COUNT, out)
             self.assertIn("dependsOnSync", out, out)
             self.assertIn("bootstrap", out, out)
 

@@ -191,6 +191,42 @@ XHS_STAGE_DEFINITIONS: Tuple[Dict[str, str], ...] = (
         "ownerHint": "invest-analyst",
         "templateFile": "stage-i-weekly-review.md",
     },
+    {
+        "stageId": "J",
+        "title": "Reproduction scope and hypothesis mapping",
+        "ownerHint": "invest-analyst",
+        "templateFile": "stage-j-repro-scope.md",
+    },
+    {
+        "stageId": "K",
+        "title": "Reproduction data pipeline with synthetic fallback",
+        "ownerHint": "paper-ingestor",
+        "templateFile": "stage-k-repro-data.md",
+    },
+    {
+        "stageId": "L",
+        "title": "Core model and algorithm implementation",
+        "ownerHint": "coder",
+        "templateFile": "stage-l-repro-impl.md",
+    },
+    {
+        "stageId": "M",
+        "title": "Experiment execution and metric collection",
+        "ownerHint": "coder",
+        "templateFile": "stage-m-repro-run.md",
+    },
+    {
+        "stageId": "N",
+        "title": "Reproduction integrity audit",
+        "ownerHint": "debugger",
+        "templateFile": "stage-n-repro-audit.md",
+    },
+    {
+        "stageId": "O",
+        "title": "Reproduction report and artifact package",
+        "ownerHint": "knowledge-curator",
+        "templateFile": "stage-o-repro-report.md",
+    },
 )
 SCHEDULER_STATE_FILE = "scheduler.kernel.json"
 SCHEDULER_DEFAULT_INTERVAL_SEC = 300
@@ -650,6 +686,8 @@ def build_prompt_board_snapshot(root: str, focus_task_id: str, top_n: int = 3) -
 def infer_task_kind(agent: str, title: str, dispatch_task: str) -> str:
     agent_norm = (agent or "").strip().lower()
     text = f"{title} {dispatch_task}".lower()
+    if any(k in text for k in ("repro", "replica", "复现", "算法", "模型", "benchmark", "experiment")):
+        return "reproduction"
     if agent_norm == "debugger" or any(k in text for k in ("debug", "bug", "故障", "异常", "排查", "trace", "error")):
         return "debug"
     if agent_norm == "invest-analyst" or any(k in text for k in ("research", "分析", "调研", "source", "report")):
@@ -660,6 +698,13 @@ def infer_task_kind(agent: str, title: str, dispatch_task: str) -> str:
 
 
 def requirements_for_kind(kind: str) -> List[str]:
+    if kind == "reproduction":
+        return [
+            "论文核心方法必须逐项落地到可运行代码，不允许只写伪代码或口头说明。",
+            "结果必须来自真实运行（训练/推理/评估），严禁伪造或手填指标。",
+            "若原始数据不可得，必须提供可复现的数据生成脚本并记录生成规则、随机种子与规模。",
+            "每个关键结论都要有对应证据（命令、日志、产物路径、指标文件）。",
+        ]
     if kind == "debug":
         return [
             "先定位根因，再给修复建议或修复结果。",
@@ -769,6 +814,11 @@ def build_agent_prompt(
     project_path = lookup_task_project_path(root, task_id)
     task_kind = infer_task_kind(agent, title, dispatch_task)
     requirements = requirements_for_kind(task_kind)
+    integrity_guardrails = [
+        "No fabricated evidence, metrics, or completion claims.",
+        "No shortcut simulation for model/algorithm reproduction; run real commands and capture outputs.",
+        "If source data is unavailable, generate synthetic data via scripts and document assumptions/seeds.",
+    ]
     schema = build_structured_output_schema(task_id, agent)
     board_snapshot = build_prompt_board_snapshot(root, task_id)
     history = read_recent_task_events(root, task_id, limit=8)
@@ -824,6 +874,9 @@ def build_agent_prompt(
         ]
     )
     for idx, item in enumerate(requirements, start=1):
+        lines.append(f"{idx}. {item}")
+    lines.append("INTEGRITY_GUARDRAILS:")
+    for idx, item in enumerate(integrity_guardrails, start=1):
         lines.append(f"{idx}. {item}")
     lines.extend(
         [
