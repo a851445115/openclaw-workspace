@@ -21,7 +21,40 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "maxConcurrentSpawns": { "type": "integer", "minimum": 1, "default": 3 }
+          "maxConcurrentSpawns": { "type": "integer", "minimum": 1, "default": 3 },
+          "retryPolicy": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "maxAttempts": { "type": "integer", "minimum": 1, "default": 2 },
+              "backoff": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "mode": { "type": "string", "enum": ["fixed", "linear", "exponential"], "default": "exponential" },
+                  "baseMs": { "type": "integer", "minimum": 1, "default": 500 },
+                  "maxMs": { "type": "integer", "minimum": 1, "default": 8000 },
+                  "multiplier": { "type": "number", "minimum": 1, "default": 2.0 },
+                  "jitterPct": { "type": "integer", "minimum": 0, "maximum": 100, "default": 20 }
+                }
+              }
+            }
+          },
+          "budgetPolicy": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "guardrails": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "maxTaskTokens": { "type": "integer", "minimum": 1, "default": 12000 },
+                  "maxTaskWallTimeSec": { "type": "integer", "minimum": 1, "default": 1200 },
+                  "maxTaskRetries": { "type": "integer", "minimum": 1, "default": 3 }
+                }
+              }
+            }
+          }
         }
       },
       "protocol": {
@@ -45,7 +78,23 @@
       },
       "agents": {
         "type": "array",
-        "items": { "type": "string" }
+        "items": {
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "id": { "type": "string" },
+                "capabilities": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "required": ["id"]
+            }
+          ]
+        }
       }
     }
   }

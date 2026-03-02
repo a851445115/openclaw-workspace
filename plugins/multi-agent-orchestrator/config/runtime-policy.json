@@ -1,0 +1,28 @@
+{
+  "agents": [
+    "coder",
+    "debugger",
+    "invest-analyst",
+    "broadcaster"
+  ],
+  "orchestrator": {
+    "maxConcurrentSpawns": 3,
+    "retryPolicy": {
+      "maxAttempts": 2,
+      "backoff": {
+        "mode": "exponential",
+        "baseMs": 500,
+        "maxMs": 8000,
+        "multiplier": 2.0,
+        "jitterPct": 20
+      }
+    },
+    "budgetPolicy": {
+      "guardrails": {
+        "maxTaskTokens": 12000,
+        "maxTaskWallTimeSec": 1200,
+        "maxTaskRetries": 3
+      }
+    }
+  }
+}

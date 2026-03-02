@@ -1,0 +1,32 @@
+{
+  "agents": [
+    {
+      "id": "coder",
+      "capabilities": ["code", "tests"]
+    },
+    {
+      "id": "debugger",
+      "capabilities": ["triage", "logs", "root-cause"]
+    }
+  ],
+  "orchestrator": {
+    "maxConcurrentSpawns": 4,
+    "retryPolicy": {
+      "maxAttempts": 3,
+      "backoff": {
+        "mode": "linear",
+        "baseMs": 300,
+        "maxMs": 3000,
+        "multiplier": 1.5,
+        "jitterPct": 10
+      }
+    },
+    "budgetPolicy": {
+      "guardrails": {
+        "maxTaskTokens": 10000,
+        "maxTaskWallTimeSec": 900,
+        "maxTaskRetries": 2
+      }
+    }
+  }
+}

@@ -1,6 +1,6 @@
-# Config Notes (Milestone A)
+# Config Notes
 
-The scaffold exposes a minimal schema in `openclaw.plugin.json`.
+Runtime config schema v2 is defined in `openclaw.plugin.json`, with load/normalize logic in `scripts/lib/config_runtime.py`.
 
 ## Keys
 
@@ -9,7 +9,10 @@ The scaffold exposes a minimal schema in `openclaw.plugin.json`.
 - `channel.groupId`: visible control group.
 - `channel.milestoneOnly`: whether only milestone messages are posted.
 - `orchestrator.maxConcurrentSpawns`: cap for subagent fanout.
-- `agents`: agent IDs allowed to claim tasks (e.g. include `debugger` for diagnostic workflow).
+- `orchestrator.retryPolicy.maxAttempts`: retry budget per execution path.
+- `orchestrator.retryPolicy.backoff`: retry backoff model (`fixed` / `linear` / `exponential`) and timing controls.
+- `orchestrator.budgetPolicy.guardrails`: budget guardrails (`maxTaskTokens` / `maxTaskWallTimeSec` / `maxTaskRetries`).
+- `agents`: supports backward-compatible string items and v2 object items (`{id, capabilities[]}`).
 
 ## Default Behavior
 
@@ -46,11 +49,47 @@ Reason code semantics in spawn acceptance:
   - `stage_only`
   - `role_policy_missing_keyword`
 
-## TODO Milestone B/C
+## Runtime Policy v2
 
-- Add strict schema for agent capabilities.
-- Add retry/backoff policy fields.
-- Add budget and token guardrail configuration.
+Runtime policy files:
+
+- `config/runtime-policy.json`: baseline policy loaded by default.
+- `config/runtime-policy.example.json`: editable template for new deployments.
+
+Minimal template:
+
+```json
+{
+  "agents": ["coder", "debugger"],
+  "orchestrator": {
+    "maxConcurrentSpawns": 3,
+    "retryPolicy": {
+      "maxAttempts": 2,
+      "backoff": {
+        "mode": "exponential",
+        "baseMs": 500,
+        "maxMs": 8000,
+        "multiplier": 2.0,
+        "jitterPct": 20
+      }
+    },
+    "budgetPolicy": {
+      "guardrails": {
+        "maxTaskTokens": 12000,
+        "maxTaskWallTimeSec": 1200,
+        "maxTaskRetries": 3
+      }
+    }
+  }
+}
+```
+
+Compatibility strategy (`config_runtime.load_runtime_config`):
+
+- Merge order: built-in defaults -> repo/runtime policy files -> caller override.
+- Old agent config (`agents: ["coder"]`) auto-normalizes to `[{ "id": "coder", "capabilities": [] }]`.
+- Mixed config (string + object agents, partial retry/budget fields) is accepted and completed with safe defaults.
+- Legacy budget policy (`config/budget-policy.json`) is used as fallback source when v2 budget guardrails are missing.
 
 ## Orchestrator Agent Wiring
 
