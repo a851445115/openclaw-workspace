@@ -26,9 +26,9 @@ Implemented in this MVP:
   - `OUTPUT_SCHEMA` 统一为 `status/summary/changes/evidence/risks/nextActions`，便于自动验收和下一步调度
 - Hybrid worker execution:
   - orchestrator 保持任务管理与验收闭环
-  - `coder` 默认通过 Codex CLI bridge 执行（`scripts/lib/codex_worker_bridge.py`）
-  - `debugger/invest-analyst/broadcaster` 默认保持 OpenClaw agent 执行
-  - coder 回传仍按统一结构化 JSON 合约写回看板并触发 `[DONE]/[BLOCKED]`
+  - 默认执行器路由：`coder -> claude_cli`（`scripts/lib/claude_worker_bridge.py`）、`debugger -> codex_cli`（`scripts/lib/codex_worker_bridge.py`）、其他角色 -> `openclaw_agent`
+  - 可在 `config/runtime-policy.json` 的 `orchestrator.executorRouting` 覆盖运行时路由
+  - bridge 回传统一结构化 JSON 合约，写回看板并触发 `[DONE]/[BLOCKED]`
 - Visibility modes:
   - `handoff_visible`（默认）会额外发送 agent -> orchestrator 的可见交接 @mention
   - `milestone_only` 仅里程碑广播
@@ -55,7 +55,8 @@ Implemented in this MVP:
 - `scripts/lib/milestones.py`: Feishu parser, wake-up flow, milestone publishing, dispatch spawn 闭环。
 - `state/scheduler.kernel.json`: 内置调度内核状态（enabled/intervalSec/maxSteps/nextDueTs）。
 - `state/scheduler.daemon.json`: 调度守护循环状态（pollSec/loops/runs/errors/lastResult）。
-- `scripts/lib/codex_worker_bridge.py`: coder -> Codex CLI bridge (schema-constrained JSON output).
+- `scripts/lib/claude_worker_bridge.py`: claude_cli bridge（`claude --print --json-schema`，统一结构化输出）。
+- `scripts/lib/codex_worker_bridge.py`: codex_cli bridge（`codex exec --output-schema --output-last-message`）。
 - `scripts/orchestrator-router`: unified command entrypoint.
 - `scripts/feishu-inbound-router`: parse Feishu inbound wrapper and call router.
 - `scripts/dispatch-task`: direct dispatch/clarify wrapper.

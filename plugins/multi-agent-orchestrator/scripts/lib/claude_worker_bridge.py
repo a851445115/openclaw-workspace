@@ -3,12 +3,10 @@ import argparse
 import json
 import os
 import subprocess
-import tempfile
 import time
 from typing import Any, Dict, List
 
 TASK_CONTEXT_STATE_FILE = "task-context-map.json"
-DEFAULT_CODER_WORKSPACE = os.path.expanduser("~/.openclaw/agents/coder/workspace")
 
 
 def clip(text: str, limit: int = 300) -> str:
@@ -64,19 +62,21 @@ def resolve_workspace(args: argparse.Namespace) -> str:
         p = os.path.abspath(os.path.expanduser(args.workspace))
         if os.path.isdir(p):
             return p
+
     mapped = lookup_project_path(args.root, args.task_id)
     if mapped:
         return mapped
-    env_cd = os.environ.get("CODEX_WORKER_CD", "").strip()
+
+    env_cd = os.environ.get("CLAUDE_WORKER_CD", "").strip()
     if env_cd:
         p = os.path.abspath(os.path.expanduser(env_cd))
         if os.path.isdir(p):
             return p
+
     role_workspace = os.path.abspath(os.path.expanduser(f"~/.openclaw/agents/{args.agent}/workspace"))
     if os.path.isdir(role_workspace):
         return role_workspace
-    if os.path.isdir(DEFAULT_CODER_WORKSPACE):
-        return DEFAULT_CODER_WORKSPACE
+
     return os.getcwd()
 
 
@@ -248,6 +248,62 @@ def blocked(task_id: str, agent: str, reason: str, evidence: List[str]) -> Dict[
     }
 
 
+def looks_like_report(raw: Any) -> bool:
+    if not isinstance(raw, dict):
+        return False
+    if str(raw.get("status") or raw.get("taskStatus") or "").strip():
+        return True
+    if str(raw.get("summary") or raw.get("message") or "").strip():
+        return True
+    for key in ("changes", "evidence", "risks", "nextActions"):
+        if key in raw:
+            return True
+    return False
+
+
+def extract_report_dict(raw_obj: Any) -> Dict[str, Any]:
+    if isinstance(raw_obj, dict) and looks_like_report(raw_obj):
+        return raw_obj
+
+    candidates: List[Any] = []
+    if isinstance(raw_obj, dict):
+        for key in ("result", "output", "response", "data", "message"):
+            candidates.append(raw_obj.get(key))
+        content = raw_obj.get("content")
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict):
+                    candidates.extend([item.get("text"), item.get("content"), item.get("message"), item.get("input")])
+                else:
+                    candidates.append(item)
+
+    for candidate in candidates:
+        if isinstance(candidate, dict) and looks_like_report(candidate):
+            return candidate
+        if isinstance(candidate, str):
+            try:
+                parsed = parse_json_loose(candidate)
+            except Exception:
+                continue
+            if isinstance(parsed, dict) and looks_like_report(parsed):
+                return parsed
+
+    if isinstance(raw_obj, dict):
+        return raw_obj
+    return {}
+
+
+def load_fake_output(raw_value: str) -> str:
+    hint = (raw_value or "").strip()
+    if not hint:
+        return ""
+    candidate = os.path.abspath(os.path.expanduser(hint))
+    if os.path.isfile(candidate):
+        with open(candidate, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    return hint
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True)
@@ -259,98 +315,88 @@ def main() -> int:
     args = parser.parse_args()
     start_ms = int(time.time() * 1000)
 
-    fake = os.environ.get("CODEX_WORKER_FAKE_OUTPUT", "").strip()
+    fake = os.environ.get("CLAUDE_WORKER_FAKE_OUTPUT", "").strip()
     if fake:
+        fake_text = load_fake_output(fake)
+        obj: Dict[str, Any] = {}
         try:
-            obj = parse_json_loose(fake)
-            if not isinstance(obj, dict):
-                obj = {"status": "progress", "summary": str(obj)}
-            result = normalize_result(args.task_id, args.agent, obj, fallback_text=fake)
+            parsed = parse_json_loose(fake_text)
+            if isinstance(parsed, dict):
+                obj = parsed
+            else:
+                obj = {"status": "progress", "summary": str(parsed)}
+            result = normalize_result(args.task_id, args.agent, obj, fallback_text=fake_text)
         except Exception as err:
-            result = blocked(args.task_id, args.agent, f"fake output parse failed: {err}", [fake])
-            obj = {}
+            result = blocked(args.task_id, args.agent, f"fake output parse failed: {err}", [fake_text])
         print(json.dumps(attach_metrics(result, obj, start_ms), ensure_ascii=False))
         return 0
 
     workspace = resolve_workspace(args)
+    schema_text = json.dumps(build_schema(), ensure_ascii=True, separators=(",", ":"))
+    cmd = [
+        "claude",
+        "--print",
+        "--output-format",
+        "json",
+        "--json-schema",
+        schema_text,
+        "--dangerously-skip-permissions",
+        "--permission-mode",
+        "bypassPermissions",
+        "--add-dir",
+        workspace,
+        args.task,
+    ]
 
-    with tempfile.TemporaryDirectory(prefix="codex-worker-") as tmp:
-        schema_path = os.path.join(tmp, "schema.json")
-        out_path = os.path.join(tmp, "output.json")
-        with open(schema_path, "w", encoding="utf-8") as f:
-            json.dump(build_schema(), f, ensure_ascii=False, indent=2)
-            f.write("\n")
+    try:
+        timeout_sec = normalize_timeout_sec(args.timeout_sec, default=0)
+        run_timeout = None if timeout_sec <= 0 else max(30, timeout_sec + 20)
+        proc = subprocess.run(
+            cmd,
+            text=True,
+            capture_output=True,
+            check=False,
+            cwd=workspace,
+            timeout=run_timeout,
+        )
+    except Exception as err:
+        result = blocked(args.task_id, args.agent, f"claude print failed: {err}", [])
+        print(json.dumps(attach_metrics(result, {}, start_ms), ensure_ascii=False))
+        return 0
 
-        cmd = [
-            "codex",
-            "exec",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "--skip-git-repo-check",
-            "--cd",
-            workspace,
-            "--output-schema",
-            schema_path,
-            "--output-last-message",
-            out_path,
-            "-",
-        ]
+    stdout = (proc.stdout or "").strip()
+    stderr = (proc.stderr or "").strip()
 
+    raw_obj: Dict[str, Any] = {}
+    if stdout:
         try:
-            timeout_sec = normalize_timeout_sec(args.timeout_sec, default=0)
-            run_timeout = None if timeout_sec <= 0 else max(30, timeout_sec + 20)
-            proc = subprocess.run(
-                cmd,
-                input=args.task,
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=run_timeout,
-            )
-        except Exception as err:
-            result = blocked(args.task_id, args.agent, f"codex exec failed: {err}", [])
-            print(json.dumps(attach_metrics(result, {}, start_ms), ensure_ascii=False))
-            return 0
+            parsed = parse_json_loose(stdout)
+            if isinstance(parsed, dict):
+                raw_obj = parsed
+            else:
+                raw_obj = {"output": parsed}
+        except Exception:
+            raw_obj = {}
 
-        stdout = (proc.stdout or "").strip()
-        stderr = (proc.stderr or "").strip()
-
-        raw_obj: Dict[str, Any] = {}
-        if os.path.exists(out_path):
-            try:
-                with open(out_path, "r", encoding="utf-8") as f:
-                    out_text = f.read().strip()
-                parsed = parse_json_loose(out_text)
-                if isinstance(parsed, dict):
-                    raw_obj = parsed
-            except Exception:
-                raw_obj = {}
-
-        if not raw_obj and stdout:
-            try:
-                parsed = parse_json_loose(stdout)
-                if isinstance(parsed, dict):
-                    raw_obj = parsed
-            except Exception:
-                raw_obj = {}
-
-        if proc.returncode != 0:
-            result = blocked(
-                args.task_id,
-                args.agent,
-                f"codex exec exit={proc.returncode}",
-                [clip(stderr, 220), clip(stdout, 220)],
-            )
-            print(json.dumps(attach_metrics(result, raw_obj, start_ms), ensure_ascii=False))
-            return 0
-
-        if not raw_obj:
-            result = blocked(args.task_id, args.agent, "codex output is empty or invalid", [clip(stdout, 220), clip(stderr, 220)])
-            print(json.dumps(attach_metrics(result, {}, start_ms), ensure_ascii=False))
-            return 0
-
-        result = normalize_result(args.task_id, args.agent, raw_obj, fallback_text=stdout)
+    if proc.returncode != 0:
+        result = blocked(
+            args.task_id,
+            args.agent,
+            f"claude print exit={proc.returncode}",
+            [clip(stderr, 220), clip(stdout, 220)],
+        )
         print(json.dumps(attach_metrics(result, raw_obj, start_ms), ensure_ascii=False))
         return 0
+
+    if not raw_obj:
+        result = blocked(args.task_id, args.agent, "claude output is empty or invalid", [clip(stdout, 220), clip(stderr, 220)])
+        print(json.dumps(attach_metrics(result, {}, start_ms), ensure_ascii=False))
+        return 0
+
+    report_obj = extract_report_dict(raw_obj)
+    result = normalize_result(args.task_id, args.agent, report_obj, fallback_text=stdout)
+    print(json.dumps(attach_metrics(result, raw_obj, start_ms), ensure_ascii=False))
+    return 0
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ Runtime config schema v2 is defined in `openclaw.plugin.json`, with load/normali
 - `channel.groupId`: visible control group.
 - `channel.milestoneOnly`: whether only milestone messages are posted.
 - `orchestrator.maxConcurrentSpawns`: cap for subagent fanout.
+- `orchestrator.executorRouting`: role -> executor map for spawn dispatch (`claude_cli` / `codex_cli` / `openclaw_agent`).
 - `orchestrator.retryPolicy.maxAttempts`: retry budget per execution path.
 - `orchestrator.retryPolicy.backoff`: retry backoff model (`fixed` / `linear` / `exponential`) and timing controls.
 - `orchestrator.budgetPolicy.guardrails`: budget guardrails (`maxTaskTokens` / `maxTaskWallTimeSec` / `maxTaskRetries`).
@@ -65,6 +66,10 @@ Minimal template:
   "agents": ["coder", "debugger"],
   "orchestrator": {
     "maxConcurrentSpawns": 3,
+    "executorRouting": {
+      "coder": "claude_cli",
+      "debugger": "codex_cli"
+    },
     "retryPolicy": {
       "maxAttempts": 2,
       "backoff": {
@@ -87,6 +92,12 @@ Minimal template:
 ```
 
 `maxTaskWallTimeSec=0` means no wall-time budget limit.
+
+Executor routing defaults (when `orchestrator.executorRouting` is absent):
+
+- `coder -> claude_cli`
+- `debugger -> codex_cli`
+- all other roles -> `openclaw_agent`
 
 Compatibility strategy (`config_runtime.load_runtime_config`):
 

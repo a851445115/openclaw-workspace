@@ -106,6 +106,92 @@ DEFAULT_PROJECT_BOOTSTRAP_TASKS = (
 )
 TASK_CONTEXT_STATE_FILE = "task-context-map.json"
 DEFAULT_CODER_WORKSPACE = os.path.expanduser("~/.openclaw/agents/coder/workspace")
+RUNTIME_POLICY_CONFIG_CANDIDATES = (
+    os.path.join("config", "runtime-policy.json"),
+    os.path.join("state", "runtime-policy.json"),
+)
+SPAWN_EXECUTOR_OPENCLAW = "openclaw_agent"
+SPAWN_EXECUTOR_CODEX = "codex_cli"
+SPAWN_EXECUTOR_CLAUDE = "claude_cli"
+SUPPORTED_SPAWN_EXECUTORS = {
+    SPAWN_EXECUTOR_OPENCLAW,
+    SPAWN_EXECUTOR_CODEX,
+    SPAWN_EXECUTOR_CLAUDE,
+}
+DEFAULT_EXECUTOR_ROUTING: Dict[str, str] = {
+    "coder": SPAWN_EXECUTOR_CLAUDE,
+    "debugger": SPAWN_EXECUTOR_CODEX,
+}
+DEFAULT_XHS_WORKFLOW_ROOT = "/Users/chengren17/.openclaw/projects/paper-xhs-3min-workflow"
+XHS_WORKFLOW_NAME = "paper-xhs-3min"
+XHS_TEMPLATE_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "templates", "workflows", XHS_WORKFLOW_NAME)
+)
+XHS_CONTEXT_MARKER_FILE = "orchestrator-bootstrap.json"
+XHS_ALLOWED_PLACEHOLDERS = {"paper_id", "workflow_root", "run_dir", "pdf_path"}
+XHS_PLACEHOLDER_RE = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
+XHS_STAGE_DEFINITIONS: Tuple[Dict[str, str], ...] = (
+    {
+        "stageId": "A0",
+        "title": "Extract source text and metadata",
+        "ownerHint": "paper-ingestor",
+        "templateFile": "stage-a0-extract.md",
+    },
+    {
+        "stageId": "A",
+        "title": "Ingest findings into run workspace",
+        "ownerHint": "paper-ingestor",
+        "templateFile": "stage-a-ingest.md",
+    },
+    {
+        "stageId": "B",
+        "title": "Draft XHS summary",
+        "ownerHint": "paper-summarizer",
+        "templateFile": "stage-b-summary-draft.md",
+    },
+    {
+        "stageId": "C",
+        "title": "Citation and factual checks",
+        "ownerHint": "invest-analyst",
+        "templateFile": "stage-c-citation-check.md",
+    },
+    {
+        "stageId": "D",
+        "title": "Publish-ready post assembly",
+        "ownerHint": "broadcaster",
+        "templateFile": "stage-d-publish.md",
+    },
+    {
+        "stageId": "E",
+        "title": "Generate image prompts",
+        "ownerHint": "paper-summarizer",
+        "templateFile": "stage-e-image-prompts.md",
+    },
+    {
+        "stageId": "F",
+        "title": "Update knowledge base",
+        "ownerHint": "knowledge-curator",
+        "templateFile": "stage-f-kb.md",
+    },
+    {
+        "stageId": "G",
+        "title": "Quality gate review",
+        "ownerHint": "debugger",
+        "templateFile": "stage-g-quality-gate.md",
+    },
+    {
+        "stageId": "H",
+        "title": "Conversion package export",
+        "ownerHint": "coder",
+        "templateFile": "stage-h-conversion.md",
+    },
+    {
+        "stageId": "I",
+        "title": "Weekly review synthesis",
+        "ownerHint": "invest-analyst",
+        "templateFile": "stage-i-weekly-review.md",
+    },
+)
 SCHEDULER_STATE_FILE = "scheduler.kernel.json"
 SCHEDULER_DEFAULT_INTERVAL_SEC = 300
 SCHEDULER_MIN_INTERVAL_SEC = 60
@@ -1725,7 +1811,17 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     task = get_task(args.root, args.task_id) or task
     status = str(task.get("status") or "")
     title = clip(task.get("title") or "未命名任务")
-    dispatch_task = str(args.task or f"{args.task_id}: {task.get('title') or 'untitled'}").strip()
+    explicit_task = str(getattr(args, "task", "") or "").strip()
+    bound_dispatch_prompt = lookup_task_dispatch_prompt(args.root, args.task_id)
+    if explicit_task:
+        dispatch_task = explicit_task
+        objective_source = "explicit_task"
+    elif bound_dispatch_prompt:
+        dispatch_task = bound_dispatch_prompt
+        objective_source = "bound_dispatch_prompt"
+    else:
+        dispatch_task = f"{args.task_id}: {task.get('title') or 'untitled'}"
+        objective_source = "task_fallback"
     dispatch_task_message = clip(dispatch_task, 300)
     knowledge_meta, knowledge_hints = resolve_dispatch_knowledge(args.root, task, args.agent, dispatch_task)
     selected_strategy = resolve_prompt_strategy(args.root, task, args.agent, dispatch_task)
@@ -2039,6 +2135,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         "autoClose": auto_close,
         "reportTemplate": report_template,
         "agentPrompt": agent_prompt,
+        "objectiveSource": objective_source,
         "knowledge": knowledge_meta,
     }
     if isinstance(selection, dict):
@@ -2147,7 +2244,7 @@ def autopilot_once(args: argparse.Namespace) -> Dict[str, Any]:
             root=args.root,
             task_id=task_id,
             agent=agent,
-            task=f"{task_id}: {task.get('title') or 'untitled'}",
+            task="",
             actor="orchestrator",
             session_id=args.session_id,
             group_id=args.group_id,
@@ -2805,6 +2902,210 @@ def write_project_depends_on(root: str, created_tasks: List[Dict[str, Any]]) -> 
     return {"updatedTasks": updated, "tasksWithDependsOn": linked}
 
 
+def read_xhs_stage_template(template_file: str) -> str:
+    path = os.path.join(XHS_TEMPLATE_DIR, template_file)
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def render_xhs_stage_prompt(template_text: str, values: Dict[str, str]) -> str:
+    placeholders = set(XHS_PLACEHOLDER_RE.findall(template_text or ""))
+    unknown = sorted([key for key in placeholders if key not in XHS_ALLOWED_PLACEHOLDERS])
+    if unknown:
+        raise ValueError(f"xhs template has unsupported placeholders: {', '.join(unknown)}")
+
+    rendered = template_text
+    for key in sorted(placeholders):
+        rendered = rendered.replace("{" + key + "}", str(values.get(key, "")))
+    return rendered.strip()
+
+
+def write_task_dependency_chain(root: str, task_ids: List[str]) -> Dict[str, Any]:
+    if not task_ids:
+        return {"updatedTasks": 0, "tasksWithDependsOn": 0}
+    data = load_snapshot(root)
+    tasks_obj = data.get("tasks")
+    if not isinstance(tasks_obj, dict):
+        return {"updatedTasks": 0, "tasksWithDependsOn": 0}
+
+    updated = 0
+    linked = 0
+    for idx, task_id in enumerate(task_ids):
+        task = tasks_obj.get(task_id)
+        if not isinstance(task, dict):
+            continue
+        dep_ids: List[str] = []
+        if idx > 0 and task_ids[idx - 1]:
+            dep_ids.append(task_ids[idx - 1])
+        task["dependsOn"] = dep_ids
+        task["updatedAt"] = now_iso()
+        updated += 1
+        if dep_ids:
+            linked += 1
+
+    if updated > 0:
+        _, snapshot_path = ensure_state(root)
+        save_json_file(snapshot_path, data)
+    return {"updatedTasks": updated, "tasksWithDependsOn": linked}
+
+
+def xhs_bootstrap_once(args: argparse.Namespace) -> Dict[str, Any]:
+    actor = str(getattr(args, "actor", "orchestrator") or "orchestrator").strip() or "orchestrator"
+    if actor != "orchestrator":
+        return {"ok": False, "handled": True, "intent": "xhs_bootstrap", "error": "xhs-bootstrap is restricted to actor=orchestrator"}
+
+    paper_id = str(getattr(args, "paper_id", "") or "").strip()
+    if not paper_id:
+        return {"ok": False, "handled": True, "intent": "xhs_bootstrap", "error": "paper_id is required"}
+
+    workflow_root = normalize_project_path(str(getattr(args, "workflow_root", "") or DEFAULT_XHS_WORKFLOW_ROOT))
+    if not workflow_root or not os.path.isdir(workflow_root):
+        return {
+            "ok": False,
+            "handled": True,
+            "intent": "xhs_bootstrap",
+            "error": f"workflow root not found: {clip(workflow_root or str(getattr(args, 'workflow_root', '') or ''), 200)}",
+        }
+
+    pdf_path = normalize_project_path(str(getattr(args, "pdf_path", "") or ""))
+    if not pdf_path or not os.path.isfile(pdf_path):
+        return {
+            "ok": False,
+            "handled": True,
+            "intent": "xhs_bootstrap",
+            "error": f"pdf path not found: {clip(pdf_path or str(getattr(args, 'pdf_path', '') or ''), 200)}",
+        }
+
+    run_dir_raw = str(getattr(args, "run_dir", "") or "").strip()
+    run_dir = normalize_project_path(run_dir_raw) if run_dir_raw else os.path.join(workflow_root, "runs", paper_id)
+    os.makedirs(run_dir, exist_ok=True)
+
+    context_marker = os.path.join(run_dir, XHS_CONTEXT_MARKER_FILE)
+    context_obj = {
+        "workflowName": XHS_WORKFLOW_NAME,
+        "paperId": paper_id,
+        "workflowRoot": workflow_root,
+        "runDir": run_dir,
+        "pdfPath": pdf_path,
+        "bootstrappedAt": now_iso(),
+    }
+    save_json_file(context_marker, context_obj)
+
+    values = {
+        "paper_id": paper_id,
+        "workflow_root": workflow_root,
+        "run_dir": run_dir,
+        "pdf_path": pdf_path,
+    }
+    project_name = f"{XHS_WORKFLOW_NAME}:{paper_id}"
+
+    created: List[Dict[str, Any]] = []
+    created_ids: List[str] = []
+    for stage in XHS_STAGE_DEFINITIONS:
+        stage_id = str(stage.get("stageId") or "").strip()
+        stage_title = str(stage.get("title") or "").strip()
+        owner_hint = governance.canonical_agent(str(stage.get("ownerHint") or "")) or "coder"
+        template_file = str(stage.get("templateFile") or "").strip()
+
+        try:
+            template = read_xhs_stage_template(template_file)
+            dispatch_prompt = render_xhs_stage_prompt(template, values)
+        except Exception as err:
+            return {
+                "ok": False,
+                "handled": True,
+                "intent": "xhs_bootstrap",
+                "error": f"failed to load stage template {template_file}: {clip(str(err), 200)}",
+            }
+
+        title = clip(f"[{project_name}] Stage {stage_id}: {stage_title}", 120)
+        apply_obj = board_apply(args.root, "orchestrator", f"@{owner_hint} create task: {title}")
+        publish = publish_apply_result(
+            args.root,
+            "orchestrator",
+            apply_obj,
+            args.group_id,
+            args.account_id,
+            args.mode,
+            allow_broadcaster=False,
+        )
+
+        task_id = ""
+        if isinstance(apply_obj, dict) and apply_obj.get("ok"):
+            task_id = str(apply_obj.get("taskId") or "").strip()
+        if task_id:
+            created_ids.append(task_id)
+            bind_task_project_context(args.root, task_id, workflow_root, project_name, dispatch_prompt=dispatch_prompt)
+        created.append(
+            {
+                "stageId": stage_id,
+                "ownerHint": owner_hint,
+                "templateFile": template_file,
+                "taskId": task_id,
+                "apply": apply_obj,
+                "publish": publish,
+            }
+        )
+
+    depends_sync = write_task_dependency_chain(args.root, created_ids)
+
+    kickoff: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "no task created"}
+    first_task = next((task_id for task_id in created_ids if task_id), "")
+    if first_task:
+        first_obj = get_task(args.root, first_task) or {}
+        d_args = argparse.Namespace(
+            root=args.root,
+            task_id=first_task,
+            agent=str(first_obj.get("assigneeHint") or "coder"),
+            task="",
+            actor="orchestrator",
+            session_id=args.session_id,
+            group_id=args.group_id,
+            account_id=args.account_id,
+            mode=args.mode,
+            timeout_sec=args.timeout_sec,
+            spawn=bool(getattr(args, "spawn", False)),
+            spawn_cmd=args.spawn_cmd,
+            spawn_output=args.spawn_output,
+            visibility_mode=str(getattr(args, "visibility_mode", DEFAULT_VISIBILITY_MODE) or DEFAULT_VISIBILITY_MODE),
+        )
+        kickoff = dispatch_once(d_args)
+
+    msg = (
+        f"[TASK] XHS workflow bootstrapped: {paper_id} | created={len(created_ids)} | "
+        f"run_dir={run_dir}"
+    )
+    ack = send_group_message(args.group_id, args.account_id, msg, args.mode)
+    ok = (
+        all(c.get("apply", {}).get("ok") and c.get("publish", {}).get("ok") for c in created)
+        and bool(ack.get("ok"))
+        and bool(kickoff.get("ok"))
+    )
+
+    return {
+        "ok": ok,
+        "handled": True,
+        "intent": "xhs_bootstrap",
+        "paperId": paper_id,
+        "workflowRoot": workflow_root,
+        "runDir": run_dir,
+        "pdfPath": pdf_path,
+        "contextMarker": context_marker,
+        "createdCount": len(created_ids),
+        "createdTaskIds": created_ids,
+        "created": created,
+        "dependsOnSync": depends_sync,
+        "bootstrap": kickoff,
+        "ack": ack,
+    }
+
+
+def cmd_xhs_bootstrap(args: argparse.Namespace) -> int:
+    result = xhs_bootstrap_once(args)
+    print(json.dumps(result, ensure_ascii=True))
+    return 0 if result.get("ok") else 1
+
+
 def auto_progress_state_path(root: str) -> str:
     return os.path.join(root, "state", AUTO_PROGRESS_STATE_FILE)
 
@@ -2952,16 +3253,28 @@ def save_task_context_state(root: str, state: Dict[str, Any]) -> None:
     save_json_file(task_context_state_path(root), {"tasks": tasks})
 
 
-def bind_task_project_context(root: str, task_id: str, project_path: str, project_name: str) -> None:
+def bind_task_project_context(
+    root: str,
+    task_id: str,
+    project_path: str,
+    project_name: str,
+    dispatch_prompt: str = "",
+) -> None:
     if not task_id:
         return
     state = load_task_context_state(root)
     tasks = state.setdefault("tasks", {})
-    tasks[task_id] = {
-        "projectPath": project_path,
-        "projectName": project_name,
-        "updatedAt": now_iso(),
-    }
+    entry = tasks.get(task_id)
+    if not isinstance(entry, dict):
+        entry = {}
+    if project_path:
+        entry["projectPath"] = project_path
+    if project_name:
+        entry["projectName"] = project_name
+    if dispatch_prompt:
+        entry["dispatchPrompt"] = str(dispatch_prompt)
+    entry["updatedAt"] = now_iso()
+    tasks[task_id] = entry
     save_task_context_state(root, state)
 
 
@@ -2979,6 +3292,75 @@ def lookup_task_project_path(root: str, task_id: str) -> str:
     return path
 
 
+def lookup_task_dispatch_prompt(root: str, task_id: str) -> str:
+    if not task_id:
+        return ""
+    state = load_task_context_state(root)
+    tasks = state.get("tasks", {})
+    entry = tasks.get(task_id)
+    if not isinstance(entry, dict):
+        return ""
+    return str(entry.get("dispatchPrompt") or "").strip()
+
+
+def _load_json_dict_or_empty(path: str) -> Dict[str, Any]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        return {}
+
+
+def _normalize_executor_name(raw: Any) -> str:
+    token = str(raw or "").strip().lower()
+    return token if token in SUPPORTED_SPAWN_EXECUTORS else ""
+
+
+def load_executor_routing(root: str) -> Dict[str, str]:
+    routing = dict(DEFAULT_EXECUTOR_ROUTING)
+    script_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    search_roots = [script_root, root]
+
+    for base in search_roots:
+        for rel in RUNTIME_POLICY_CONFIG_CANDIDATES:
+            path = os.path.join(base, rel)
+            if not os.path.exists(path):
+                continue
+            policy = _load_json_dict_or_empty(path)
+            orchestrator = policy.get("orchestrator")
+            if not isinstance(orchestrator, dict):
+                continue
+            overrides = orchestrator.get("executorRouting")
+            if not isinstance(overrides, dict):
+                continue
+            for role_raw, executor_raw in overrides.items():
+                role_token = str(role_raw or "").strip()
+                if not role_token:
+                    continue
+                if role_token in {"*", "default"}:
+                    role = role_token
+                else:
+                    role = governance.canonical_agent(role_token) or role_token.lower()
+                executor = _normalize_executor_name(executor_raw)
+                if not executor:
+                    continue
+                routing[role] = executor
+    return routing
+
+
+def resolve_spawn_executor(root: str, agent: str) -> str:
+    routing = load_executor_routing(root)
+    role = governance.canonical_agent(agent) or str(agent or "").strip().lower()
+    if role and role in routing:
+        return routing[role]
+    for fallback_key in ("default", "*"):
+        fallback = routing.get(fallback_key)
+        if fallback in SUPPORTED_SPAWN_EXECUTORS:
+            return str(fallback)
+    return SPAWN_EXECUTOR_OPENCLAW
+
+
 def render_spawn_template(template: str, values: Dict[str, Any]) -> List[str]:
     rendered = template
     for key, raw in values.items():
@@ -2986,15 +3368,28 @@ def render_spawn_template(template: str, values: Dict[str, Any]) -> List[str]:
     return shlex.split(rendered)
 
 
+def append_spawn_workspace_arg(command: List[str], workspace: str) -> List[str]:
+    ws = str(workspace or "").strip()
+    if ws:
+        command.extend(["--workspace", ws])
+    return command
+
+
 def resolve_spawn_plan(args: argparse.Namespace, task_prompt: str) -> Dict[str, Any]:
     timeout_sec = normalize_timeout_sec(getattr(args, "timeout_sec", 0), default=0)
+    codex_bridge = os.path.join(os.path.dirname(__file__), "codex_worker_bridge.py")
+    claude_bridge = os.path.join(os.path.dirname(__file__), "claude_worker_bridge.py")
+    selected_executor = resolve_spawn_executor(args.root, str(args.agent or ""))
+    selected_bridge = codex_bridge if selected_executor == SPAWN_EXECUTOR_CODEX else claude_bridge
     values = {
         "root": args.root,
         "task_id": args.task_id,
         "agent": args.agent,
         "task": task_prompt,
         "timeout_sec": timeout_sec,
-        "bridge": os.path.join(os.path.dirname(__file__), "codex_worker_bridge.py"),
+        "bridge": selected_bridge,
+        "codex_bridge": codex_bridge,
+        "claude_bridge": claude_bridge,
     }
 
     raw_spawn_cmd = str(getattr(args, "spawn_cmd", "") or "").strip()
@@ -3005,11 +3400,21 @@ def resolve_spawn_plan(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
             "template": raw_spawn_cmd,
         }
 
-    if str(args.agent or "").strip().lower() == "coder":
+    spawn_workspace = str(getattr(args, "workspace", "") or "").strip()
+
+    if selected_executor == SPAWN_EXECUTOR_CLAUDE:
+        template = "python3 {claude_bridge} --root {root} --task-id {task_id} --agent {agent} --task {task} --timeout-sec {timeout_sec}"
+        return {
+            "executor": SPAWN_EXECUTOR_CLAUDE,
+            "command": append_spawn_workspace_arg(render_spawn_template(template, values), spawn_workspace),
+            "template": template,
+        }
+
+    if selected_executor == SPAWN_EXECUTOR_CODEX:
         template = "python3 {bridge} --root {root} --task-id {task_id} --agent {agent} --task {task} --timeout-sec {timeout_sec}"
         return {
-            "executor": "codex_cli",
-            "command": render_spawn_template(template, values),
+            "executor": SPAWN_EXECUTOR_CODEX,
+            "command": append_spawn_workspace_arg(render_spawn_template(template, values), spawn_workspace),
             "template": template,
         }
 
@@ -3025,7 +3430,7 @@ def resolve_spawn_plan(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
     if timeout_sec > 0:
         command.extend(["--timeout", str(timeout_sec)])
     return {
-        "executor": "openclaw_agent",
+        "executor": SPAWN_EXECUTOR_OPENCLAW,
         "command": command,
         "template": "",
     }
@@ -3802,6 +4207,68 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
         )
         return 0 if ok else 1
 
+    # Command: @orchestrator 开始xhs流程 <paper_id> <pdf_path>
+    # Alias: @orchestrator start xhs workflow <paper_id> <pdf_path>
+    m = re.match(r"^(?:开始xhs流程|start\s+xhs\s+workflow)\s+(.+)$", cmd_body, flags=re.IGNORECASE)
+    if m:
+        tail = (m.group(1) or "").strip()
+        try:
+            parts = shlex.split(tail)
+        except Exception as err:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "handled": True,
+                        "intent": "xhs_bootstrap",
+                        "error": f"invalid command syntax: {clip(str(err), 160)}",
+                    },
+                    ensure_ascii=True,
+                )
+            )
+            return 1
+        if len(parts) < 2:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "handled": True,
+                        "intent": "xhs_bootstrap",
+                        "error": "usage: @orchestrator 开始xhs流程 <paper_id> <pdf_path>",
+                    },
+                    ensure_ascii=True,
+                )
+            )
+            return 1
+
+        paper_id = str(parts[0]).strip()
+        pdf_path = " ".join(parts[1:]).strip()
+        workflow_root = DEFAULT_XHS_WORKFLOW_ROOT
+        if not os.path.isdir(workflow_root):
+            derived_root = os.path.dirname(normalize_project_path(pdf_path))
+            if derived_root:
+                workflow_root = derived_root
+        x_args = argparse.Namespace(
+            root=args.root,
+            paper_id=paper_id,
+            pdf_path=pdf_path,
+            workflow_root=workflow_root,
+            run_dir="",
+            actor="orchestrator",
+            session_id=args.session_id,
+            group_id=args.group_id,
+            account_id=args.account_id,
+            mode=args.mode,
+            timeout_sec=args.timeout_sec,
+            spawn=dispatch_spawn,
+            spawn_cmd=args.spawn_cmd,
+            spawn_output=args.spawn_output,
+            visibility_mode=visibility_mode,
+        )
+        result = xhs_bootstrap_once(x_args)
+        print(json.dumps(result, ensure_ascii=True))
+        return 0 if result.get("ok") else 1
+
     # Command: @orchestrator 开始项目 /path/to/project
     m = re.match(r"^(?:开始项目|启动项目|start\s+project)\s+(.+)$", cmd_body, flags=re.IGNORECASE)
     if m:
@@ -3978,7 +4445,7 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             root=args.root,
             task_id=task_id,
             agent=agent,
-            task=f"{task_id}: {task.get('title') or 'untitled'}",
+            task="",
             actor="orchestrator",
             session_id=args.session_id,
             group_id=args.group_id,
@@ -4344,6 +4811,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_clarify.add_argument("--mode", choices=["send", "dry-run"], default="send")
     p_clarify.add_argument("--force", action="store_true")
     p_clarify.set_defaults(func=cmd_clarify)
+
+    p_xhs = sub.add_parser("xhs-bootstrap")
+    p_xhs.add_argument("--root", required=True)
+    p_xhs.add_argument("--paper-id", required=True)
+    p_xhs.add_argument("--pdf-path", required=True)
+    p_xhs.add_argument("--workflow-root", default=DEFAULT_XHS_WORKFLOW_ROOT)
+    p_xhs.add_argument("--run-dir", default="")
+    p_xhs.add_argument("--actor", default="orchestrator")
+    p_xhs.add_argument("--session-id", default="")
+    p_xhs.add_argument("--group-id", default=DEFAULT_GROUP_ID)
+    p_xhs.add_argument("--account-id", default=DEFAULT_ACCOUNT_ID)
+    p_xhs.add_argument("--mode", choices=["send", "dry-run"], default="send")
+    p_xhs.add_argument("--timeout-sec", type=int, default=0)
+    p_xhs.add_argument("--spawn", dest="spawn", action="store_true", default=False)
+    p_xhs.add_argument("--no-spawn", dest="spawn", action="store_false")
+    p_xhs.add_argument("--spawn-cmd", default="")
+    p_xhs.add_argument("--spawn-output", default="")
+    p_xhs.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=DEFAULT_VISIBILITY_MODE)
+    p_xhs.set_defaults(func=cmd_xhs_bootstrap)
 
     p_feishu = sub.add_parser("feishu-router")
     p_feishu.add_argument("--root", required=True)

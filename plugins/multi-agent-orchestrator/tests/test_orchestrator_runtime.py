@@ -49,6 +49,29 @@ class RuntimeTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def _prepare_xhs_inputs(self, paper_id: str = "A1"):
+        workflow_root = self.root / "paper-xhs-3min-workflow"
+        workflow_root.mkdir(parents=True, exist_ok=True)
+        pdf_path = workflow_root / f"{paper_id}.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4\n%test\n")
+        return workflow_root, pdf_path
+
+    def _bind_task_context(self, task_id: str, dispatch_prompt: str):
+        state_path = self.root / "state" / "task-context-map.json"
+        state = {"tasks": {}}
+        if state_path.exists():
+            state = json.loads(state_path.read_text(encoding="utf-8") or "{}")
+        tasks = state.get("tasks")
+        if not isinstance(tasks, dict):
+            tasks = {}
+        tasks[task_id] = {
+            "projectPath": str(self.root),
+            "projectName": "runtime-test",
+            "dispatchPrompt": dispatch_prompt,
+        }
+        state["tasks"] = tasks
+        state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
     def test_dispatch_spawn_closes_task_done(self):
         run_json([
             "python3",
@@ -943,7 +966,163 @@ class RuntimeTests(unittest.TestCase):
             ])
             self.assertIn(created_ids[0], second["task"].get("dependsOn") or [], second)
 
-    def test_scheme_b_coder_dispatch_uses_codex_worker_executor(self):
+    def test_xhs_bootstrap_creates_stage_chain_and_prompt_bindings(self):
+        workflow_root, pdf_path = self._prepare_xhs_inputs("P-101")
+        out = run_json([
+            "python3",
+            str(MILE),
+            "xhs-bootstrap",
+            "--root",
+            str(self.root),
+            "--paper-id",
+            "P-101",
+            "--pdf-path",
+            str(pdf_path),
+            "--workflow-root",
+            str(workflow_root),
+            "--mode",
+            "dry-run",
+            "--no-spawn",
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out.get("intent"), "xhs_bootstrap", out)
+        created_ids = out.get("createdTaskIds") or []
+        self.assertEqual(len(created_ids), 10, out)
+        self.assertIn("dependsOnSync", out, out)
+        self.assertIn("bootstrap", out, out)
+
+        context_state = json.loads((self.root / "state" / "task-context-map.json").read_text(encoding="utf-8"))
+        context_tasks = context_state.get("tasks") or {}
+        self.assertEqual(len(context_tasks), 10, context_state)
+
+        for idx, task_id in enumerate(created_ids):
+            entry = context_tasks.get(task_id) or {}
+            prompt = str(entry.get("dispatchPrompt") or "")
+            self.assertEqual(entry.get("projectPath"), str(workflow_root), entry)
+            self.assertTrue(prompt.strip(), (task_id, entry))
+            self.assertIn("P-101", prompt, (task_id, prompt))
+            self.assertIn(str(pdf_path), prompt, (task_id, prompt))
+            self.assertIn('"taskId"', prompt, (task_id, prompt))
+
+            status = run_json([
+                "python3",
+                str(BOARD),
+                "apply",
+                "--root",
+                str(self.root),
+                "--actor",
+                "orchestrator",
+                "--text",
+                f"status {task_id}",
+            ])
+            expected_depends = [created_ids[idx - 1]] if idx > 0 else []
+            self.assertEqual(status["task"].get("dependsOn") or [], expected_depends, status)
+
+    def test_dispatch_run_autopilot_use_bound_dispatch_prompt_when_task_is_implicit(self):
+        for task_id in ("T-201", "T-202", "T-203"):
+            run_json([
+                "python3",
+                str(BOARD),
+                "apply",
+                "--root",
+                str(self.root),
+                "--actor",
+                "orchestrator",
+                "--text",
+                f"@coder create task {task_id}: dispatchPrompt fallback",
+            ])
+
+        self._bind_task_context("T-201", "BOUND_PROMPT_DISPATCH")
+        self._bind_task_context("T-202", "BOUND_PROMPT_RUN")
+        self._bind_task_context("T-203", "BOUND_PROMPT_AUTOPILOT")
+
+        dispatch = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-201",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"done","evidence":["logs/dispatch.log"]}',
+        ])
+        self.assertTrue(dispatch["ok"], dispatch)
+        self.assertIn("BOUND_PROMPT_DISPATCH", dispatch.get("agentPrompt", ""), dispatch)
+
+        run_out = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@orchestrator run T-202",
+            "--mode",
+            "dry-run",
+            "--dispatch-spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"done","evidence":["logs/run.log"]}',
+        ])
+        self.assertTrue(run_out["ok"], run_out)
+        self.assertIn("BOUND_PROMPT_RUN", run_out.get("agentPrompt", ""), run_out)
+
+        autopilot = run_json([
+            "python3",
+            str(MILE),
+            "autopilot",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--max-steps",
+            "1",
+            "--spawn-output",
+            '{"status":"done","summary":"done","evidence":["logs/auto.log"]}',
+        ])
+        self.assertTrue(autopilot["ok"], autopilot)
+        steps = autopilot.get("steps") or []
+        self.assertEqual(len(steps), 1, autopilot)
+        prompt = ((steps[0].get("dispatch") or {}).get("agentPrompt") or "")
+        self.assertIn("BOUND_PROMPT_AUTOPILOT", prompt, autopilot)
+
+    def test_feishu_router_supports_xhs_bootstrap_intents(self):
+        workflow_root, pdf_path = self._prepare_xhs_inputs("P-201")
+        for command in (
+            f"@orchestrator 开始xhs流程 P-201 {pdf_path}",
+            f"@orchestrator start xhs workflow P-202 {pdf_path}",
+        ):
+            out = run_json([
+                "python3",
+                str(MILE),
+                "feishu-router",
+                "--root",
+                str(self.root),
+                "--actor",
+                "orchestrator",
+                "--text",
+                command,
+                "--mode",
+                "dry-run",
+                "--dispatch-manual",
+            ])
+            self.assertTrue(out["ok"], out)
+            self.assertEqual(out.get("intent"), "xhs_bootstrap", out)
+            self.assertEqual(len(out.get("createdTaskIds") or []), 10, out)
+            self.assertIn("dependsOnSync", out, out)
+            self.assertIn("bootstrap", out, out)
+
+    def test_scheme_b_coder_dispatch_uses_claude_worker_executor(self):
         run_json([
             "python3",
             str(BOARD),
@@ -975,13 +1154,13 @@ class RuntimeTests(unittest.TestCase):
         ])
         self.assertTrue(out["ok"], out)
         spawn = out.get("spawn") or {}
-        self.assertEqual(spawn.get("executor"), "codex_cli", out)
+        self.assertEqual(spawn.get("executor"), "claude_cli", out)
         planned = spawn.get("plannedCommand") or []
-        self.assertTrue(any("codex_worker_bridge.py" in str(x) for x in planned), out)
+        self.assertTrue(any("claude_worker_bridge.py" in str(x) for x in planned), out)
         metrics = spawn.get("metrics") or {}
         self.assertIn("tokenUsage", metrics, out)
 
-    def test_scheme_b_non_coder_dispatch_keeps_openclaw_executor(self):
+    def test_scheme_b_debugger_dispatch_uses_codex_worker_executor(self):
         run_json([
             "python3",
             str(BOARD),
@@ -1013,7 +1192,131 @@ class RuntimeTests(unittest.TestCase):
         ])
         self.assertTrue(out["ok"], out)
         spawn = out.get("spawn") or {}
+        self.assertEqual(spawn.get("executor"), "codex_cli", out)
+        planned = spawn.get("plannedCommand") or []
+        self.assertTrue(any("codex_worker_bridge.py" in str(x) for x in planned), out)
+
+    def test_scheme_b_other_roles_keep_openclaw_executor(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@invest-analyst create task T-062: 其他角色走 openclaw",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--task-id",
+            "T-062",
+            "--agent",
+            "invest-analyst",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/route.log"]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        spawn = out.get("spawn") or {}
         self.assertEqual(spawn.get("executor"), "openclaw_agent", out)
+
+    def test_scheme_b_executor_routing_can_be_overridden_by_runtime_policy(self):
+        runtime_policy_path = self.root / "config" / "runtime-policy.json"
+        runtime_policy_path.parent.mkdir(parents=True, exist_ok=True)
+        runtime_policy_path.write_text(
+            json.dumps(
+                {
+                    "orchestrator": {
+                        "executorRouting": {
+                            "coder": "openclaw_agent",
+                            "debugger": "openclaw_agent",
+                            "invest-analyst": "codex_cli",
+                        }
+                    }
+                },
+                ensure_ascii=True,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-063: runtime policy override coder",
+        ])
+        coder_out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--task-id",
+            "T-063",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/route.log"]}',
+        ])
+        self.assertTrue(coder_out["ok"], coder_out)
+        self.assertEqual((coder_out.get("spawn") or {}).get("executor"), "openclaw_agent", coder_out)
+
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@invest-analyst create task T-064: runtime policy override analyst",
+        ])
+        analyst_out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--task-id",
+            "T-064",
+            "--agent",
+            "invest-analyst",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/route.log"]}',
+        ])
+        self.assertTrue(analyst_out["ok"], analyst_out)
+        spawn = analyst_out.get("spawn") or {}
+        self.assertEqual(spawn.get("executor"), "codex_cli", analyst_out)
+        planned = spawn.get("plannedCommand") or []
+        self.assertTrue(any("codex_worker_bridge.py" in str(x) for x in planned), analyst_out)
 
     def test_scheduler_run_updates_state_and_executes_autopilot(self):
         run_json([
