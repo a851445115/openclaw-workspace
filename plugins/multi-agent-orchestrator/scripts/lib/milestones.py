@@ -877,6 +877,14 @@ def build_agent_prompt(
     )
     for idx, item in enumerate(requirements, start=1):
         lines.append(f"{idx}. {item}")
+    if (governance.canonical_agent(agent) or str(agent or "").strip().lower()) == "debugger":
+        lines.extend(
+            [
+                "COLLABORATION_HINTS:",
+                "1. For complex debugging tasks, proactively enable subagent workflow.",
+                "2. Delegate independent checks (repro/log diff/hypothesis validation) to subagents and then merge findings.",
+            ]
+        )
     lines.append("INTEGRITY_GUARDRAILS:")
     for idx, item in enumerate(integrity_guardrails, start=1):
         lines.append(f"{idx}. {item}")

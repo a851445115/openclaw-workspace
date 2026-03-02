@@ -614,6 +614,39 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("TAIL_MARKER_KEEP_ME", prompt, out)
         self.assertGreater(len(prompt), 6000, out)
 
+    def test_debugger_prompt_includes_subagent_hint(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@debugger create task T-040D: 复杂排障任务",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-040D",
+            "--agent",
+            "debugger",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"已完成并验证","evidence":["logs/t040d.log"]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        prompt = out.get("agentPrompt", "")
+        self.assertIn("COLLABORATION_HINTS", prompt, out)
+        self.assertIn("enable subagent workflow", prompt, out)
+
     def test_spawn_timeout_zero_disables_subprocess_timeout_and_openclaw_timeout_flag(self):
         module = load_milestone_module()
         real_run = module.subprocess.run
