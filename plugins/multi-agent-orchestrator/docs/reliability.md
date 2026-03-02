@@ -170,3 +170,25 @@ Validation checks during replay:
     - 更新 `mistakes` / `patterns`（去重、限长）
     - 写入 `tags`（包含 `dispatch_failure` 与 reason tag）
   - 即使知识适配器异常，派发流程仍继续（不阻塞 claim/task 发送与后续闭环）
+
+## 9) Config Migration & Compatibility Gate (Batch 12)
+
+- 迁移脚本：`scripts/migrate-config-v2`
+  - 支持 `--dry-run`（默认，不落盘）与 `--apply`（落盘）
+  - 输出统一 JSON 摘要：`changed/applied/diff/risks/summary`
+  - `changed=false` 时不写文件（幂等）
+- 目标文件：`config/runtime-policy.json`
+  - 输出收敛到 v2 规范结构：`agents[]`（对象形态）+ `orchestrator.retryPolicy/backoff` + `orchestrator.budgetPolicy.guardrails`
+  - 兼容 old/mixed/v2 full 三类输入
+- 回滚机制：
+  - `--apply` 且发生变更时，自动备份原文件到 `state/config-migration-backups/runtime-policy.<timestamp>.json`
+  - 输出包含 `rollbackHint`（`cp <backup> config/runtime-policy.json`）可一键回滚
+- 兼容矩阵：
+  - old：字符串 agents + 缺省策略字段 -> 自动补齐为 v2 默认安全值
+  - mixed：字符串/对象混合 + 部分新字段 -> 保留显式值并补齐缺省
+  - v2 full：字段完整 -> no-op（`changed=false`）
+- 故障排查：
+  - `parse failed`：输入 JSON 非法，先修复或执行 `--apply` 强制重建规范文件
+  - `migration removes unsupported/deprecated fields`：核对 `diff.sampleRemoved` 是否为历史遗留字段
+  - `agent list is empty after migration`：补充 `agents` 后重跑
+  - 写入失败：检查 root 目录权限与目标路径可写性

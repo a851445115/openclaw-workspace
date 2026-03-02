@@ -261,3 +261,44 @@ For live Feishu validation, run the same `@orchestrator run T-1007` in the allow
 说明：
 - `status=done` 时必须带 `evidence`，否则会被 acceptance policy 拦截为 `blocked`。
 - 非结构化输出仍兼容，但稳定性低于结构化输出。
+
+## Config v2 Migration (Batch 12)
+
+迁移脚本：`scripts/migrate-config-v2`
+
+支持参数：
+
+- `--root <path>`：项目根目录
+- `--dry-run`：只输出迁移摘要，不写文件（默认）
+- `--apply`：执行迁移并写入 `config/runtime-policy.json`
+
+推荐升级步骤：
+
+```bash
+cd ~/.openclaw/workspace/plugins/multi-agent-orchestrator
+./scripts/migrate-config-v2 --root . --dry-run
+./scripts/migrate-config-v2 --root . --apply
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_config_migration.py -v
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+```
+
+回滚路径：
+
+- `--apply` 且检测到变更时，脚本会自动备份旧文件到 `state/config-migration-backups/runtime-policy.<timestamp>.json`。
+- 输出中的 `rollbackHint` 可直接执行（`cp <backup> config/runtime-policy.json`）。
+- 若 `changed=false`，脚本不会写新文件，也不会生成新备份（幂等）。
+
+故障排查：
+
+- `existing runtime-policy.json parse failed`：先修复 JSON 语法，或直接 `--apply` 用规范化版本覆盖。
+- `migration removes unsupported/deprecated fields`：检查输出的 `diff.sampleRemoved`，确认是否为历史废弃字段。
+- `agent list is empty after migration`：补充 `agents` 配置后重跑迁移。
+- `target runtime-policy.json does not exist and will be created`：首次迁移提示，可直接 `--apply` 生成基线配置。
+
+兼容矩阵：
+
+| 输入配置形态 | 迁移输出 | 兼容策略 |
+| --- | --- | --- |
+| old (`agents` 为字符串数组，缺少 retry/budget) | v2 规范对象 | 自动补齐 `retryPolicy/backoff` 与 `budgetPolicy.guardrails` 默认值 |
+| mixed（字符串 + 对象 agent，部分新字段） | v2 规范对象 | 保留显式值，缺失字段回填安全默认 |
+| v2 full（字段完整） | 无变更（`changed=false`） | 幂等 no-op，不重复落盘 |

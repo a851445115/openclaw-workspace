@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import tempfile
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Tuple
+
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_LIB_DIR = os.path.join(SCRIPT_DIR, "lib")
+if SCRIPT_LIB_DIR not in os.sys.path:
+    os.sys.path.insert(0, SCRIPT_LIB_DIR)
+
+import config_runtime
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", required=True)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", dest="mode", action="store_const", const="dry-run")
+    mode.add_argument("--apply", dest="mode", action="store_const", const="apply")
+    parser.set_defaults(mode="dry-run")
+    return parser.parse_args()
+
+
+def _load_json(path: str) -> Tuple[Dict[str, Any], str]:
+    if not os.path.exists(path):
+        return {}, ""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            return loaded, ""
+        return {}, "existing runtime-policy.json is not a JSON object"
+    except Exception as err:
+        return {}, f"existing runtime-policy.json parse failed: {err}"
+
+
+def _flatten(prefix: str, value: Any, out: Dict[str, str]) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_str = str(key)
+            child = f"{prefix}.{key_str}" if prefix else key_str
+            _flatten(child, item, out)
+        if not value:
+            out[prefix] = "{}"
+        return
+    if isinstance(value, list):
+        for idx, item in enumerate(value):
+            child = f"{prefix}[{idx}]"
+            _flatten(child, item, out)
+        if not value:
+            out[prefix] = "[]"
+        return
+    out[prefix] = json.dumps(value, ensure_ascii=True, sort_keys=True)
+
+
+def _diff(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, Any]:
+    before_flat: Dict[str, str] = {}
+    after_flat: Dict[str, str] = {}
+    _flatten("", before, before_flat)
+    _flatten("", after, after_flat)
+
+    before_keys = set(before_flat.keys())
+    after_keys = set(after_flat.keys())
+    added = sorted(after_keys - before_keys)
+    removed = sorted(before_keys - after_keys)
+    changed = sorted(k for k in (before_keys & after_keys) if before_flat.get(k) != after_flat.get(k))
+
+    return {
+        "addedCount": len(added),
+        "removedCount": len(removed),
+        "changedCount": len(changed),
+        "sampleAdded": added[:12],
+        "sampleRemoved": removed[:12],
+        "sampleChanged": changed[:12],
+    }
+
+
+def _write_atomic(path: str, payload: Dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".runtime-policy.", suffix=".json", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=True, indent=2)
+            f.write("\n")
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+def _write_backup(root: str, source_path: str) -> str:
+    backup_dir = os.path.join(root, "state", "config-migration-backups")
+    os.makedirs(backup_dir, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup_path = os.path.join(backup_dir, f"runtime-policy.{stamp}.json")
+    with open(source_path, "rb") as src:
+        data = src.read()
+    with open(backup_path, "wb") as dst:
+        dst.write(data)
+    return backup_path
+
+
+def _build_target_payload(root: str) -> Dict[str, Any]:
+    loaded = config_runtime.load_runtime_config(root)
+    return {
+        "agents": loaded.get("agents") if isinstance(loaded.get("agents"), list) else [],
+        "orchestrator": loaded.get("orchestrator") if isinstance(loaded.get("orchestrator"), dict) else {},
+    }
+
+
+def _build_summary(payload: Dict[str, Any]) -> Dict[str, Any]:
+    agents = payload.get("agents") if isinstance(payload.get("agents"), list) else []
+    orchestrator = payload.get("orchestrator") if isinstance(payload.get("orchestrator"), dict) else {}
+    retry_policy = orchestrator.get("retryPolicy") if isinstance(orchestrator.get("retryPolicy"), dict) else {}
+    backoff = retry_policy.get("backoff") if isinstance(retry_policy.get("backoff"), dict) else {}
+    budget_policy = orchestrator.get("budgetPolicy") if isinstance(orchestrator.get("budgetPolicy"), dict) else {}
+    guardrails = budget_policy.get("guardrails") if isinstance(budget_policy.get("guardrails"), dict) else {}
+
+    agent_ids: List[str] = []
+    for item in agents:
+        if isinstance(item, dict):
+            agent_id = str(item.get("id") or "").strip()
+            if agent_id:
+                agent_ids.append(agent_id)
+
+    return {
+        "agentCount": len(agent_ids),
+        "agentIds": agent_ids,
+        "maxConcurrentSpawns": int(orchestrator.get("maxConcurrentSpawns") or 0),
+        "retryMaxAttempts": int(retry_policy.get("maxAttempts") or 0),
+        "retryBackoffMode": str(backoff.get("mode") or ""),
+        "guardrails": {
+            "maxTaskTokens": int(guardrails.get("maxTaskTokens") or 0),
+            "maxTaskWallTimeSec": int(guardrails.get("maxTaskWallTimeSec") or 0),
+            "maxTaskRetries": int(guardrails.get("maxTaskRetries") or 0),
+        },
+    }
+
+
+def main() -> int:
+    args = parse_args()
+    root = os.path.abspath(os.path.expanduser(str(args.root)))
+    target = os.path.join(root, "config", "runtime-policy.json")
+
+    existing, parse_error = _load_json(target)
+    migrated = _build_target_payload(root)
+    changed = existing != migrated
+    diff = _diff(existing, migrated)
+    summary = _build_summary(migrated)
+
+    backup_path = ""
+    write_error = ""
+    applied = False
+    risks: List[str] = []
+    if parse_error:
+        risks.append(parse_error)
+    if not os.path.exists(target):
+        risks.append("target runtime-policy.json does not exist and will be created")
+    if diff.get("removedCount", 0) > 0:
+        risks.append("migration removes unsupported/deprecated fields")
+    if not summary.get("agentIds"):
+        risks.append("agent list is empty after migration")
+
+    if args.mode == "apply" and changed:
+        try:
+            if os.path.exists(target):
+                backup_path = _write_backup(root, target)
+            _write_atomic(target, migrated)
+            applied = True
+        except Exception as err:
+            write_error = str(err)
+
+    out: Dict[str, Any] = {
+        "ok": write_error == "",
+        "mode": str(args.mode),
+        "root": root,
+        "target": target,
+        "changed": changed,
+        "wouldWrite": bool(changed),
+        "applied": applied,
+        "summary": summary,
+        "diff": diff,
+        "risks": risks,
+    }
+    if backup_path:
+        out["backupPath"] = backup_path
+        out["rollbackHint"] = f"cp {backup_path} {target}"
+    if write_error:
+        out["error"] = write_error
+    print(json.dumps(out, ensure_ascii=True))
+    return 0 if out.get("ok") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
