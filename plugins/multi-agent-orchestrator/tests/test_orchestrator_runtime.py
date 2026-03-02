@@ -596,6 +596,72 @@ class RuntimeTests(unittest.TestCase):
         ])
         self.assertEqual(status["task"]["status"], "done", status)
 
+    def test_dispatch_parses_nested_worker_json_report_from_openclaw_payloads(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@paper-summarizer create task T-042B: 包装输出解析",
+        ])
+        wrapped = {
+            "runId": "demo-run",
+            "status": "ok",
+            "summary": "completed",
+            "result": {
+                "payloads": [
+                    {
+                        "text": "阶段日志: 之前遇到 blocked/error 的历史记录，仅用于调试。",
+                        "mediaUrl": None,
+                    },
+                    {
+                        "text": (
+                            "```json\n"
+                            "{\n"
+                            '  "taskId": "T-042B",\n'
+                            '  "agent": "paper-summarizer",\n'
+                            '  "status": "done",\n'
+                            '  "summary": "摘要summary已完成，包含5条要点与结论",\n'
+                            '  "changes": [{"path":"artifacts/t042b-summary.md","summary":"write summary bullets"}],\n'
+                            '  "evidence": ["artifacts/t042b-summary.md","https://example.com/source-a"],\n'
+                            '  "risks": [],\n'
+                            '  "nextActions": []\n'
+                            "}\n"
+                            "```"
+                        ),
+                        "mediaUrl": None,
+                    },
+                ]
+            },
+        }
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-042B",
+            "--agent",
+            "paper-summarizer",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            json.dumps(wrapped, ensure_ascii=False),
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["spawn"]["decision"], "done", out)
+        self.assertEqual(out["spawn"]["reasonCode"], "done_with_evidence", out)
+        self.assertEqual((out.get("closeApply") or {}).get("status"), "done", out)
+        report = (out.get("spawn") or {}).get("normalizedReport") or {}
+        self.assertEqual(report.get("status"), "done", out)
+        self.assertIn("artifacts/t042b-summary.md", " ".join(report.get("hardEvidence") or []), out)
+
     def test_dispatch_structured_done_without_evidence_is_blocked(self):
         run_json([
             "python3",

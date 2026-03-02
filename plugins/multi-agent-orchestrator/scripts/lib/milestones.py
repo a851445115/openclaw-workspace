@@ -230,6 +230,101 @@ def parse_json_loose(text: str) -> Any:
     raise ValueError(f"no json object found in output: {clip(s, 200)}")
 
 
+AGENT_REPORT_STATUSES = {
+    "done",
+    "blocked",
+    "progress",
+    "completed",
+    "success",
+    "succeeded",
+    "failed",
+    "error",
+}
+JSON_FENCE_RE = re.compile(r"```json\s*(\{.*?\})\s*```", flags=re.IGNORECASE | re.DOTALL)
+
+
+def looks_like_agent_report(obj: Any) -> bool:
+    if not isinstance(obj, dict):
+        return False
+    status = str(obj.get("status") or obj.get("taskStatus") or "").strip().lower()
+    if status not in AGENT_REPORT_STATUSES:
+        return False
+    return any(
+        key in obj
+        for key in (
+            "taskId",
+            "agent",
+            "summary",
+            "evidence",
+            "changes",
+            "nextActions",
+            "risks",
+        )
+    )
+
+
+def extract_payload_texts(spawn_obj: Any) -> List[str]:
+    if not isinstance(spawn_obj, dict):
+        return []
+    payloads: List[Any] = []
+    result = spawn_obj.get("result")
+    if isinstance(result, dict) and isinstance(result.get("payloads"), list):
+        payloads.extend(result.get("payloads") or [])
+    if isinstance(spawn_obj.get("payloads"), list):
+        payloads.extend(spawn_obj.get("payloads") or [])
+
+    texts: List[str] = []
+    for item in payloads:
+        if isinstance(item, dict):
+            text = str(item.get("text") or "").strip()
+            if text:
+                texts.append(text)
+        elif isinstance(item, str):
+            text = item.strip()
+            if text:
+                texts.append(text)
+    return texts
+
+
+def extract_structured_report_from_text(text: str) -> Optional[Dict[str, Any]]:
+    candidate: Optional[Dict[str, Any]] = None
+    for match in JSON_FENCE_RE.finditer(text or ""):
+        try:
+            obj = json.loads(match.group(1))
+        except Exception:
+            continue
+        if looks_like_agent_report(obj):
+            candidate = obj
+    stripped = (text or "").strip()
+    if candidate is not None:
+        return candidate
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            obj = json.loads(stripped)
+        except Exception:
+            return None
+        if looks_like_agent_report(obj):
+            return obj
+    return None
+
+
+def extract_structured_report_from_spawn(spawn_obj: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(spawn_obj, dict):
+        return None
+    if looks_like_agent_report(spawn_obj):
+        return spawn_obj
+    report = spawn_obj.get("report")
+    if looks_like_agent_report(report):
+        return report
+
+    candidate: Optional[Dict[str, Any]] = None
+    for text in extract_payload_texts(spawn_obj):
+        parsed = extract_structured_report_from_text(text)
+        if parsed is not None:
+            candidate = parsed
+    return candidate
+
+
 def ensure_state(root: str) -> Tuple[str, str]:
     state_dir = os.path.join(root, "state")
     locks_dir = os.path.join(state_dir, "locks")
@@ -1293,9 +1388,17 @@ def normalize_spawn_report(task_id: str, role: str, spawn_obj: Dict[str, Any], f
 
 
 def classify_spawn_result(root: str, task_id: str, role: str, spawn_obj: Dict[str, Any], fallback_text: str = "") -> Dict[str, Any]:
-    status_hint = str(spawn_obj.get("status") or spawn_obj.get("taskStatus") or "").strip().lower()
+    structured_report = extract_structured_report_from_spawn(spawn_obj)
+    source_obj = structured_report if isinstance(structured_report, dict) else spawn_obj
+    status_hint = str(source_obj.get("status") or source_obj.get("taskStatus") or "").strip().lower()
     ok_flag = spawn_obj.get("ok")
-    report = normalize_spawn_report(task_id, role, spawn_obj, fallback_text=fallback_text)
+    # If we found a nested structured report in worker payloads, ignore noisy wrapper text.
+    report = normalize_spawn_report(
+        task_id,
+        role,
+        source_obj,
+        fallback_text="" if structured_report is not None else fallback_text,
+    )
     text = str(report.get("acceptanceText") or "").strip()
     detail = str(report.get("detail") or "").strip()
     kind = parse_wakeup_kind(text or detail)
