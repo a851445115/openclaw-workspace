@@ -7,3 +7,4 @@ projects/*/.sisyphus/
 plugins/multi-agent-orchestrator/config/*.json
 !plugins/multi-agent-orchestrator/config/*.example.json
 !plugins/multi-agent-orchestrator/config/acceptance-policy.json
+!plugins/multi-agent-orchestrator/config/role-strategies.json

@@ -1,0 +1,58 @@
+{
+  "taskKinds": {
+    "coding": {
+      "coder": {
+        "strategyId": "coding-coder-default-v1",
+        "content": "先交付可验证的最小改动，再补充增强项；优先附上测试/命令证据。",
+        "enabled": true,
+        "rolloutPercent": 100
+      },
+      "default": {
+        "strategyId": "coding-generic-v1",
+        "content": "围绕当前任务直接产出可验收结果；若阻塞，明确根因和下一步。",
+        "enabled": true,
+        "rolloutPercent": 100
+      }
+    },
+    "debug": {
+      "default": {
+        "strategyId": "debug-default-v1",
+        "content": "先复现并定位根因，再给出修复或缓解方案，并附日志/栈证据。",
+        "enabled": true,
+        "rolloutPercent": 100
+      }
+    },
+    "research": {
+      "default": {
+        "strategyId": "research-default-v1",
+        "content": "先给结论，再列证据来源与权衡；确保建议可执行。",
+        "enabled": true,
+        "rolloutPercent": 100
+      }
+    },
+    "broadcast": {
+      "default": {
+        "strategyId": "broadcast-default-v1",
+        "content": "输出面向群成员可直接转发，包含对象、目的、时机与行动项。",
+        "enabled": true,
+        "rolloutPercent": 100
+      }
+    }
+  },
+  "agents": {
+    "debugger": {
+      "default": {
+        "strategyId": "agent-debugger-default-v1",
+        "content": "优先给出复现步骤、根因假设与验证计划。",
+        "enabled": true,
+        "rolloutPercent": 100
+      }
+    }
+  },
+  "default": {
+    "strategyId": "global-default-v1",
+    "content": "遵循任务目标，输出一个可验证、可追踪、可执行的结果对象。",
+    "enabled": true,
+    "rolloutPercent": 100
+  }
+}

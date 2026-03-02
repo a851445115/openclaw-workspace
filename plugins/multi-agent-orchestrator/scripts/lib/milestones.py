@@ -24,6 +24,7 @@ import governance
 import evidence_normalizer
 import task_decomposer
 import ops_metrics
+import strategy_library
 
 DEFAULT_GROUP_ID = "oc_041146c92a9ccb403a7f4f48fb59701d"
 DEFAULT_ACCOUNT_ID = "orchestrator"
@@ -486,7 +487,21 @@ def build_structured_output_schema(task_id: str, agent: str) -> Dict[str, Any]:
     }
 
 
-def build_agent_prompt(root: str, task: Dict[str, Any], agent: str, dispatch_task: str) -> str:
+def resolve_prompt_strategy(root: str, task: Dict[str, Any], agent: str, dispatch_task: str) -> Dict[str, Any]:
+    task_id = str(task.get("taskId") or "")
+    title = str(task.get("title") or "")
+    task_kind = infer_task_kind(agent, title, dispatch_task)
+    library = strategy_library.load_strategy_library(root)
+    return strategy_library.resolve_strategy(library, agent, task_kind, task_id=task_id)
+
+
+def build_agent_prompt(
+    root: str,
+    task: Dict[str, Any],
+    agent: str,
+    dispatch_task: str,
+    strategy: Optional[Dict[str, Any]] = None,
+) -> str:
     task_id = str(task.get("taskId") or "")
     title = str(task.get("title") or "")
     project_path = lookup_task_project_path(root, task_id)
@@ -495,6 +510,7 @@ def build_agent_prompt(root: str, task: Dict[str, Any], agent: str, dispatch_tas
     schema = build_structured_output_schema(task_id, agent)
     board_snapshot = build_prompt_board_snapshot(root, task_id)
     history = read_recent_task_events(root, task_id, limit=8)
+    selected_strategy = strategy if isinstance(strategy, dict) else resolve_prompt_strategy(root, task, agent, dispatch_task)
 
     task_context = {
         "taskId": task_id,
@@ -517,8 +533,29 @@ def build_agent_prompt(root: str, task: Dict[str, Any], agent: str, dispatch_tas
         json.dumps(board_snapshot, ensure_ascii=False, indent=2),
         "TASK_RECENT_HISTORY:",
         json.dumps(history, ensure_ascii=False, indent=2),
-        "EXECUTION_REQUIREMENTS:",
     ]
+    if bool(selected_strategy.get("enabled")) and str(selected_strategy.get("content") or "").strip():
+        lines.extend(
+            [
+                "ROLE_STRATEGY:",
+                json.dumps(
+                    {
+                        "strategyId": str(selected_strategy.get("strategyId") or ""),
+                        "source": str(selected_strategy.get("source") or ""),
+                        "matchedBy": str(selected_strategy.get("matchedBy") or ""),
+                        "enabled": bool(selected_strategy.get("enabled")),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                str(selected_strategy.get("content") or ""),
+            ]
+        )
+    lines.extend(
+        [
+        "EXECUTION_REQUIREMENTS:",
+        ]
+    )
     for idx, item in enumerate(requirements, start=1):
         lines.append(f"{idx}. {item}")
     lines.extend(
@@ -1501,7 +1538,8 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     status = str(task.get("status") or "")
     title = clip(task.get("title") or "未命名任务")
     dispatch_task = clip(args.task or f"{args.task_id}: {task.get('title') or 'untitled'}", 300)
-    agent_prompt = build_agent_prompt(args.root, task, args.agent, dispatch_task)
+    selected_strategy = resolve_prompt_strategy(args.root, task, args.agent, dispatch_task)
+    agent_prompt = build_agent_prompt(args.root, task, args.agent, dispatch_task, strategy=selected_strategy)
 
     dispatch_mode_line = "派发模式: 手动协作（等待回报）" if not args.spawn else "派发模式: 自动执行闭环（spawn并回写看板）"
 
@@ -1774,6 +1812,8 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         "intent": "dispatch",
         "taskId": args.task_id,
         "agent": args.agent,
+        "strategyId": str(selected_strategy.get("strategyId") or ""),
+        "strategy": selected_strategy,
         "dispatchMode": "spawn" if auto_close else "manual",
         "visibilityMode": visibility_mode,
         "claim": claimed,

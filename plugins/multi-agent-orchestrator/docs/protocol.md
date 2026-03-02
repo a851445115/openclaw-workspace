@@ -97,11 +97,25 @@ Prefix command text with `@agent-name` to attach routing metadata:
   - `TASK_CONTEXT`
   - `BOARD_SNAPSHOT` (status counts + blocked/pending top tasks)
   - `TASK_RECENT_HISTORY` (recent events for current task)
+  - `ROLE_STRATEGY` (when enabled by role strategy library; includes `strategyId/source/matchedBy`)
   - `EXECUTION_REQUIREMENTS` (role/task-type specific)
   - `OUTPUT_SCHEMA`
 - Preferred worker output is a single JSON object with fixed fields:
   - `taskId`, `agent`, `status`, `summary`, `changes`, `evidence`, `risks`, `nextActions`
 - Classifier remains backward-compatible with legacy free-text/loose JSON responses, but structured output is recommended for stable auto-progression.
+
+### Role Strategy Library (Batch 9)
+
+- Strategy config file: `config/role-strategies.json` (runtime override: `<root>/config/role-strategies.json` or `<root>/state/role-strategies.json`).
+- Strategy library module: `scripts/lib/strategy_library.py`.
+- Dispatch/prompt resolution order:
+  - `taskKinds.<taskKind>.<agent>`
+  - `taskKinds.<taskKind>.default`
+  - `agents.<agent>.default`
+  - `default`
+- When `dispatch` executes, output payload now includes:
+  - `strategyId`: selected strategy id (empty string if none)
+  - `strategy`: selected strategy object (`strategyId/content/source/matchedBy/enabled`)
 
 ## Broadcast Guardrails
 
