@@ -899,6 +899,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(opened.get("intent"), "auto_progress", opened)
         self.assertTrue((opened.get("state") or {}).get("enabled"), opened)
         self.assertEqual((opened.get("state") or {}).get("maxSteps"), 2, opened)
+        self.assertTrue(((opened.get("scheduler") or {}).get("state") or {}).get("enabled"), opened)
+        self.assertEqual(((opened.get("scheduler") or {}).get("state") or {}).get("maxSteps"), 2, opened)
 
         status = run_json([
             "python3",
@@ -933,6 +935,92 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(closed["ok"], closed)
         self.assertEqual(closed.get("intent"), "auto_progress", closed)
         self.assertFalse((closed.get("state") or {}).get("enabled"), closed)
+        self.assertFalse(((closed.get("scheduler") or {}).get("state") or {}).get("enabled"), closed)
+
+    def test_auto_progress_send_mode_attempts_scheduler_daemon_bootstrap(self):
+        module = load_milestone_module()
+        real_send = module.send_group_message
+        real_popen = module.subprocess.Popen
+        out_buffer = io.StringIO()
+        popen_calls = {"count": 0}
+
+        class FakePopen:
+            def __init__(self, pid: int):
+                self.pid = pid
+
+        def fake_popen(cmd, stdout=None, stderr=None, start_new_session=False):
+            popen_calls["count"] += 1
+            return FakePopen(43210)
+
+        args = argparse.Namespace(
+            root=str(self.root),
+            actor="orchestrator",
+            text="@orchestrator 自动推进 开 2",
+            group_id="oc_041146c92a9ccb403a7f4f48fb59701d",
+            account_id="orchestrator",
+            mode="send",
+            session_id="",
+            timeout_sec=120,
+            dispatch_spawn=False,
+            dispatch_manual=False,
+            visibility_mode="milestone_only",
+            autopilot_max_steps=3,
+            spawn_cmd="",
+            spawn_output="",
+            clarify_cooldown_sec=300,
+            clarify_state_file="",
+        )
+
+        try:
+            module.send_group_message = lambda *unused_args, **unused_kwargs: {"ok": True, "dryRun": True}
+            module.subprocess.Popen = fake_popen
+            with contextlib.redirect_stdout(out_buffer):
+                rc = module.cmd_feishu_router(args)
+        finally:
+            module.send_group_message = real_send
+            module.subprocess.Popen = real_popen
+
+        self.assertEqual(rc, 0)
+        payload = json.loads(out_buffer.getvalue().strip())
+        self.assertEqual(payload.get("intent"), "auto_progress", payload)
+        daemon_bootstrap = payload.get("daemonBootstrap") or {}
+        self.assertTrue(daemon_bootstrap.get("attempted"), payload)
+        self.assertEqual(daemon_bootstrap.get("status"), "started", payload)
+        self.assertEqual(popen_calls["count"], 1, payload)
+
+    def test_control_panel_advance_once_command_hits_explicit_branch(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-051: 推进一次命令应命中分支",
+        ])
+
+        out = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@orchestrator 推进一次",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(out.get("ok"), out)
+        self.assertTrue(out.get("handled"), out)
+        self.assertEqual(out.get("intent"), "advance_once", out)
+        run_payload = out.get("run") or {}
+        self.assertEqual(run_payload.get("intent"), "autopilot", out)
+        self.assertEqual(run_payload.get("maxSteps"), 1, out)
+        self.assertEqual(run_payload.get("stepsRun"), 1, out)
 
     def test_user_friendly_start_project_bootstrap(self):
         proj = self.root / "demo-project"

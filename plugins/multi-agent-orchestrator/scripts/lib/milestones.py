@@ -4061,6 +4061,104 @@ def should_ignore_bot_loop(actor: str, text: str) -> bool:
     return any(stripped.startswith(prefix) for prefix in MILESTONE_PREFIXES)
 
 
+def _pid_is_running(pid: Any) -> bool:
+    try:
+        p = int(pid)
+    except Exception:
+        return False
+    if p <= 0:
+        return False
+    try:
+        os.kill(p, 0)
+        return True
+    except Exception:
+        return False
+
+
+def ensure_scheduler_daemon_running(
+    args: argparse.Namespace,
+    spawn_enabled: bool,
+    visibility_mode: str,
+    scheduler_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if str(getattr(args, "mode", "send") or "send") != "send":
+        return {"attempted": False, "status": "skipped", "reason": "mode_not_send"}
+
+    state = load_scheduler_daemon_state(args.root)
+    is_running = bool(state.get("running")) and _pid_is_running(state.get("pid"))
+    if is_running:
+        return {
+            "attempted": True,
+            "status": "already_running",
+            "pid": int(state.get("pid") or 0),
+            "state": state,
+        }
+
+    cmd = [
+        "python3",
+        os.path.abspath(__file__),
+        "scheduler-daemon",
+        "--root",
+        str(args.root),
+        "--actor",
+        "orchestrator",
+        "--poll-sec",
+        str(SCHEDULER_DAEMON_DEFAULT_POLL_SEC),
+        "--mode",
+        "send",
+        "--group-id",
+        str(args.group_id),
+        "--account-id",
+        str(args.account_id),
+        "--session-id",
+        str(getattr(args, "session_id", "") or ""),
+        "--timeout-sec",
+        str(normalize_timeout_sec(getattr(args, "timeout_sec", 0), default=0)),
+        "--visibility-mode",
+        str(visibility_mode or DEFAULT_VISIBILITY_MODE),
+    ]
+    if spawn_enabled:
+        cmd.append("--spawn")
+    else:
+        cmd.append("--no-spawn")
+    spawn_cmd = str(getattr(args, "spawn_cmd", "") or "").strip()
+    if spawn_cmd:
+        cmd.extend(["--spawn-cmd", spawn_cmd])
+    spawn_output = str(getattr(args, "spawn_output", "") or "").strip()
+    if spawn_output:
+        cmd.extend(["--spawn-output", spawn_output])
+
+    if isinstance(scheduler_state, dict):
+        interval_sec = int(scheduler_state.get("intervalSec") or 0)
+        if interval_sec > 0:
+            cmd.extend(["--interval-sec", str(interval_sec)])
+        max_steps = int(scheduler_state.get("maxSteps") or 0)
+        if max_steps > 0:
+            cmd.extend(["--max-steps", str(max_steps)])
+
+    stale = bool(state.get("running")) and not is_running
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return {
+            "attempted": True,
+            "status": "started",
+            "pid": int(getattr(proc, "pid", 0) or 0),
+            "staleRecovered": stale,
+        }
+    except Exception as err:
+        return {
+            "attempted": True,
+            "status": "failed_soft",
+            "error": clip(str(err), 200),
+            "staleRecovered": stale,
+        }
+
+
 def cmd_feishu_router(args: argparse.Namespace) -> int:
     text = (args.text or "").strip()
     norm = text.replace("＠", "@").strip()
@@ -4139,6 +4237,49 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
         )
         return 0 if out.get("ok") else 1
 
+    # Command: @orchestrator 推进一次
+    if re.match(r"^(?:推进一次|advance(?:\s+once)?|tick)$", cmd_body, flags=re.IGNORECASE):
+        spawn_enabled = True
+        if bool(getattr(args, "dispatch_manual", False)):
+            spawn_enabled = False
+        if bool(getattr(args, "dispatch_spawn", False)):
+            spawn_enabled = True
+
+        a_args = argparse.Namespace(
+            root=args.root,
+            actor="orchestrator",
+            session_id=args.session_id,
+            group_id=args.group_id,
+            account_id=args.account_id,
+            mode=args.mode,
+            timeout_sec=args.timeout_sec,
+            spawn=spawn_enabled,
+            spawn_cmd=args.spawn_cmd,
+            spawn_output=args.spawn_output,
+            max_steps=1,
+            visibility_mode=visibility_mode,
+        )
+        run = autopilot_once(a_args)
+        msg = (
+            f"[TASK] 已推进一次 | stepsRun={int(run.get('stepsRun') or 0)} | "
+            f"stopReason={str(run.get('stopReason') or '-')}"
+        )
+        out = send_group_message(args.group_id, args.account_id, msg, args.mode)
+        ok = bool(run.get("ok")) and bool(out.get("ok"))
+        print(
+            json.dumps(
+                {
+                    "ok": ok,
+                    "handled": True,
+                    "intent": "advance_once",
+                    "run": run,
+                    "send": out,
+                },
+                ensure_ascii=True,
+            )
+        )
+        return 0 if ok else 1
+
     # Command: @orchestrator 自动推进 开 [N] | 关 | 状态
     m = re.match(
         r"^(?:自动推进|auto[\s_-]*progress)(?:\s+(开|关|状态|on|off|status)(?:\s+(\d+))?)?$",
@@ -4168,28 +4309,50 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
         if bool(getattr(args, "dispatch_spawn", False)):
             spawn_enabled = True
 
-        kick = {"ok": True, "skipped": True, "reason": "autopilot not requested"}
+        scheduler_action = "status"
+        scheduler_max_steps: Optional[int] = None
         if action == "on":
-            a_args = argparse.Namespace(
-                root=args.root,
-                actor="orchestrator",
-                session_id=args.session_id,
-                group_id=args.group_id,
-                account_id=args.account_id,
-                mode=args.mode,
-                timeout_sec=args.timeout_sec,
-                spawn=spawn_enabled,
-                spawn_cmd=args.spawn_cmd,
-                spawn_output=args.spawn_output,
-                max_steps=state.get("maxSteps", AUTO_PROGRESS_DEFAULT_MAX_STEPS),
+            scheduler_action = "enable"
+            scheduler_max_steps = int(state.get("maxSteps") or AUTO_PROGRESS_DEFAULT_MAX_STEPS)
+        elif action == "off":
+            scheduler_action = "disable"
+
+        s_args = argparse.Namespace(
+            root=args.root,
+            actor="orchestrator",
+            action=scheduler_action,
+            interval_sec=None,
+            max_steps=scheduler_max_steps,
+            force=False,
+            group_id=args.group_id,
+            account_id=args.account_id,
+            mode=args.mode,
+            session_id=args.session_id,
+            timeout_sec=args.timeout_sec,
+            spawn=spawn_enabled,
+            spawn_cmd=args.spawn_cmd,
+            spawn_output=args.spawn_output,
+            visibility_mode=visibility_mode,
+        )
+        scheduler = scheduler_run_once(s_args)
+
+        kick = {"ok": True, "skipped": True, "reason": "autopilot not requested"}
+        if action == "on" and isinstance(scheduler.get("run"), dict):
+            kick = dict(scheduler.get("run") or {})
+
+        daemon_bootstrap = {"attempted": False, "status": "skipped", "reason": "action_not_on_or_mode_not_send"}
+        if action == "on":
+            daemon_bootstrap = ensure_scheduler_daemon_running(
+                args,
+                spawn_enabled=spawn_enabled,
                 visibility_mode=visibility_mode,
+                scheduler_state=scheduler.get("state") if isinstance(scheduler.get("state"), dict) else None,
             )
-            kick = autopilot_once(a_args)
 
         status_text = "开启" if state.get("enabled") else "关闭"
         msg = f"[TASK] 自动推进已{status_text} | maxSteps={state.get('maxSteps')}"
         out = send_group_message(args.group_id, args.account_id, msg, args.mode)
-        ok = bool(out.get("ok")) and bool(kick.get("ok"))
+        ok = bool(out.get("ok")) and bool(kick.get("ok")) and bool(scheduler.get("ok"))
         print(
             json.dumps(
                 {
@@ -4198,6 +4361,8 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
                     "intent": "auto_progress",
                     "action": action,
                     "state": state,
+                    "scheduler": scheduler,
+                    "daemonBootstrap": daemon_bootstrap,
                     "kickoff": kick,
                     "send": out,
                 },
