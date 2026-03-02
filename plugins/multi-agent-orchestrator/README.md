@@ -30,8 +30,9 @@ Implemented in this MVP:
   - `debugger/invest-analyst/broadcaster` 默认保持 OpenClaw agent 执行
   - coder 回传仍按统一结构化 JSON 合约写回看板并触发 `[DONE]/[BLOCKED]`
 - Visibility modes:
-  - `milestone_only`（默认）仅里程碑广播
-  - `handoff_visible` / `full_visible` 会额外发送 agent -> orchestrator 的可见交接 @mention
+  - `handoff_visible`（默认）会额外发送 agent -> orchestrator 的可见交接 @mention
+  - `milestone_only` 仅里程碑广播
+  - `full_visible` 预留给更丰富的可见协作信号
 - Simple Wake-up v1:
   - `@orchestrator run` / `dispatch` 会发布 `[CLAIM]` + `[TASK]`（默认手动协作模式）
   - spawn 完成后自动解析子代理输出，回写看板为 `done` / `blocked`，并发布 `[DONE]` / `[BLOCKED]` 中文里程碑
@@ -230,7 +231,7 @@ For live Feishu validation, run the same `@orchestrator run T-1007` in the allow
 
 ## Visibility Mode Usage
 
-默认是 `milestone_only`。如果希望群里看到可见交接 @mention，可切换：
+默认是 `handoff_visible`。如果希望切回低噪声里程碑广播，可切换到 `milestone_only`：
 
 ```bash
 ./scripts/orchestrator-router \

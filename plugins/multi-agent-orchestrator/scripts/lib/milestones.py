@@ -62,6 +62,7 @@ BOT_OPENID_CONFIG_CANDIDATES = (
     os.path.join("state", "feishu-bot-openids.json"),
 )
 VISIBILITY_MODES = ("milestone_only", "handoff_visible", "full_visible")
+DEFAULT_VISIBILITY_MODE = "handoff_visible"
 ACCEPTANCE_POLICY_CONFIG_CANDIDATES = (
     os.path.join("config", "acceptance-policy.json"),
     os.path.join("state", "acceptance-policy.json"),
@@ -1567,9 +1568,9 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
 
 
 def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
-    visibility_mode = str(getattr(args, "visibility_mode", VISIBILITY_MODES[0]) or VISIBILITY_MODES[0])
+    visibility_mode = str(getattr(args, "visibility_mode", DEFAULT_VISIBILITY_MODE) or DEFAULT_VISIBILITY_MODE)
     if visibility_mode not in VISIBILITY_MODES:
-        visibility_mode = VISIBILITY_MODES[0]
+        visibility_mode = DEFAULT_VISIBILITY_MODE
 
     if args.actor != "orchestrator":
         return {"ok": False, "error": "dispatch is restricted to actor=orchestrator"}
@@ -3485,9 +3486,9 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
     # Back-compat: --dispatch-manual existed previously; manual is now the default.
     if bool(getattr(args, "dispatch_manual", False)):
         dispatch_spawn = False
-    visibility_mode = str(getattr(args, "visibility_mode", VISIBILITY_MODES[0]) or VISIBILITY_MODES[0])
+    visibility_mode = str(getattr(args, "visibility_mode", DEFAULT_VISIBILITY_MODE) or DEFAULT_VISIBILITY_MODE)
     if visibility_mode not in VISIBILITY_MODES:
-        visibility_mode = VISIBILITY_MODES[0]
+        visibility_mode = DEFAULT_VISIBILITY_MODE
 
     cmd_body = norm
     if norm.lower().startswith("@orchestrator"):
@@ -4151,7 +4152,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_dispatch.add_argument("--account-id", default=DEFAULT_ACCOUNT_ID)
     p_dispatch.add_argument("--mode", choices=["send", "dry-run"], default="send")
     p_dispatch.add_argument("--timeout-sec", type=int, default=120)
-    p_dispatch.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=VISIBILITY_MODES[0])
+    p_dispatch.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=DEFAULT_VISIBILITY_MODE)
     # A+1 default: manual dispatch (send [CLAIM]/[TASK]) and wait for report.
     # Enable spawn only when explicitly requested.
     p_dispatch.add_argument("--spawn", dest="spawn", action="store_true", default=False)
@@ -4173,7 +4174,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_autopilot.add_argument("--spawn-cmd", default="")
     p_autopilot.add_argument("--spawn-output", default="")
     p_autopilot.add_argument("--max-steps", type=int, default=3)
-    p_autopilot.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=VISIBILITY_MODES[0])
+    p_autopilot.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=DEFAULT_VISIBILITY_MODE)
     p_autopilot.set_defaults(func=cmd_autopilot)
 
     p_scheduler = sub.add_parser("scheduler-run")
@@ -4192,7 +4193,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_scheduler.add_argument("--no-spawn", dest="spawn", action="store_false")
     p_scheduler.add_argument("--spawn-cmd", default="")
     p_scheduler.add_argument("--spawn-output", default="")
-    p_scheduler.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=VISIBILITY_MODES[0])
+    p_scheduler.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=DEFAULT_VISIBILITY_MODE)
     p_scheduler.set_defaults(func=cmd_scheduler_run)
 
     p_scheduler_daemon = sub.add_parser("scheduler-daemon")
@@ -4213,7 +4214,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_scheduler_daemon.add_argument("--no-spawn", dest="spawn", action="store_false")
     p_scheduler_daemon.add_argument("--spawn-cmd", default="")
     p_scheduler_daemon.add_argument("--spawn-output", default="")
-    p_scheduler_daemon.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=VISIBILITY_MODES[0])
+    p_scheduler_daemon.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=DEFAULT_VISIBILITY_MODE)
     p_scheduler_daemon.set_defaults(func=cmd_scheduler_daemon)
 
     p_clarify = sub.add_parser("clarify")
@@ -4241,7 +4242,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_feishu.add_argument("--timeout-sec", type=int, default=120)
     p_feishu.add_argument("--dispatch-spawn", action="store_true")
     p_feishu.add_argument("--dispatch-manual", action="store_true")
-    p_feishu.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=VISIBILITY_MODES[0])
+    p_feishu.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=DEFAULT_VISIBILITY_MODE)
     p_feishu.add_argument("--autopilot-max-steps", type=int, default=3)
     p_feishu.add_argument("--spawn-cmd", default="")
     p_feishu.add_argument("--spawn-output", default="")

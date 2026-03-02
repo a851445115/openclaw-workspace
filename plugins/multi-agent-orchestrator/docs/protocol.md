@@ -80,8 +80,9 @@ Prefix command text with `@agent-name` to attach routing metadata:
 - Default execution is manual dispatch: orchestrator sends `[CLAIM]`/`[TASK]`, then waits for report-based completion.
 - Spawn closed-loop is opt-in (`--dispatch-spawn`) or via `@orchestrator autopilot [N]`.
 - Visibility mode is switchable:
-  - `milestone_only` (default)
-  - `handoff_visible` / `full_visible` emit visible worker handoff report with real `@orchestrator` mention.
+  - `handoff_visible` (default) emits visible worker handoff report with real `@orchestrator` mention.
+  - `milestone_only` keeps group output low-noise.
+  - `full_visible` reserved for richer visible collaboration signals.
 - Group messages remain milestone summaries for human observability; task state source of truth is local board files.
 
 ## Acceptance Policy Gate

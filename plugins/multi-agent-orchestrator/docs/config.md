@@ -100,8 +100,8 @@ Compatibility strategy (`config_runtime.load_runtime_config`):
 - `feishu-router` now supports group command intents through orchestrator entry: create/claim/done/block/status/synthesize/escalate/dispatch/clarify.
 - Runtime guardrails include bot-to-bot milestone echo suppression and clarify global cooldown throttle.
 - Visibility mode switch:
-  - `milestone_only`: default low-noise milestones
-  - `handoff_visible`: show worker->orchestrator handoff report
+  - `handoff_visible`: default worker->orchestrator visible handoff report
+  - `milestone_only`: low-noise milestones only
   - `full_visible`: reserved for richer visible collaboration signals
 - `autopilot` command:
   - `@orchestrator autopilot [N]` loops runnable tasks with a max-step cap (default 3).
