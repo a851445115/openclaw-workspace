@@ -47,7 +47,39 @@
       "elapsedMs": 108889,
       "retryCount": 2,
       "updatedAt": "2026-03-02T13:42:34Z"
+    },
+    "T-001|broadcaster": {
+      "taskId": "T-001",
+      "agent": "broadcaster",
+      "tokenUsage": 0,
+      "elapsedMs": 66620,
+      "retryCount": 1,
+      "updatedAt": "2026-03-02T16:25:03Z"
+    },
+    "T-010|paper-ingestor": {
+      "taskId": "T-010",
+      "agent": "paper-ingestor",
+      "tokenUsage": 0,
+      "elapsedMs": 99631,
+      "retryCount": 1,
+      "updatedAt": "2026-03-02T16:45:27Z"
+    },
+    "T-011|paper-summarizer": {
+      "taskId": "T-011",
+      "agent": "paper-summarizer",
+      "tokenUsage": 0,
+      "elapsedMs": 658,
+      "retryCount": 1,
+      "updatedAt": "2026-03-02T16:45:37Z"
+    },
+    "T-011|coder": {
+      "taskId": "T-011",
+      "agent": "coder",
+      "tokenUsage": 0,
+      "elapsedMs": 1388,
+      "retryCount": 1,
+      "updatedAt": "2026-03-02T16:56:10Z"
     }
   },
-  "updatedAt": "2026-03-02T13:42:34Z"
+  "updatedAt": "2026-03-02T16:56:10Z"
 }

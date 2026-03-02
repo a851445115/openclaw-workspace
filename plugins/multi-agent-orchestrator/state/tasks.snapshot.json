@@ -1,7 +1,372 @@
 {
-  "tasks": {},
+  "tasks": {
+    "T-010": {
+      "taskId": "T-010",
+      "title": "[paper-xhs-3min:A2] Stage A: Ingest findings into run workspace",
+      "status": "done",
+      "owner": "paper-ingestor",
+      "assigneeHint": "paper-ingestor",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-03-02T16:31:58Z",
+      "updatedAt": "2026-03-02T16:45:27Z",
+      "blockedReason": null,
+      "result": "\u5df2\u5b8c\u6210\u8bba\u6587A2\u7684\u89c4\u8303\u5316\u5904\u7406\u548c\u58f0\u660e\u63d0\u53d6\uff0c\u751f\u6210normalized-paper.md\uff08\u79fb\u9664\u9875\u7709\u9875\u811a\u5e76\u4fdd\u7559\u7ae0\u8282\u987a\u5e8f\uff09\u3001claims.jsonl\uff0810\u6761\u539f\u5b50\u5316\u58f0\u660e\uff09\u548cingest-checklist.md\uff0815/17\u68c0\u67e5\u901a\u8fc7\uff09 | \u786c\u8bc1\u636e: /Users/chengren17/xhs-share/A2/workspace/a-ingest/claims.jsonl; normalized-paper.m...",
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "dc01c83b-3c04-4544-b294-43ea1867f6d7",
+        "b5b64add-7ec2-41ef-a91f-0ca124ef183c",
+        "a4a0e732-3599-418b-ac1b-d4e646c66133",
+        "5167b202-6290-4cc3-80b1-443434cd596b"
+      ],
+      "dependsOn": [],
+      "blockedBy": [],
+      "priority": 0,
+      "impact": 0
+    },
+    "T-011": {
+      "taskId": "T-011",
+      "title": "[paper-xhs-3min:A2] Stage B: Draft XHS summary",
+      "status": "in_progress",
+      "owner": "debugger",
+      "assigneeHint": "paper-summarizer",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-03-02T16:32:00Z",
+      "updatedAt": "2026-03-02T16:56:10Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "e3a9caa8-a65d-4b42-a31b-a9f03829184e",
+        "cc452912-ba6e-401d-8b74-a11c42afd20a",
+        "90287dcf-c23a-4dc3-94c6-8014d8cda181",
+        "2d1c2748-fc47-4dcc-a868-38bf4e75ea3a"
+      ],
+      "dependsOn": [
+        "T-010"
+      ],
+      "blockedBy": [],
+      "priority": 0,
+      "impact": 0
+    },
+    "T-012": {
+      "taskId": "T-012",
+      "title": "[paper-xhs-3min:A2] Stage C: Citation and factual checks",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "invest-analyst",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-03-02T16:32:03Z",
+      "updatedAt": "2026-03-02T16:32:30Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "1c7faa8f-f287-4ac4-95c5-0dcf1dc4c60f"
+      ],
+      "dependsOn": [
+        "T-011"
+      ],
+      "blockedBy": [],
+      "priority": 0,
+      "impact": 0
+    },
+    "T-013": {
+      "taskId": "T-013",
+      "title": "[paper-xhs-3min:A2] Stage D: Publish-ready post assembly",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "broadcaster",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-03-02T16:32:05Z",
+      "updatedAt": "2026-03-02T16:32:30Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "956774cf-2f23-4b41-82ab-f95041135822"
+      ],
+      "dependsOn": [
+        "T-012"
+      ],
+      "blockedBy": [],
+      "priority": 0,
+      "impact": 0
+    },
+    "T-014": {
+      "taskId": "T-014",
+      "title": "[paper-xhs-3min:A2] Stage E: Generate image prompts",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "paper-summarizer",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-03-02T16:32:07Z",
+      "updatedAt": "2026-03-02T16:32:30Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "557bd2a7-a239-41a0-bc45-7e904918dd37"
+      ],
+      "dependsOn": [
+        "T-013"
+      ],
+      "blockedBy": [],
+      "priority": 0,
+      "impact": 0
+    },
+    "T-015": {
+      "taskId": "T-015",
+      "title": "[paper-xhs-3min:A2] Stage F: Update knowledge base",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "knowledge-curator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-03-02T16:32:09Z",
+      "updatedAt": "2026-03-02T16:32:30Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "ffa12936-a1a5-43e8-ab84-0d894e11d8a2"
+      ],
+      "dependsOn": [
+        "T-014"
+      ],
+      "blockedBy": [],
+      "priority": 0,
+      "impact": 0
+    },
+    "T-016": {
+      "taskId": "T-016",
+      "title": "[paper-xhs-3min:A2] Stage G: Quality gate review",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "debugger",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-03-02T16:32:11Z",
+      "updatedAt": "2026-03-02T16:32:30Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "a5fbb74b-9a4d-4a33-84d6-0fd8a098748e"
+      ],
+      "dependsOn": [
+        "T-015"
+      ],
+      "blockedBy": [],
+      "priority": 0,
+      "impact": 0
+    },
+    "T-017": {
+      "taskId": "T-017",
+      "title": "[paper-xhs-3min:A2] Stage H: Conversion package export",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "coder",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-03-02T16:32:13Z",
+      "updatedAt": "2026-03-02T16:32:30Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "31e14401-9083-4c2f-8219-551c30f17f9f"
+      ],
+      "dependsOn": [
+        "T-016"
+      ],
+      "blockedBy": [],
+      "priority": 0,
+      "impact": 0
+    },
+    "T-018": {
+      "taskId": "T-018",
+      "title": "[paper-xhs-3min:A2] Stage I: Weekly review synthesis",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "invest-analyst",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-03-02T16:32:15Z",
+      "updatedAt": "2026-03-02T16:32:30Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "5940c445-1640-4d09-8c70-0d4e5a0a6e87"
+      ],
+      "dependsOn": [
+        "T-017"
+      ],
+      "blockedBy": [],
+      "priority": 0,
+      "impact": 0
+    },
+    "T-019": {
+      "taskId": "T-019",
+      "title": "[paper-xhs-3min:A2] Stage J: Reproduction scope and hypothesis mapping",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "invest-analyst",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-03-02T16:32:18Z",
+      "updatedAt": "2026-03-02T16:32:30Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "80c9bec9-58d9-43a9-b38c-a62ec40da0e8"
+      ],
+      "dependsOn": [
+        "T-018"
+      ],
+      "blockedBy": [],
+      "priority": 0,
+      "impact": 0
+    },
+    "T-020": {
+      "taskId": "T-020",
+      "title": "[paper-xhs-3min:A2] Stage K: Reproduction data pipeline with synthetic fallback",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "paper-ingestor",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-03-02T16:32:20Z",
+      "updatedAt": "2026-03-02T16:32:30Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "bf151e0a-8325-4e2a-b7a5-41861956a379"
+      ],
+      "dependsOn": [
+        "T-019"
+      ],
+      "blockedBy": [],
+      "priority": 0,
+      "impact": 0
+    },
+    "T-021": {
+      "taskId": "T-021",
+      "title": "[paper-xhs-3min:A2] Stage L: Core model and algorithm implementation",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "coder",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-03-02T16:32:22Z",
+      "updatedAt": "2026-03-02T16:32:30Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "23a94d12-4f84-4d54-9aa9-24522d0f395b"
+      ],
+      "dependsOn": [
+        "T-020"
+      ],
+      "blockedBy": [],
+      "priority": 0,
+      "impact": 0
+    },
+    "T-022": {
+      "taskId": "T-022",
+      "title": "[paper-xhs-3min:A2] Stage M: Experiment execution and metric collection",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "coder",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-03-02T16:32:24Z",
+      "updatedAt": "2026-03-02T16:32:30Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "211bb3e8-f4c8-483b-9548-300f41e8163c"
+      ],
+      "dependsOn": [
+        "T-021"
+      ],
+      "blockedBy": [],
+      "priority": 0,
+      "impact": 0
+    },
+    "T-023": {
+      "taskId": "T-023",
+      "title": "[paper-xhs-3min:A2] Stage N: Reproduction integrity audit",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "debugger",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-03-02T16:32:26Z",
+      "updatedAt": "2026-03-02T16:32:30Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "7863e25e-b1e9-42ea-870d-703986e9f31c"
+      ],
+      "dependsOn": [
+        "T-022"
+      ],
+      "blockedBy": [],
+      "priority": 0,
+      "impact": 0
+    },
+    "T-024": {
+      "taskId": "T-024",
+      "title": "[paper-xhs-3min:A2] Stage O: Reproduction report and artifact package",
+      "status": "pending",
+      "owner": null,
+      "assigneeHint": "knowledge-curator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-03-02T16:32:28Z",
+      "updatedAt": "2026-03-02T16:32:30Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "f9d1ba39-50a8-47e9-9fbf-5216ee3f40f5"
+      ],
+      "dependsOn": [
+        "T-023"
+      ],
+      "blockedBy": [],
+      "priority": 0,
+      "impact": 0
+    }
+  },
   "meta": {
     "version": 2,
-    "updatedAt": "2026-03-02T13:43:08Z"
+    "updatedAt": "2026-03-02T16:56:10Z"
   }
 }

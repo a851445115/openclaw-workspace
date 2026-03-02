@@ -32,7 +32,18 @@
       "cooldownUntilTs": 1772459074,
       "cooldownUntil": "2026-03-02T13:44:34Z",
       "updatedAt": "2026-03-02T13:42:34Z"
+    },
+    "T-011|spawn_failed": {
+      "taskId": "T-011",
+      "reasonCode": "spawn_failed",
+      "attempt": 2,
+      "nextAssignee": "debugger",
+      "action": "retry",
+      "recoveryState": "recovery_scheduled",
+      "cooldownUntilTs": 1772470750,
+      "cooldownUntil": "2026-03-02T16:59:10Z",
+      "updatedAt": "2026-03-02T16:56:10Z"
     }
   },
-  "updatedAt": "2026-03-02T13:42:34Z"
+  "updatedAt": "2026-03-02T16:56:10Z"
 }
