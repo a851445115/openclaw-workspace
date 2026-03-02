@@ -1861,6 +1861,22 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
             else:
                 worker_report = {"ok": True, "skipped": True, "reason": "spawn not done or visibility hidden"}
 
+    backfill_result: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "spawn_done_or_not_enabled"}
+    if args.spawn:
+        spawn_decision = str(spawn.get("decision") or "").strip().lower()
+        if spawn_decision and spawn_decision != "done":
+            try:
+                backfill_result = knowledge_adapter.backfill_failure_feedback(
+                    args.root,
+                    task_id=args.task_id,
+                    agent=args.agent,
+                    reason_code=str(spawn.get("reasonCode") or ""),
+                    detail=str(spawn.get("detail") or ""),
+                )
+            except Exception as err:
+                backfill_result = {"ok": False, "skipped": True, "error": clip(str(err), 200)}
+    knowledge_meta["backfill"] = backfill_result
+
     auto_close = bool(args.spawn and not spawn.get("skipped"))
     selection = getattr(args, "selection", None)
     ok = (

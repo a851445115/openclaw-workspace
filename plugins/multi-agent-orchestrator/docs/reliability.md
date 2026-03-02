@@ -151,10 +151,13 @@ Validation checks during replay:
   - `readOnly`：只读保护位，关闭时直接降级
   - `timeoutMs`：读取反馈源超时时间（毫秒）
   - `maxItems`：注入 prompt 的知识提示条数上限
+  - `maxRetries`：单个 source 读取重试上限（默认 `1`，总尝试次数=`1+maxRetries`）
   - `sourceCandidates`：知识反馈源候选路径（相对任务根目录）
 - 适配器：`scripts/lib/knowledge_adapter.py`
-  - 仅执行本地文件读取，不写状态文件
+  - 读取阶段仅访问本地文件；失败回填阶段仅写入 root 下 `state/knowledge-feedback.json`
   - 配置读取顺序：仓库默认配置 -> 任务根目录覆盖配置
+  - `sourceCandidates` 仅允许 root 目录内路径；绝对越界和 `../` 越界会被拒绝并降级
+  - 单个 source 失败时继续尝试后续候选，并在 timeout 总预算内执行重试
   - 反馈读取失败/超时时返回降级结果，不抛出阻塞错误
 - dispatch 行为
   - 在 agent prompt 中注入 `KNOWLEDGE_HINTS` 段（有有效反馈时）
@@ -162,4 +165,8 @@ Validation checks during replay:
     - `degraded`：是否降级
     - `degradeReason`：降级原因（若有）
     - `knowledgeTags`：被注入的知识类别（如 lessons/mistakes/patterns）
+    - `backfill`：spawn 非 done 时的失败知识回填结果（best-effort）
+  - spawn 非 done 时，best-effort 回填 `state/knowledge-feedback.json`
+    - 更新 `mistakes` / `patterns`（去重、限长）
+    - 写入 `tags`（包含 `dispatch_failure` 与 reason tag）
   - 即使知识适配器异常，派发流程仍继续（不阻塞 claim/task 发送与后续闭环）
