@@ -262,6 +262,124 @@ class FeishuCardCallbackTests(unittest.TestCase):
         self.assertEqual(ack.get("messageId"), "action_message_id", out)
         self.assertEqual(ack.get("actionTs"), "action_ts_123", out)
 
+    def test_callback_detected_from_generic_json_block_without_strict_header_match(self):
+        raw = make_wrapper(
+            text="@orchestrator status",
+            conv={
+                "conversation_label": "oc_test_group",
+                "sender": "tester",
+                "was_mentioned": True,
+            },
+            sender={
+                "name": "Test User",
+                "sender_type": "user",
+                "open_id": "ou_generic_click_user",
+            },
+            extra_json_sections=[
+                (
+                    "Card action payload (metadata):",
+                    {
+                        "event": {
+                            "header": {"event_type": "card.action.trigger", "event_id": "evt_card_generic_1"},
+                            "context": {"open_message_id": "om_generic_001"},
+                            "action": {"value": {"command": "@orchestrator create task: generic callback"}},
+                            "operator": {"operator_id": {"open_id": "ou_generic_click_user"}},
+                        }
+                    },
+                )
+            ],
+        )
+        out = run_inbound(self.root, raw)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out.get("source"), "card_callback", out)
+        self.assertEqual(out.get("text"), "@orchestrator create task: generic callback", out)
+        self.assertEqual((out.get("router") or {}).get("source"), "card_callback", out)
+
+    def test_callback_command_from_stringified_action_value(self):
+        raw = make_wrapper(
+            text="@orchestrator status",
+            conv={
+                "conversation_label": "oc_test_group",
+                "sender": "tester",
+                "message_id": "om_stringified_1",
+                "was_mentioned": True,
+            },
+            sender={
+                "name": "Stringified User",
+                "sender_type": "user",
+                "open_id": "ou_stringified_user",
+            },
+            card_callback={
+                "event_id": "evt_stringified_1",
+                "action": {
+                    "value": json.dumps(
+                        {
+                            "command": "@orchestrator create task: stringified callback",
+                            "message_id": "om_stringified_1",
+                        },
+                        ensure_ascii=True,
+                    )
+                },
+                "operator": {"operator_id": {"open_id": "ou_stringified_user"}},
+            },
+        )
+        out = run_inbound(self.root, raw)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out.get("source"), "card_callback", out)
+        self.assertEqual(out.get("text"), "@orchestrator create task: stringified callback", out)
+        self.assertEqual((out.get("router") or {}).get("source"), "card_callback", out)
+
+    def test_card_callback_uses_sender_key_actor_and_skips_bot_loop_guard(self):
+        config_dir = self.root / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "feishu-bot-openids.json").write_text(
+            json.dumps(
+                {
+                    "byRole": {
+                        "orchestrator": {
+                            "open_id": "ou_orchestrator_bot",
+                        }
+                    }
+                },
+                ensure_ascii=True,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        raw = make_wrapper(
+            text="@orchestrator status",
+            conv={
+                "conversation_label": "oc_test_group",
+                "sender": "ou_orchestrator_bot",
+                "message_id": "om_bot_sender_1",
+                "was_mentioned": False,
+            },
+            sender={
+                "name": "orchestrator",
+                "sender_type": "bot",
+                "open_id": "ou_orchestrator_bot",
+            },
+            card_callback={
+                "event_id": "evt_bot_sender_1",
+                "action": {
+                    "value": {
+                        "command": "@orchestrator create task: callback bot sender guard",
+                        "message_id": "om_bot_sender_1",
+                    }
+                },
+                "event": {
+                    "operator": {"operator_id": {"open_id": "ou_real_click_user"}},
+                },
+            },
+        )
+        out = run_inbound(self.root, raw)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out.get("source"), "card_callback", out)
+        self.assertEqual(out.get("actor"), "ou_real_click_user", out)
+        self.assertEqual((out.get("router") or {}).get("intent"), "board_cmd", out)
+        self.assertEqual((out.get("router") or {}).get("source"), "card_callback", out)
+
     def test_callback_dedup_isolated_by_sender_identity(self):
         first = make_card_callback_wrapper(
             "@orchestrator create task: sender one",

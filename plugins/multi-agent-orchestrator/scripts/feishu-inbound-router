@@ -41,7 +41,16 @@ CALLBACK_DEDUP_FALLBACK_TTL_SEC = 300
 CALLBACK_METADATA_HEADERS = (
     "Card callback (untrusted metadata):",
     "Card Callback (untrusted metadata):",
+    "Card action (untrusted metadata):",
+    "Card Action (untrusted metadata):",
+    "Card action payload (untrusted metadata):",
+    "Card Action Payload (untrusted metadata):",
 )
+JSON_CODE_BLOCK_RE = re.compile(r"```json\s*(\{.*?\})\s*```", flags=re.DOTALL)
+CALLBACK_EVENT_TYPES = {
+    "card.action.trigger",
+    "card_action_trigger",
+}
 
 
 def extract_json_block(raw: str, header: str) -> Dict[str, Any]:
@@ -53,6 +62,18 @@ def extract_json_block(raw: str, header: str) -> Dict[str, Any]:
         return obj if isinstance(obj, dict) else {}
     except Exception:
         return {}
+
+
+def extract_all_json_blocks(raw: str) -> Sequence[Dict[str, Any]]:
+    blocks = []
+    for m in JSON_CODE_BLOCK_RE.finditer(raw):
+        try:
+            obj = json.loads(m.group(1))
+        except Exception:
+            continue
+        if isinstance(obj, dict):
+            blocks.append(obj)
+    return blocks
 
 
 def normalize_message_text(raw: str) -> str:
@@ -75,6 +96,64 @@ def extract_callback_block(raw: str) -> Dict[str, Any]:
     for header in CALLBACK_METADATA_HEADERS:
         obj = extract_json_block(raw, header)
         if obj:
+            return obj
+
+    for obj in extract_all_json_blocks(raw):
+        event_type = first_string(
+            [obj],
+            [
+                ("event_type",),
+                ("eventType",),
+                ("header", "event_type"),
+                ("header", "eventType"),
+                ("event", "event_type"),
+                ("event", "eventType"),
+                ("event", "header", "event_type"),
+                ("event", "header", "eventType"),
+            ],
+        ).lower()
+        marker = first_string(
+            [obj],
+            [
+                ("event_id",),
+                ("eventId",),
+                ("event", "event_id"),
+                ("event", "eventId"),
+                ("event", "header", "event_id"),
+                ("event", "header", "eventId"),
+                ("token",),
+                ("event", "token"),
+                ("header", "token"),
+                ("event", "context", "open_message_id"),
+                ("event", "context", "openMessageId"),
+                ("event", "context", "open_chat_id"),
+                ("event", "context", "openChatId"),
+                ("event", "operator", "operator_id", "open_id"),
+                ("event", "operator", "operator_id", "user_id"),
+                ("event", "operator", "open_id"),
+                ("event", "operator", "user_id"),
+                ("operator", "operator_id", "open_id"),
+                ("operator", "operator_id", "user_id"),
+                ("operator", "open_id"),
+                ("operator", "user_id"),
+            ],
+        )
+        has_command = bool(
+            first_string(
+                [obj],
+                [
+                    ("action", "value", "command"),
+                    ("event", "action", "value", "command"),
+                    ("action", "value", "cmd"),
+                    ("event", "action", "value", "cmd"),
+                    ("value", "command"),
+                    ("value", "cmd"),
+                    ("form_value", "command"),
+                    ("action", "form_value", "command"),
+                ],
+            )
+        )
+        if has_command and (event_type in CALLBACK_EVENT_TYPES or bool(marker)):
             return obj
     return {}
 
@@ -101,6 +180,29 @@ def first_string(objects: Sequence[Dict[str, Any]], paths: Sequence[Sequence[str
     return ""
 
 
+def extract_command_from_embedded_value(raw_value: Any) -> str:
+    if not isinstance(raw_value, str):
+        return ""
+    text = raw_value.strip()
+    if not text or not text.startswith("{"):
+        return ""
+    try:
+        obj = json.loads(text)
+    except Exception:
+        return ""
+    if not isinstance(obj, dict):
+        return ""
+    return first_string(
+        [obj],
+        [
+            ("command",),
+            ("cmd",),
+            ("action", "command"),
+            ("action", "cmd"),
+        ],
+    )
+
+
 def build_callback_context(raw: str, conv: Dict[str, Any], sender: Dict[str, Any], actor_raw: str) -> Dict[str, Any]:
     callback = extract_callback_block(raw)
     if not callback:
@@ -119,6 +221,15 @@ def build_callback_context(raw: str, conv: Dict[str, Any], sender: Dict[str, Any
             ("action", "form_value", "command"),
         ],
     )
+    if not command:
+        command = extract_command_from_embedded_value(
+            deep_get(callback, ("action", "value"))
+            or deep_get(callback, ("event", "action", "value"))
+            or deep_get(callback, ("value",))
+            or deep_get(callback, ("form_value",))
+            or deep_get(callback, ("action", "form_value"))
+            or deep_get(callback, ("event", "action", "form_value"))
+        )
     if not command:
         return {}
 
@@ -509,6 +620,9 @@ def main() -> int:
     if callback:
         source = "card_callback"
         text = str(callback.get("command") or "").strip() or text
+        callback_actor_raw = str(callback.get("senderKey") or "").strip()
+        if callback_actor_raw:
+            actor = normalize_actor(callback_actor_raw, openid_role)
         ack = {
             "ok": True,
             "source": source,
@@ -552,7 +666,7 @@ def main() -> int:
             print(json.dumps(out, ensure_ascii=True))
             return 0
 
-    if is_bot_sender(actor, sender):
+    if source != "card_callback" and is_bot_sender(actor, sender):
         stripped = text.strip()
         if actor.lower() == args.account_id.lower() or stripped.startswith(MILESTONE_PREFIXES):
             out = {
