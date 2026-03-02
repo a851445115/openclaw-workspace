@@ -123,6 +123,7 @@ DEFAULT_EXECUTOR_ROUTING: Dict[str, str] = {
     "debugger": SPAWN_EXECUTOR_CODEX,
 }
 DEFAULT_XHS_WORKFLOW_ROOT = "/Users/chengren17/.openclaw/projects/paper-xhs-3min-workflow"
+DEFAULT_XHS_OUTPUT_ROOT = "/Users/chengren17/xhs-share"
 XHS_WORKFLOW_NAME = "paper-xhs-3min"
 XHS_TEMPLATE_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "templates", "workflows", XHS_WORKFLOW_NAME)
@@ -130,6 +131,7 @@ XHS_TEMPLATE_DIR = os.path.abspath(
 XHS_CONTEXT_MARKER_FILE = "orchestrator-bootstrap.json"
 XHS_ALLOWED_PLACEHOLDERS = {"paper_id", "workflow_root", "run_dir", "pdf_path"}
 XHS_PLACEHOLDER_RE = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
+XHS_OUTPUT_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 XHS_STAGE_DEFINITIONS: Tuple[Dict[str, str], ...] = (
     {
         "stageId": "A0",
@@ -2788,6 +2790,14 @@ def normalize_project_path(raw: str) -> str:
     return os.path.abspath(os.path.expanduser(s))
 
 
+def normalize_xhs_output_name(raw: str) -> str:
+    name = str(raw or "").strip()
+    if not name:
+        return "untitled-paper"
+    cleaned = XHS_OUTPUT_NAME_RE.sub("-", name).strip("._-")
+    return cleaned or "untitled-paper"
+
+
 def read_project_doc(project_path: str) -> Tuple[str, str]:
     for filename in PROJECT_DOC_CANDIDATES:
         path = os.path.join(project_path, filename)
@@ -3030,7 +3040,8 @@ def xhs_bootstrap_once(args: argparse.Namespace) -> Dict[str, Any]:
         }
 
     run_dir_raw = str(getattr(args, "run_dir", "") or "").strip()
-    run_dir = normalize_project_path(run_dir_raw) if run_dir_raw else os.path.join(workflow_root, "runs", paper_id)
+    paper_dir = normalize_xhs_output_name(paper_id)
+    run_dir = normalize_project_path(run_dir_raw) if run_dir_raw else os.path.join(DEFAULT_XHS_OUTPUT_ROOT, paper_dir)
     os.makedirs(run_dir, exist_ok=True)
 
     context_marker = os.path.join(run_dir, XHS_CONTEXT_MARKER_FILE)
