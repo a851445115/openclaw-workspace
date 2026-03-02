@@ -2,8 +2,8 @@
   "global": {
     "requireEvidence": true,
     "evidenceMode": "hard",
-    "evidenceTimeoutSec": 20,
-    "verifyTimeoutSec": 20,
+    "evidenceTimeoutSec": 0,
+    "verifyTimeoutSec": 0,
     "verifyCommands": []
   },
   "roles": {

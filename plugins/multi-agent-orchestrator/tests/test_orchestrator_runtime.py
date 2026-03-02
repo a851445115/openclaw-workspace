@@ -553,6 +553,77 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("OUTPUT_SCHEMA", prompt, out)
         self.assertIn('"status": "done|blocked|progress"', prompt, out)
 
+    def test_dispatch_prompt_keeps_long_objective_without_tail_truncation(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-040L: 长任务描述提示词保留测试",
+        ])
+        long_objective = "A" * 6200 + "TAIL_MARKER_KEEP_ME"
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-040L",
+            "--agent",
+            "coder",
+            "--task",
+            long_objective,
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"已完成并测试通过","evidence":["logs/t040l.log","pytest passed"]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        prompt = out.get("agentPrompt", "")
+        self.assertIn("TAIL_MARKER_KEEP_ME", prompt, out)
+        self.assertGreater(len(prompt), 6000, out)
+
+    def test_spawn_timeout_zero_disables_subprocess_timeout_and_openclaw_timeout_flag(self):
+        module = load_milestone_module()
+        real_run = module.subprocess.run
+        captured = {"timeout": "unset", "cmd": []}
+
+        class FakeProc:
+            returncode = 0
+            stdout = '{"status":"done","summary":"日志核验通过","evidence":["logs/ts0.log"]}'
+            stderr = ""
+
+        def fake_run(cmd, capture_output, text, check, timeout):
+            captured["cmd"] = list(cmd)
+            captured["timeout"] = timeout
+            return FakeProc()
+
+        args = argparse.Namespace(
+            root=str(self.root),
+            task_id="T-TS0",
+            agent="debugger",
+            timeout_sec=0,
+            spawn_cmd="",
+            mode="send",
+            spawn_output="",
+        )
+        try:
+            module.subprocess.run = fake_run
+            out = module.run_dispatch_spawn(args, "T-TS0: timeout=0 should be unlimited")
+        finally:
+            module.subprocess.run = real_run
+
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(out.get("decision"), "done", out)
+        self.assertIsNone(captured["timeout"], captured)
+        self.assertNotIn("--timeout", captured["cmd"], captured)
+
     def test_dispatch_structured_done_report_marks_done(self):
         run_json([
             "python3",

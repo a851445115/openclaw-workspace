@@ -125,6 +125,7 @@ Validation checks during replay:
 - 策略文件：`config/budget-policy.json`
   - `global.maxTaskTokens`：单任务累计 token 上限
   - `global.maxTaskWallTimeSec`：单任务累计执行时长上限（秒）
+    - `0` 表示不限制 wall-time
   - `global.maxTaskRetries`：单任务累计 spawn 重试/执行次数上限
   - `global.degradePolicy`：降级动作序列（支持 `reduced_context` / `manual_handoff` / `stop_run`）
   - `global.onExceeded`：超预算时默认降级动作

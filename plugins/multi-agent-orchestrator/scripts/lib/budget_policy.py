@@ -14,7 +14,8 @@ BUDGET_STATE_FILE = os.path.join("state", "budget.state.json")
 DEFAULT_BUDGET_POLICY: Dict[str, Any] = {
     "global": {
         "maxTaskTokens": 12000,
-        "maxTaskWallTimeSec": 1200,
+        # 0 means unlimited wall time.
+        "maxTaskWallTimeSec": 0,
         "maxTaskRetries": 3,
         "degradePolicy": ["reduced_context", "manual_handoff", "stop_run"],
         "onExceeded": "manual_handoff",
@@ -22,7 +23,8 @@ DEFAULT_BUDGET_POLICY: Dict[str, Any] = {
     "agents": {
         "coder": {
             "maxTaskTokens": 8000,
-            "maxTaskWallTimeSec": 900,
+            # 0 means unlimited wall time.
+            "maxTaskWallTimeSec": 0,
             "maxTaskRetries": 2,
             "degradePolicy": ["reduced_context", "manual_handoff", "stop_run"],
             "onExceeded": "manual_handoff",
@@ -69,12 +71,12 @@ def normalize_on_exceeded(value: Any, degrade_policy: List[str]) -> str:
 def normalize_policy_conf(raw: Dict[str, Any], fallback: Dict[str, Any]) -> Dict[str, Any]:
     degrade_policy = normalize_degrade_policy(raw.get("degradePolicy"), fallback.get("degradePolicy") or [])
     max_task_tokens = safe_int(raw.get("maxTaskTokens"), safe_int(fallback.get("maxTaskTokens"), 12000))
-    max_task_wall_time_sec = safe_int(raw.get("maxTaskWallTimeSec"), safe_int(fallback.get("maxTaskWallTimeSec"), 1200))
+    max_task_wall_time_sec = safe_int(raw.get("maxTaskWallTimeSec"), safe_int(fallback.get("maxTaskWallTimeSec"), 0))
     max_task_retries = safe_int(raw.get("maxTaskRetries"), safe_int(fallback.get("maxTaskRetries"), 3))
 
     return {
         "maxTaskTokens": max(1, max_task_tokens),
-        "maxTaskWallTimeSec": max(1, max_task_wall_time_sec),
+        "maxTaskWallTimeSec": max(0, max_task_wall_time_sec),
         "maxTaskRetries": max(1, max_task_retries),
         "degradePolicy": degrade_policy,
         "onExceeded": normalize_on_exceeded(raw.get("onExceeded"), degrade_policy),
@@ -189,14 +191,16 @@ def normalize_usage(entry: Dict[str, Any]) -> Dict[str, int]:
 
 def build_budget_snapshot(task_id: str, agent: str, limits: Dict[str, Any], usage: Dict[str, int]) -> Dict[str, Any]:
     max_tokens = max(1, safe_int(limits.get("maxTaskTokens"), 1))
-    max_time_ms = max(1, safe_int(limits.get("maxTaskWallTimeSec"), 1)) * 1000
+    max_wall_time_sec = max(0, safe_int(limits.get("maxTaskWallTimeSec"), 0))
+    max_time_ms = max_wall_time_sec * 1000
     max_retries = max(1, safe_int(limits.get("maxTaskRetries"), 1))
+    remaining_wall_time_ms: Any = None if max_wall_time_sec == 0 else max_time_ms - safe_int(usage.get("elapsedMs"), 0)
     return {
         "taskId": str(task_id or "").strip(),
         "agent": str(agent or "").strip().lower(),
         "limits": {
             "maxTaskTokens": max_tokens,
-            "maxTaskWallTimeSec": max(1, safe_int(limits.get("maxTaskWallTimeSec"), 1)),
+            "maxTaskWallTimeSec": max_wall_time_sec,
             "maxTaskRetries": max_retries,
         },
         "usage": {
@@ -206,7 +210,7 @@ def build_budget_snapshot(task_id: str, agent: str, limits: Dict[str, Any], usag
         },
         "remaining": {
             "tokens": max_tokens - safe_int(usage.get("tokenUsage"), 0),
-            "wallTimeMs": max_time_ms - safe_int(usage.get("elapsedMs"), 0),
+            "wallTimeMs": remaining_wall_time_ms,
             "retries": max_retries - safe_int(usage.get("retryCount"), 0),
         },
     }
@@ -216,7 +220,8 @@ def evaluate_precheck_exceeded(limits: Dict[str, Any], usage: Dict[str, int]) ->
     exceeded: List[str] = []
     if safe_int(usage.get("tokenUsage"), 0) >= max(1, safe_int(limits.get("maxTaskTokens"), 1)):
         exceeded.append("maxTaskTokens")
-    if safe_int(usage.get("elapsedMs"), 0) >= max(1, safe_int(limits.get("maxTaskWallTimeSec"), 1)) * 1000:
+    max_wall_time_sec = max(0, safe_int(limits.get("maxTaskWallTimeSec"), 0))
+    if max_wall_time_sec > 0 and safe_int(usage.get("elapsedMs"), 0) >= max_wall_time_sec * 1000:
         exceeded.append("maxTaskWallTimeSec")
     if safe_int(usage.get("retryCount"), 0) >= max(1, safe_int(limits.get("maxTaskRetries"), 1)):
         exceeded.append("maxTaskRetries")
@@ -227,7 +232,8 @@ def evaluate_postcheck_exceeded(limits: Dict[str, Any], usage: Dict[str, int]) -
     exceeded: List[str] = []
     if safe_int(usage.get("tokenUsage"), 0) > max(1, safe_int(limits.get("maxTaskTokens"), 1)):
         exceeded.append("maxTaskTokens")
-    if safe_int(usage.get("elapsedMs"), 0) > max(1, safe_int(limits.get("maxTaskWallTimeSec"), 1)) * 1000:
+    max_wall_time_sec = max(0, safe_int(limits.get("maxTaskWallTimeSec"), 0))
+    if max_wall_time_sec > 0 and safe_int(usage.get("elapsedMs"), 0) > max_wall_time_sec * 1000:
         exceeded.append("maxTaskWallTimeSec")
     if safe_int(usage.get("retryCount"), 0) > max(1, safe_int(limits.get("maxTaskRetries"), 1)):
         exceeded.append("maxTaskRetries")

@@ -129,6 +129,11 @@ def safe_int(value: Any, default: int = -1) -> int:
     return out if out >= 0 else default
 
 
+def normalize_timeout_sec(value: Any, default: int = 0) -> int:
+    parsed = safe_int(value, default)
+    return max(0, parsed)
+
+
 def extract_usage_pair(usage: Dict[str, Any]) -> int:
     prompt = safe_int(usage.get("prompt_tokens"), -1)
     completion = safe_int(usage.get("completion_tokens"), -1)
@@ -246,7 +251,7 @@ def main() -> int:
     parser.add_argument("--task-id", required=True)
     parser.add_argument("--agent", required=True)
     parser.add_argument("--task", required=True)
-    parser.add_argument("--timeout-sec", type=int, default=120)
+    parser.add_argument("--timeout-sec", type=int, default=0)
     parser.add_argument("--workspace", default="")
     args = parser.parse_args()
     start_ms = int(time.time() * 1000)
@@ -288,13 +293,15 @@ def main() -> int:
         ]
 
         try:
+            timeout_sec = normalize_timeout_sec(args.timeout_sec, default=0)
+            run_timeout = None if timeout_sec <= 0 else max(30, timeout_sec + 20)
             proc = subprocess.run(
                 cmd,
                 input=args.task,
                 text=True,
                 capture_output=True,
                 check=False,
-                timeout=max(30, int(args.timeout_sec) + 20),
+                timeout=run_timeout,
             )
         except Exception as err:
             result = blocked(args.task_id, args.agent, f"codex exec failed: {err}", [])

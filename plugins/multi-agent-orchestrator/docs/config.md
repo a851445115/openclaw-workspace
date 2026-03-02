@@ -35,10 +35,12 @@ Runtime config schema v2 is defined in `openclaw.plugin.json`, with load/normali
   - default timeout hint for evidence-related validation.
 - `global.verifyTimeoutSec`:
   - default timeout for verify command execution.
+  - `0` means no timeout.
 - `global.verifyCommands` and `roles.<role>.verifyCommands`:
   - merged during acceptance (`global + role`).
   - supports `string` command (default `expectExitCode=0`) or object:
     - `{ "cmd": "...", "expectExitCode": 0, "timeoutSec": 20 }`
+    - `timeoutSec=0` means no timeout.
 
 Reason code semantics in spawn acceptance:
 
@@ -76,13 +78,15 @@ Minimal template:
     "budgetPolicy": {
       "guardrails": {
         "maxTaskTokens": 12000,
-        "maxTaskWallTimeSec": 1200,
+        "maxTaskWallTimeSec": 0,
         "maxTaskRetries": 3
       }
     }
   }
 }
 ```
+
+`maxTaskWallTimeSec=0` means no wall-time budget limit.
 
 Compatibility strategy (`config_runtime.load_runtime_config`):
 

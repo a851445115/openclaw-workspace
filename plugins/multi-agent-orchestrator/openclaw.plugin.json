@@ -49,7 +49,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "maxTaskTokens": { "type": "integer", "minimum": 1, "default": 12000 },
-                  "maxTaskWallTimeSec": { "type": "integer", "minimum": 1, "default": 1200 },
+                  "maxTaskWallTimeSec": { "type": "integer", "minimum": 0, "default": 0 },
                   "maxTaskRetries": { "type": "integer", "minimum": 1, "default": 3 }
                 }
               }

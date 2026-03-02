@@ -115,7 +115,9 @@ SCHEDULER_DAEMON_STATE_FILE = "scheduler.daemon.json"
 SCHEDULER_DAEMON_DEFAULT_POLL_SEC = 5
 SCHEDULER_DAEMON_MIN_POLL_SEC = 0
 SCHEDULER_DAEMON_MAX_POLL_SEC = 3600
-KNOWLEDGE_HINT_PROMPT_LIMIT = 6
+# 0 means unlimited. Keep this unlimited by default so long workflow hints
+# are not silently dropped from dispatch context.
+KNOWLEDGE_HINT_PROMPT_LIMIT = 0
 
 
 def now_iso() -> str:
@@ -135,6 +137,14 @@ def clip(text: Optional[str], limit: int = 160) -> str:
     if len(s) <= limit:
         return s
     return s[: limit - 1] + "..."
+
+
+def normalize_timeout_sec(value: Any, default: int = 0) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = int(default)
+    return max(0, parsed)
 
 
 def load_bot_mentions(root: str) -> Dict[str, Dict[str, str]]:
@@ -606,12 +616,13 @@ def normalize_knowledge_hints(raw: Any, limit: int = KNOWLEDGE_HINT_PROMPT_LIMIT
     out: List[str] = []
     if not isinstance(raw, list):
         return out
+    max_items = max(0, int(limit))
     for item in raw:
         text = clip(str(item or "").strip(), 200)
         if not text or text in out:
             continue
         out.append(text)
-        if len(out) >= max(0, limit):
+        if max_items > 0 and len(out) >= max_items:
             break
     return out
 
@@ -686,7 +697,7 @@ def build_agent_prompt(
         "assigneeHint": str(task.get("assigneeHint") or ""),
         "projectId": str(task.get("projectId") or ""),
         "relatedTo": str(task.get("relatedTo") or ""),
-        "objective": clip(dispatch_task, 320),
+        "objective": str(dispatch_task or ""),
     }
     if project_path:
         task_context["projectPath"] = project_path
@@ -739,10 +750,7 @@ def build_agent_prompt(
             "4. If blocked, summary must state blocker cause clearly.",
         ]
     )
-    prompt = "\n".join(lines)
-    if len(prompt) <= 5000:
-        return prompt
-    return prompt[:4999] + "..."
+    return "\n".join(lines)
 
 
 def send_group_message(group_id: str, account_id: str, text: str, mode: str) -> Dict[str, Any]:
@@ -1547,6 +1555,7 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
     plan = resolve_spawn_plan(args, task_prompt)
     executor = str(plan.get("executor") or "openclaw_agent")
     planned_cmd = list(plan.get("command") or [])
+    timeout_sec = normalize_timeout_sec(getattr(args, "timeout_sec", 0), default=0)
 
     if args.mode == "dry-run" and not args.spawn_output:
         return {
@@ -1617,7 +1626,8 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
             "metrics": {"elapsedMs": 0, "tokenUsage": 0},
         }
 
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=max(10, args.timeout_sec + 5))
+    run_timeout = None if timeout_sec <= 0 else max(10, timeout_sec + 5)
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=run_timeout)
     stdout = (proc.stdout or "").strip()
     stderr = (proc.stderr or "").strip()
     elapsed_ms = max(0, int(time.time() * 1000) - start_ms)
@@ -1715,7 +1725,8 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     task = get_task(args.root, args.task_id) or task
     status = str(task.get("status") or "")
     title = clip(task.get("title") or "未命名任务")
-    dispatch_task = clip(args.task or f"{args.task_id}: {task.get('title') or 'untitled'}", 300)
+    dispatch_task = str(args.task or f"{args.task_id}: {task.get('title') or 'untitled'}").strip()
+    dispatch_task_message = clip(dispatch_task, 300)
     knowledge_meta, knowledge_hints = resolve_dispatch_knowledge(args.root, task, args.agent, dispatch_task)
     selected_strategy = resolve_prompt_strategy(args.root, task, args.agent, dispatch_task)
     agent_prompt = build_agent_prompt(
@@ -1744,7 +1755,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     task_text = "\n".join(
         [
             f"[TASK] {args.task_id} | 负责人={args.agent}",
-            f"任务: {dispatch_task}",
+            f"任务: {dispatch_task_message}",
             f"请 {assignee_mention} 执行，完成后按模板回报：{report_template}。",
         ]
     )
@@ -1866,10 +1877,9 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                     and spawn.get("decision") == "blocked"
                     and str(spawn.get("reasonCode") or "") in {"incomplete_output", "missing_evidence", "stage_only", "role_policy_missing_keyword"}
                 ):
-                    retry_prompt = clip(
+                    retry_prompt = (
                         agent_prompt
-                        + "\n\n交付硬性要求：请直接给出最终可验证结果（改动文件/命令输出/commit哈希/验证结论），不要只给阶段性进度。",
-                        5000,
+                        + "\n\n交付硬性要求：请直接给出最终可验证结果（改动文件/命令输出/commit哈希/验证结论），不要只给阶段性进度。"
                     )
                     retry_spawn = run_dispatch_spawn(args, retry_prompt)
                     spawn_attempt_count += 1
@@ -2977,12 +2987,13 @@ def render_spawn_template(template: str, values: Dict[str, Any]) -> List[str]:
 
 
 def resolve_spawn_plan(args: argparse.Namespace, task_prompt: str) -> Dict[str, Any]:
+    timeout_sec = normalize_timeout_sec(getattr(args, "timeout_sec", 0), default=0)
     values = {
         "root": args.root,
         "task_id": args.task_id,
         "agent": args.agent,
         "task": task_prompt,
-        "timeout_sec": args.timeout_sec,
+        "timeout_sec": timeout_sec,
         "bridge": os.path.join(os.path.dirname(__file__), "codex_worker_bridge.py"),
     }
 
@@ -3010,9 +3021,9 @@ def resolve_spawn_plan(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
         "--message",
         task_prompt,
         "--json",
-        "--timeout",
-        str(args.timeout_sec),
     ]
+    if timeout_sec > 0:
+        command.extend(["--timeout", str(timeout_sec)])
     return {
         "executor": "openclaw_agent",
         "command": command,
@@ -3344,7 +3355,7 @@ def _to_int(value: Any, default: int) -> int:
 def _normalize_verify_commands(global_conf: Dict[str, Any], role_conf: Dict[str, Any]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     default_timeout = max(
-        1,
+        0,
         _to_int(
             global_conf.get("verifyTimeoutSec", global_conf.get("evidenceTimeoutSec", 20)),
             20,
@@ -3376,7 +3387,7 @@ def _normalize_verify_commands(global_conf: Dict[str, Any], role_conf: Dict[str,
                 {
                     "cmd": cmd,
                     "expectExitCode": _to_int(entry.get("expectExitCode", 0), 0),
-                    "timeoutSec": max(1, _to_int(entry.get("timeoutSec"), default_timeout)),
+                    "timeoutSec": max(0, _to_int(entry.get("timeoutSec"), default_timeout)),
                 }
             )
     return out
@@ -3387,7 +3398,7 @@ def _run_verify_commands(root: str, commands: List[Dict[str, Any]]) -> Dict[str,
     for idx, item in enumerate(commands):
         cmd = str(item.get("cmd") or "").strip()
         expect = _to_int(item.get("expectExitCode"), 0)
-        timeout_sec = max(1, _to_int(item.get("timeoutSec"), 20))
+        timeout_sec = max(0, _to_int(item.get("timeoutSec"), 20))
         if not cmd:
             continue
         started = time.time()
@@ -3398,7 +3409,7 @@ def _run_verify_commands(root: str, commands: List[Dict[str, Any]]) -> Dict[str,
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=timeout_sec,
+                timeout=(None if timeout_sec <= 0 else timeout_sec),
             )
         except subprocess.TimeoutExpired:
             duration_ms = int((time.time() - started) * 1000)
@@ -4254,7 +4265,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_dispatch.add_argument("--group-id", default=DEFAULT_GROUP_ID)
     p_dispatch.add_argument("--account-id", default=DEFAULT_ACCOUNT_ID)
     p_dispatch.add_argument("--mode", choices=["send", "dry-run"], default="send")
-    p_dispatch.add_argument("--timeout-sec", type=int, default=120)
+    p_dispatch.add_argument("--timeout-sec", type=int, default=0)
     p_dispatch.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=DEFAULT_VISIBILITY_MODE)
     # A+1 default: manual dispatch (send [CLAIM]/[TASK]) and wait for report.
     # Enable spawn only when explicitly requested.
@@ -4271,7 +4282,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_autopilot.add_argument("--account-id", default=DEFAULT_ACCOUNT_ID)
     p_autopilot.add_argument("--mode", choices=["send", "dry-run"], default="send")
     p_autopilot.add_argument("--session-id", default="")
-    p_autopilot.add_argument("--timeout-sec", type=int, default=120)
+    p_autopilot.add_argument("--timeout-sec", type=int, default=0)
     p_autopilot.add_argument("--spawn", dest="spawn", action="store_true", default=True)
     p_autopilot.add_argument("--no-spawn", dest="spawn", action="store_false")
     p_autopilot.add_argument("--spawn-cmd", default="")
@@ -4291,7 +4302,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_scheduler.add_argument("--account-id", default=DEFAULT_ACCOUNT_ID)
     p_scheduler.add_argument("--mode", choices=["send", "dry-run"], default="send")
     p_scheduler.add_argument("--session-id", default="")
-    p_scheduler.add_argument("--timeout-sec", type=int, default=120)
+    p_scheduler.add_argument("--timeout-sec", type=int, default=0)
     p_scheduler.add_argument("--spawn", dest="spawn", action="store_true", default=True)
     p_scheduler.add_argument("--no-spawn", dest="spawn", action="store_false")
     p_scheduler.add_argument("--spawn-cmd", default="")
@@ -4312,7 +4323,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_scheduler_daemon.add_argument("--account-id", default=DEFAULT_ACCOUNT_ID)
     p_scheduler_daemon.add_argument("--mode", choices=["send", "dry-run"], default="send")
     p_scheduler_daemon.add_argument("--session-id", default="")
-    p_scheduler_daemon.add_argument("--timeout-sec", type=int, default=120)
+    p_scheduler_daemon.add_argument("--timeout-sec", type=int, default=0)
     p_scheduler_daemon.add_argument("--spawn", dest="spawn", action="store_true", default=True)
     p_scheduler_daemon.add_argument("--no-spawn", dest="spawn", action="store_false")
     p_scheduler_daemon.add_argument("--spawn-cmd", default="")
@@ -4342,7 +4353,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_feishu.add_argument("--account-id", default=DEFAULT_ACCOUNT_ID)
     p_feishu.add_argument("--mode", choices=["send", "dry-run", "off"], default="send")
     p_feishu.add_argument("--session-id", default="")
-    p_feishu.add_argument("--timeout-sec", type=int, default=120)
+    p_feishu.add_argument("--timeout-sec", type=int, default=0)
     p_feishu.add_argument("--dispatch-spawn", action="store_true")
     p_feishu.add_argument("--dispatch-manual", action="store_true")
     p_feishu.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=DEFAULT_VISIBILITY_MODE)

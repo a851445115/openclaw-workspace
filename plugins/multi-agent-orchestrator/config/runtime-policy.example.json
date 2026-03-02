@@ -24,7 +24,7 @@
     "budgetPolicy": {
       "guardrails": {
         "maxTaskTokens": 10000,
-        "maxTaskWallTimeSec": 900,
+        "maxTaskWallTimeSec": 0,
         "maxTaskRetries": 2
       }
     }

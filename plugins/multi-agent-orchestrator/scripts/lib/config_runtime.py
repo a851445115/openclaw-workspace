@@ -30,7 +30,8 @@ DEFAULT_RUNTIME_CONFIG: Dict[str, Any] = {
         "budgetPolicy": {
             "guardrails": {
                 "maxTaskTokens": 12000,
-                "maxTaskWallTimeSec": 1200,
+                # 0 means unlimited wall time.
+                "maxTaskWallTimeSec": 0,
                 "maxTaskRetries": 3,
             }
         },
@@ -176,7 +177,7 @@ def _normalize_guardrails(raw: Any) -> Dict[str, Any]:
     return {
         "maxTaskTokens": max(1, _safe_int(data.get("maxTaskTokens", defaults["maxTaskTokens"]), int(defaults["maxTaskTokens"]))),
         "maxTaskWallTimeSec": max(
-            1,
+            0,
             _safe_int(data.get("maxTaskWallTimeSec", defaults["maxTaskWallTimeSec"]), int(defaults["maxTaskWallTimeSec"])),
         ),
         "maxTaskRetries": max(1, _safe_int(data.get("maxTaskRetries", defaults["maxTaskRetries"]), int(defaults["maxTaskRetries"]))),

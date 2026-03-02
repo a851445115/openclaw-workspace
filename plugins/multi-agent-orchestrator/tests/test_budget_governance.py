@@ -121,6 +121,19 @@ class BudgetGovernanceTests(unittest.TestCase):
         self.assertEqual(spawn["action"], "escalate", out)
         self.assertIn("maxTaskWallTimeSec", spawn.get("exceededKeys") or [], out)
 
+    def test_walltime_zero_means_unlimited(self):
+        self._write_policy(max_tokens=1000, max_time_sec=0, max_retries=3)
+        self._create_task("T-B6020", "coder", "time budget unlimited")
+        out = self._dispatch(
+            "T-B6020",
+            "coder",
+            '{"status":"done","summary":"测试通过并已完成","evidence":["logs/run.log"],"metrics":{"tokenUsage":9,"elapsedMs":9999999}}',
+        )
+
+        spawn = out["spawn"]
+        self.assertEqual(spawn["decision"], "done", out)
+        self.assertNotEqual(spawn.get("reasonCode"), "budget_exceeded", out)
+
     def test_retry_budget_precheck_blocks_before_spawn(self):
         self._write_policy(max_tokens=1000, max_time_sec=3600, max_retries=1)
         self._create_task("T-B603", "coder", "retry budget")
