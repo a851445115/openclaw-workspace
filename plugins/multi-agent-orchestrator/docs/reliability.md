@@ -143,3 +143,23 @@ Validation checks during replay:
 - 派发输出增强
   - `spawn.metrics.elapsedMs`
   - `spawn.metrics.tokenUsage`
+
+## 8) Knowledge Feedback Integration (Batch 10)
+
+- 配置文件：`config/knowledge-feedback.json`
+  - `enabled`：开关，默认关闭
+  - `readOnly`：只读保护位，关闭时直接降级
+  - `timeoutMs`：读取反馈源超时时间（毫秒）
+  - `maxItems`：注入 prompt 的知识提示条数上限
+  - `sourceCandidates`：知识反馈源候选路径（相对任务根目录）
+- 适配器：`scripts/lib/knowledge_adapter.py`
+  - 仅执行本地文件读取，不写状态文件
+  - 配置读取顺序：仓库默认配置 -> 任务根目录覆盖配置
+  - 反馈读取失败/超时时返回降级结果，不抛出阻塞错误
+- dispatch 行为
+  - 在 agent prompt 中注入 `KNOWLEDGE_HINTS` 段（有有效反馈时）
+  - `dispatch` 返回新增 `knowledge` 字段：
+    - `degraded`：是否降级
+    - `degradeReason`：降级原因（若有）
+    - `knowledgeTags`：被注入的知识类别（如 lessons/mistakes/patterns）
+  - 即使知识适配器异常，派发流程仍继续（不阻塞 claim/task 发送与后续闭环）

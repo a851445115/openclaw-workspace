@@ -25,6 +25,7 @@ import evidence_normalizer
 import task_decomposer
 import ops_metrics
 import strategy_library
+import knowledge_adapter
 
 DEFAULT_GROUP_ID = "oc_041146c92a9ccb403a7f4f48fb59701d"
 DEFAULT_ACCOUNT_ID = "orchestrator"
@@ -96,6 +97,7 @@ SCHEDULER_DAEMON_STATE_FILE = "scheduler.daemon.json"
 SCHEDULER_DAEMON_DEFAULT_POLL_SEC = 5
 SCHEDULER_DAEMON_MIN_POLL_SEC = 0
 SCHEDULER_DAEMON_MAX_POLL_SEC = 3600
+KNOWLEDGE_HINT_PROMPT_LIMIT = 6
 
 
 def now_iso() -> str:
@@ -487,6 +489,55 @@ def build_structured_output_schema(task_id: str, agent: str) -> Dict[str, Any]:
     }
 
 
+def normalize_knowledge_hints(raw: Any, limit: int = KNOWLEDGE_HINT_PROMPT_LIMIT) -> List[str]:
+    out: List[str] = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        text = clip(str(item or "").strip(), 200)
+        if not text or text in out:
+            continue
+        out.append(text)
+        if len(out) >= max(0, limit):
+            break
+    return out
+
+
+def normalize_knowledge_tags(raw: Any) -> List[str]:
+    out: List[str] = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        tag = str(item or "").strip()
+        if not tag or tag in out:
+            continue
+        out.append(tag)
+    return out
+
+
+def resolve_dispatch_knowledge(root: str, task: Dict[str, Any], agent: str, dispatch_task: str) -> Tuple[Dict[str, Any], List[str]]:
+    meta: Dict[str, Any] = {
+        "degraded": False,
+        "degradeReason": "",
+        "knowledgeTags": [],
+    }
+    task_id = str(task.get("taskId") or "")
+    try:
+        payload = knowledge_adapter.fetch_feedback(root, task_id=task_id, agent=agent, objective=dispatch_task)
+    except Exception as err:
+        meta["degraded"] = True
+        meta["degradeReason"] = clip(str(err), 200)
+        return meta, []
+
+    if not isinstance(payload, dict):
+        return meta, []
+
+    meta["degraded"] = bool(payload.get("degraded"))
+    meta["degradeReason"] = clip(str(payload.get("degradeReason") or ""), 200) if payload.get("degradeReason") else ""
+    meta["knowledgeTags"] = normalize_knowledge_tags(payload.get("knowledgeTags"))
+    return meta, normalize_knowledge_hints(payload.get("hints"))
+
+
 def resolve_prompt_strategy(root: str, task: Dict[str, Any], agent: str, dispatch_task: str) -> Dict[str, Any]:
     task_id = str(task.get("taskId") or "")
     title = str(task.get("title") or "")
@@ -501,6 +552,7 @@ def build_agent_prompt(
     agent: str,
     dispatch_task: str,
     strategy: Optional[Dict[str, Any]] = None,
+    knowledge_hints: Optional[List[str]] = None,
 ) -> str:
     task_id = str(task.get("taskId") or "")
     title = str(task.get("title") or "")
@@ -511,6 +563,7 @@ def build_agent_prompt(
     board_snapshot = build_prompt_board_snapshot(root, task_id)
     history = read_recent_task_events(root, task_id, limit=8)
     selected_strategy = strategy if isinstance(strategy, dict) else resolve_prompt_strategy(root, task, agent, dispatch_task)
+    hints = normalize_knowledge_hints(knowledge_hints)
 
     task_context = {
         "taskId": task_id,
@@ -534,6 +587,10 @@ def build_agent_prompt(
         "TASK_RECENT_HISTORY:",
         json.dumps(history, ensure_ascii=False, indent=2),
     ]
+    if hints:
+        lines.append("KNOWLEDGE_HINTS:")
+        for idx, hint in enumerate(hints, start=1):
+            lines.append(f"{idx}. {hint}")
     if bool(selected_strategy.get("enabled")) and str(selected_strategy.get("content") or "").strip():
         lines.extend(
             [
@@ -1538,8 +1595,16 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     status = str(task.get("status") or "")
     title = clip(task.get("title") or "未命名任务")
     dispatch_task = clip(args.task or f"{args.task_id}: {task.get('title') or 'untitled'}", 300)
+    knowledge_meta, knowledge_hints = resolve_dispatch_knowledge(args.root, task, args.agent, dispatch_task)
     selected_strategy = resolve_prompt_strategy(args.root, task, args.agent, dispatch_task)
-    agent_prompt = build_agent_prompt(args.root, task, args.agent, dispatch_task, strategy=selected_strategy)
+    agent_prompt = build_agent_prompt(
+        args.root,
+        task,
+        args.agent,
+        dispatch_task,
+        strategy=selected_strategy,
+        knowledge_hints=knowledge_hints,
+    )
 
     dispatch_mode_line = "派发模式: 手动协作（等待回报）" if not args.spawn else "派发模式: 自动执行闭环（spawn并回写看板）"
 
@@ -1827,6 +1892,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         "autoClose": auto_close,
         "reportTemplate": report_template,
         "agentPrompt": agent_prompt,
+        "knowledge": knowledge_meta,
     }
     if isinstance(selection, dict):
         result["selection"] = selection

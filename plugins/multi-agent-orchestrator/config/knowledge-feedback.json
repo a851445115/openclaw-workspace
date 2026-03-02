@@ -1,0 +1,10 @@
+{
+  "enabled": false,
+  "readOnly": true,
+  "timeoutMs": 300,
+  "maxItems": 3,
+  "sourceCandidates": [
+    "state/knowledge-feedback.json",
+    "state/lessons-learned.json"
+  ]
+}
