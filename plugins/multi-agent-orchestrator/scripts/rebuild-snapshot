@@ -129,6 +129,12 @@ def replay(events: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], List[str]]:
                 task['blockedReason'] = payload.get('reason')
             continue
 
+        if event_type == 'task_reopened':
+            task['status'] = 'pending'
+            task['owner'] = None
+            task['blockedReason'] = None
+            continue
+
         errors.append(f"unknown event type: {event_type} ({task_id})")
 
     snapshot = {

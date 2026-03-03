@@ -904,6 +904,19 @@ def build_agent_prompt(
     )
     for idx, item in enumerate(requirements, start=1):
         lines.append(f"{idx}. {item}")
+    
+    # Add environment requirements if project needs specific conda env
+    env_requirements = []
+    if project_path and "paper-xhs-3min-workflow" in project_path:
+        env_requirements.append("必须使用 conda 环境 'workplace'（包含 python + gurobi 优化求解器）")
+        env_requirements.append("对于优化问题（SDP/DRO等），必须调用真实求解器（CVXPY/Gurobi/MOSEK），不允许启发式规则替代")
+        env_requirements.append("所有 Python 命令必须在 workplace 环境中执行：conda run -n workplace python ...")
+    
+    if env_requirements:
+        lines.append("ENVIRONMENT_REQUIREMENTS:")
+        for idx, item in enumerate(env_requirements, start=1):
+            lines.append(f"{idx}. {item}")
+    
     acceptance_keywords = acceptance_keywords_for_agent(root, agent)
     if acceptance_keywords:
         lines.extend(

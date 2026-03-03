@@ -1,0 +1,16 @@
+{
+  "running": true,
+  "pid": 75884,
+  "startedAt": "2026-03-03T17:00:25Z",
+  "endedAt": "",
+  "updatedAt": "2026-03-03T17:00:25Z",
+  "status": "running",
+  "maxSteps": 3,
+  "mode": "send",
+  "spawnEnabled": true,
+  "visibilityMode": "handoff_visible",
+  "stopReason": "",
+  "error": "",
+  "logPath": "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator/state/autopilot-3-20260303T170025Z.log",
+  "lastResult": {}
+}

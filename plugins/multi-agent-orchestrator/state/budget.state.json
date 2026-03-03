@@ -171,10 +171,10 @@
     "T-021|coder": {
       "taskId": "T-021",
       "agent": "coder",
-      "tokenUsage": 65520,
-      "elapsedMs": 346455,
-      "retryCount": 1,
-      "updatedAt": "2026-03-03T15:41:44Z"
+      "tokenUsage": 178506,
+      "elapsedMs": 691668,
+      "retryCount": 2,
+      "updatedAt": "2026-03-03T17:08:05Z"
     },
     "T-022|coder": {
       "taskId": "T-022",
@@ -191,7 +191,15 @@
       "elapsedMs": 1176660,
       "retryCount": 1,
       "updatedAt": "2026-03-03T16:04:54Z"
+    },
+    "T-009|paper-ingestor": {
+      "taskId": "T-009",
+      "agent": "paper-ingestor",
+      "tokenUsage": 35137,
+      "elapsedMs": 94095,
+      "retryCount": 1,
+      "updatedAt": "2026-03-03T17:02:09Z"
     }
   },
-  "updatedAt": "2026-03-03T16:04:54Z"
+  "updatedAt": "2026-03-03T17:08:05Z"
 }

@@ -18,34 +18,25 @@
         "9fdc3bea-ad1b-4339-ba25-142322780e99",
         "24b82731-ff84-43be-aa0b-9c327e7b27e4",
         "3f494977-8586-4a86-a243-a4677511db6c"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-002": {
       "taskId": "T-002",
       "title": "[\u8bba\u6587 PDF \u2192 \u5c0f\u7ea2\u4e66 3 \u5206\u949f\u56fe\u6587\u89e3\u8bfb Workflow\uff08V1.3\uff09] \u804c\u8d23\uff1a\u5b8c\u6210\u53ef\u76f4\u63a5\u53d1\u5e03\u6587\u6848\u4e0e\u6807\u9898\u5019\u9009",
-      "status": "claimed",
-      "owner": "broadcaster",
+      "status": "pending",
+      "owner": null,
       "assigneeHint": "broadcaster",
       "createdBy": "orchestrator",
       "createdAt": "2026-03-02T16:23:37Z",
-      "updatedAt": "2026-03-03T17:08:11Z",
+      "updatedAt": "2026-03-02T16:23:37Z",
       "blockedReason": null,
       "result": null,
       "review": null,
       "relatedTo": null,
       "projectId": null,
       "history": [
-        "a4aa8917-6bec-4364-a48e-cb4bd49023f6",
-        "eb879b2e-7784-4de0-97ed-38ddbdadc716"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+        "a4aa8917-6bec-4364-a48e-cb4bd49023f6"
+      ]
     },
     "T-003": {
       "taskId": "T-003",
@@ -63,11 +54,7 @@
       "projectId": null,
       "history": [
         "c5d63d1b-0500-415b-a6af-ab34f83962be"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-004": {
       "taskId": "T-004",
@@ -85,11 +72,7 @@
       "projectId": null,
       "history": [
         "5ac26bda-6d20-49d0-baf1-4567e87cc9c6"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-005": {
       "taskId": "T-005",
@@ -107,11 +90,7 @@
       "projectId": null,
       "history": [
         "60294983-743b-4c59-93ba-ba616e302a28"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-006": {
       "taskId": "T-006",
@@ -129,11 +108,7 @@
       "projectId": null,
       "history": [
         "2c2662d4-a6ba-4f27-89f1-198b09b13665"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-007": {
       "taskId": "T-007",
@@ -151,11 +126,7 @@
       "projectId": null,
       "history": [
         "2d0840d9-a726-4d73-8785-3e7ae2522076"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-008": {
       "taskId": "T-008",
@@ -173,36 +144,26 @@
       "projectId": null,
       "history": [
         "23934930-eebf-4225-986f-f9d4f8d017a1"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-009": {
       "taskId": "T-009",
       "title": "[paper-xhs-3min:A2] Stage A0: Extract source text and metadata",
-      "status": "done",
+      "status": "claimed",
       "owner": "paper-ingestor",
       "assigneeHint": "paper-ingestor",
       "createdBy": "orchestrator",
       "createdAt": "2026-03-02T16:31:56Z",
-      "updatedAt": "2026-03-03T17:02:09Z",
+      "updatedAt": "2026-03-02T16:32:30Z",
       "blockedReason": null,
-      "result": "\u5df2\u5b8c\u6210\u8bba\u6587A2\u7684PDF\u63d0\u53d6\uff0c\u751f\u62101544\u884c\u539f\u59cb\u6587\u672c\u3001\u5b8c\u6574\u5143\u6570\u636e\u548c\u63d0\u53d6\u65e5\u5fd7 | \u786c\u8bc1\u636e: raw-text.md; metadata.json | \u53d8\u66f4: /Users/chengren17/xhs-share/A2/artifacts/a0-extract/metadata.json \u66f4\u6b63\u8bba\u6587\u5143\u6570\u636e\uff1a\u6807\u9898\u3001\u4f5c\u8005\uff08\u5434\u5b5f\u96ea\u3001\u623f\u65b9\uff09\u3001\u671f\u520a\uff08\u7535\u5de5\u6280\u672f\u5b66\u62a52023 Vol.38 No.13\uff09\u3001DOI\u548c\u63d0\u53d6...",
+      "result": null,
       "review": null,
       "relatedTo": null,
       "projectId": null,
       "history": [
         "a5adf548-1482-42d6-9c08-944bf67e4076",
-        "661cd08c-78cc-4ffd-9442-918f7870cbfb",
-        "9b4a659b-012a-40bf-8b68-d457da6441e9",
-        "0fc37dcb-c166-4a76-8788-fed4c3d328a2"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+        "661cd08c-78cc-4ffd-9442-918f7870cbfb"
+      ]
     },
     "T-010": {
       "taskId": "T-010",
@@ -223,11 +184,7 @@
         "b5b64add-7ec2-41ef-a91f-0ca124ef183c",
         "a4a0e732-3599-418b-ac1b-d4e646c66133",
         "5167b202-6290-4cc3-80b1-443434cd596b"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-011": {
       "taskId": "T-011",
@@ -253,11 +210,7 @@
         "8638b988-ca33-47db-b90c-4723f2c2060e",
         "9ddb1d51-8d49-4ff9-9521-53c517f2c27b",
         "94ca080c-0d48-4277-8a10-ac9ed1342aec"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-012": {
       "taskId": "T-012",
@@ -278,11 +231,7 @@
         "17f5cc23-7712-4922-8d63-cdb73a7b7371",
         "e55d901a-8b0f-4dbc-a0df-bc7aac082de6",
         "498dca94-56b7-48de-bf93-b07d8de7a2d7"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-013": {
       "taskId": "T-013",
@@ -302,11 +251,7 @@
         "956774cf-2f23-4b41-82ab-f95041135822",
         "3a5b63dc-936d-499a-8b3d-eb51f1f9c0a9",
         "236a092e-fda0-4693-bd38-e49a0244ba59"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-014": {
       "taskId": "T-014",
@@ -326,11 +271,7 @@
         "557bd2a7-a239-41a0-bc45-7e904918dd37",
         "db63c67e-2d41-44bb-9ea4-eb3241718f28",
         "f66d10f1-d621-4ed8-bde1-08a94f85add0"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-015": {
       "taskId": "T-015",
@@ -350,11 +291,7 @@
         "ffa12936-a1a5-43e8-ab84-0d894e11d8a2",
         "53ac34a9-677b-4f74-bb55-6b07ed737ddd",
         "cb3c45e3-23cf-416d-a2d4-c7f38c56338e"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-016": {
       "taskId": "T-016",
@@ -377,11 +314,7 @@
         "7781542d-dd7e-4200-ac10-bee97bd9021f",
         "4245b955-f61e-47ae-838f-3e2bdaa65d80",
         "b041ddb1-2673-4870-be73-98a64e6b2215"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-017": {
       "taskId": "T-017",
@@ -402,11 +335,7 @@
         "d7384135-7b4b-439c-b729-5f6eabb08f05",
         "c1dfeec9-174b-4ff1-9fed-4c40d5867e63",
         "5d997efd-0703-48e2-8c6b-147a73f236cf"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-018": {
       "taskId": "T-018",
@@ -428,11 +357,7 @@
         "9c7e3d22-a70b-4f1d-8dbe-8d61feee9321",
         "891cfc1a-0ce4-41db-8249-4ad180274e8e",
         "6b9163d3-0d0f-4139-9494-34c996e36e93"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-019": {
       "taskId": "T-019",
@@ -455,11 +380,7 @@
         "0986ab8e-c520-4b77-8846-e113a8eff61d",
         "b860c310-c41d-41e9-be5a-96b02e8761d2",
         "090d5416-7c97-453f-b675-73711d6f99c4"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-020": {
       "taskId": "T-020",
@@ -479,23 +400,19 @@
         "bf151e0a-8325-4e2a-b7a5-41861956a379",
         "200a6f08-c29e-438b-9ae9-f58678372c95",
         "81e51294-eff5-4dc7-8b37-228a4e95e843"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-021": {
       "taskId": "T-021",
       "title": "[paper-xhs-3min:A2] Stage L: Core model and algorithm implementation",
-      "status": "done",
-      "owner": "coder",
+      "status": "pending",
+      "owner": null,
       "assigneeHint": "coder",
       "createdBy": "orchestrator",
       "createdAt": "2026-03-02T16:32:22Z",
-      "updatedAt": "2026-03-03T17:08:05Z",
+      "updatedAt": "2026-03-03T16:53:17Z",
       "blockedReason": null,
-      "result": "Core model and algorithm implemented with real CVXPY+Gurobi optimization solver (not heuristics), all 18 contract tests passed, full workflow executed successfully | \u786c\u8bc1\u636e: tests/test_algorithm_contrac...",
+      "result": "Core model and algorithm implemented with one-to-one paper equation mapping, all 10 contract tests passed | \u786c\u8bc1\u636e: ~/miniconda3/envs/workplace/bin/python; tests/run_tests.py | \u53d8\u66f4: /Users/chengren17/xhs...",
       "review": null,
       "relatedTo": null,
       "projectId": null,
@@ -503,15 +420,8 @@
         "23a94d12-4f84-4d54-9aa9-24522d0f395b",
         "0b36db1b-5615-4412-b18c-6bfe9e9f3072",
         "93297174-1816-4380-b881-962c08f5e70a",
-        "reopen-1772556797.044718-021",
-        "0c41250f-df2f-4058-a277-94d5dcd9cb5a",
-        "2a739823-ba54-4b08-8f44-bbaf957b7e3c",
-        "59bcb4a7-0868-4d12-ade4-ab28694f2342"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+        "reopen-1772556797.044718-021"
+      ]
     },
     "T-022": {
       "taskId": "T-022",
@@ -532,11 +442,7 @@
         "88c7be49-b8d9-497f-8ead-ea1f3c47626c",
         "0e485933-4a0d-4f7b-a24f-0beba1f981d6",
         "reopen-1772556797.044726-022"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-023": {
       "taskId": "T-023",
@@ -558,21 +464,17 @@
         "63d23c8c-3498-4a5d-97db-49ff9a6e2d21",
         "aa3436aa-36d9-4c12-aec6-531f51e45cd8",
         "reopen-1772556797.044727-023"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+      ]
     },
     "T-024": {
       "taskId": "T-024",
       "title": "[paper-xhs-3min:A2] Stage O: Reproduction report and artifact package",
-      "status": "pending",
-      "owner": null,
+      "status": "claimed",
+      "owner": "knowledge-curator",
       "assigneeHint": "knowledge-curator",
       "createdBy": "orchestrator",
       "createdAt": "2026-03-02T16:32:28Z",
-      "updatedAt": "2026-03-03T17:00:00Z",
+      "updatedAt": "2026-03-03T16:51:41Z",
       "blockedReason": null,
       "result": null,
       "review": null,
@@ -580,21 +482,16 @@
       "projectId": null,
       "history": [
         "f9d1ba39-50a8-47e9-9fbf-5216ee3f40f5",
-        "0e604841-305a-4801-a219-7bb4364abb11",
-        "reopen-1772557200.000000-024"
-      ],
-      "dependsOn": [],
-      "blockedBy": [],
-      "priority": 0,
-      "impact": 0
+        "0e604841-305a-4801-a219-7bb4364abb11"
+      ]
     }
   },
   "meta": {
     "version": 2,
-    "updatedAt": "2026-03-03T17:08:11Z",
+    "updatedAt": "2026-03-03T16:53:17Z",
     "rebuild": {
-      "events": 78,
-      "generatedAt": "2026-03-03T16:57:51Z",
+      "events": 77,
+      "generatedAt": "2026-03-03T16:55:38Z",
       "errors": 0
     }
   }

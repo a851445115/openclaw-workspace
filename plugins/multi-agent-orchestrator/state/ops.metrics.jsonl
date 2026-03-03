@@ -52,3 +52,5 @@
 {"event": "dispatch_done", "at": "2026-03-03T15:45:13Z", "ts": 1772552713, "taskId": "T-022", "agent": "coder", "decision": "done", "reasonCode": "done_with_evidence", "cycleMs": 193464, "autoClose": true, "dispatchMode": "spawn"}
 {"event": "dispatch_done", "at": "2026-03-03T16:05:00Z", "ts": 1772553900, "taskId": "T-023", "agent": "debugger", "decision": "done", "reasonCode": "done_with_evidence", "cycleMs": 1176660, "autoClose": true, "dispatchMode": "spawn"}
 {"event": "autopilot_cycle", "at": "2026-03-03T16:05:00Z", "ts": 1772553900, "maxSteps": 4, "stepsRun": 4, "done": 4, "blocked": 0, "manual": 0, "stopReason": "max_steps_reached", "ok": true, "spawnEnabled": true}
+{"event": "dispatch_done", "at": "2026-03-03T17:02:15Z", "ts": 1772557335, "taskId": "T-009", "agent": "paper-ingestor", "decision": "done", "reasonCode": "done_with_evidence", "cycleMs": 94095, "autoClose": true, "dispatchMode": "spawn"}
+{"event": "dispatch_done", "at": "2026-03-03T17:08:11Z", "ts": 1772557691, "taskId": "T-021", "agent": "coder", "decision": "done", "reasonCode": "done_with_evidence", "cycleMs": 345213, "autoClose": true, "dispatchMode": "spawn"}
