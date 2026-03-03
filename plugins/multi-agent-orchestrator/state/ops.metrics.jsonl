@@ -17,3 +17,6 @@
 {"event": "dispatch_blocked", "at": "2026-03-02T16:56:13Z", "ts": 1772470573, "taskId": "T-011", "agent": "coder", "decision": "blocked", "reasonCode": "spawn_failed", "cycleMs": 1388, "autoClose": true, "dispatchMode": "spawn"}
 {"event": "recovery_scheduled", "at": "2026-03-02T16:56:13Z", "ts": 1772470573, "taskId": "T-011", "agent": "coder", "reasonCode": "spawn_failed", "recoveryAction": "retry", "recoveryState": "recovery_scheduled", "nextAssignee": "debugger"}
 {"event": "autopilot_cycle", "at": "2026-03-02T16:56:13Z", "ts": 1772470573, "maxSteps": 14, "stepsRun": 2, "done": 0, "blocked": 1, "manual": 1, "stopReason": "no_runnable_task", "ok": true, "spawnEnabled": true}
+{"event": "dispatch_blocked", "at": "2026-03-03T05:06:55Z", "ts": 1772514415, "taskId": "T-011", "agent": "debugger", "decision": "blocked", "reasonCode": "spawn_failed", "cycleMs": 23731, "autoClose": true, "dispatchMode": "spawn"}
+{"event": "recovery_escalated", "at": "2026-03-03T05:06:55Z", "ts": 1772514415, "taskId": "T-011", "agent": "debugger", "reasonCode": "spawn_failed", "recoveryAction": "escalate", "recoveryState": "escalated_to_human", "nextAssignee": "human"}
+{"event": "autopilot_cycle", "at": "2026-03-03T05:06:55Z", "ts": 1772514415, "maxSteps": 14, "stepsRun": 1, "done": 0, "blocked": 1, "manual": 0, "stopReason": "no_runnable_task", "ok": true, "spawnEnabled": true}

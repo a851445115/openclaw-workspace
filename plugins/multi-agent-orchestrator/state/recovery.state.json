@@ -36,14 +36,14 @@
     "T-011|spawn_failed": {
       "taskId": "T-011",
       "reasonCode": "spawn_failed",
-      "attempt": 2,
-      "nextAssignee": "debugger",
-      "action": "retry",
-      "recoveryState": "recovery_scheduled",
-      "cooldownUntilTs": 1772470750,
-      "cooldownUntil": "2026-03-02T16:59:10Z",
-      "updatedAt": "2026-03-02T16:56:10Z"
+      "attempt": 3,
+      "nextAssignee": "human",
+      "action": "escalate",
+      "recoveryState": "escalated_to_human",
+      "cooldownUntilTs": 1772514592,
+      "cooldownUntil": "2026-03-03T05:09:52Z",
+      "updatedAt": "2026-03-03T05:06:52Z"
     }
   },
-  "updatedAt": "2026-03-02T16:56:10Z"
+  "updatedAt": "2026-03-03T05:06:52Z"
 }
