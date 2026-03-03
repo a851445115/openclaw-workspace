@@ -3433,6 +3433,37 @@ def resolve_spawn_executor(root: str, agent: str) -> str:
     return SPAWN_EXECUTOR_OPENCLAW
 
 
+WRITING_TASK_KEYWORDS = (
+    "xhs",
+    "draft",
+    "citation",
+    "fact check",
+    "style-notes",
+    "title variants",
+    "cover copy",
+    "post assembly",
+    "weekly review synthesis",
+    "reproduction report",
+    "artifact package",
+    "文案",
+    "写作",
+    "小红书",
+    "标题",
+    "封面",
+    "图文",
+    "核查",
+    "润色",
+    "发布",
+)
+
+
+def is_writing_task(task_prompt: str) -> bool:
+    text = str(task_prompt or "").strip().lower()
+    if not text:
+        return False
+    return any(keyword in text for keyword in WRITING_TASK_KEYWORDS)
+
+
 def render_spawn_template(template: str, values: Dict[str, Any]) -> List[str]:
     rendered = template
     for key, raw in values.items():
@@ -3452,6 +3483,8 @@ def resolve_spawn_plan(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
     codex_bridge = os.path.join(os.path.dirname(__file__), "codex_worker_bridge.py")
     claude_bridge = os.path.join(os.path.dirname(__file__), "claude_worker_bridge.py")
     selected_executor = resolve_spawn_executor(args.root, str(args.agent or ""))
+    if is_writing_task(task_prompt):
+        selected_executor = SPAWN_EXECUTOR_CLAUDE
     selected_bridge = codex_bridge if selected_executor == SPAWN_EXECUTOR_CODEX else claude_bridge
     values = {
         "root": args.root,

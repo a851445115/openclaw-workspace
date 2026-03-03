@@ -80,6 +80,8 @@ class ClaudeWorkerBridgeTests(unittest.TestCase):
         self.assertEqual(code, 0, out)
         cmd = captured.get("cmd") or []
         self.assertIn("--print", cmd)
+        self.assertIn("--model", cmd, f"expected explicit model flag in command, got: {cmd}")
+        self.assertEqual(cmd[cmd.index("--model") + 1], "claude-opus-4-5-20251101")
         self.assertIn("-p", cmd, f"expected explicit prompt flag in command, got: {cmd}")
         self.assertEqual(cmd[cmd.index("-p") + 1], "请修复 coder->claude_cli 桥接")
         self.assertEqual(out.get("status"), "progress")

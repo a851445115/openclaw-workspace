@@ -75,10 +75,10 @@
     "T-011|coder": {
       "taskId": "T-011",
       "agent": "coder",
-      "tokenUsage": 0,
-      "elapsedMs": 1388,
-      "retryCount": 1,
-      "updatedAt": "2026-03-02T16:56:10Z"
+      "tokenUsage": 102364,
+      "elapsedMs": 942059,
+      "retryCount": 3,
+      "updatedAt": "2026-03-03T06:41:23Z"
     },
     "T-011|debugger": {
       "taskId": "T-011",
@@ -87,7 +87,23 @@
       "elapsedMs": 23731,
       "retryCount": 1,
       "updatedAt": "2026-03-03T05:06:52Z"
+    },
+    "T-012|invest-analyst": {
+      "taskId": "T-012",
+      "agent": "invest-analyst",
+      "tokenUsage": 29809,
+      "elapsedMs": 248220,
+      "retryCount": 1,
+      "updatedAt": "2026-03-03T06:57:08Z"
+    },
+    "T-013|broadcaster": {
+      "taskId": "T-013",
+      "agent": "broadcaster",
+      "tokenUsage": 38271,
+      "elapsedMs": 479034,
+      "retryCount": 1,
+      "updatedAt": "2026-03-03T07:05:20Z"
     }
   },
-  "updatedAt": "2026-03-03T05:06:52Z"
+  "updatedAt": "2026-03-03T07:05:20Z"
 }

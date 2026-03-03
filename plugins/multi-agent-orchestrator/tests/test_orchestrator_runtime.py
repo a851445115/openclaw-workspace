@@ -1319,6 +1319,42 @@ class RuntimeTests(unittest.TestCase):
         planned = spawn.get("plannedCommand") or []
         self.assertTrue(any("codex_worker_bridge.py" in str(x) for x in planned), out)
 
+    def test_writing_task_forces_claude_executor_even_for_debugger(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@debugger create task T-061W: Stage B Draft XHS summary writing",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--task-id",
+            "T-061W",
+            "--agent",
+            "debugger",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/route.log"]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        spawn = out.get("spawn") or {}
+        self.assertEqual(spawn.get("executor"), "claude_cli", out)
+        planned = spawn.get("plannedCommand") or []
+        self.assertTrue(any("claude_worker_bridge.py" in str(x) for x in planned), out)
+
     def test_scheme_b_other_roles_keep_openclaw_executor(self):
         run_json([
             "python3",

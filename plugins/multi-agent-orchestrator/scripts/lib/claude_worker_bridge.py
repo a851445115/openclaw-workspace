@@ -7,6 +7,7 @@ import time
 from typing import Any, Dict, List
 
 TASK_CONTEXT_STATE_FILE = "task-context-map.json"
+DEFAULT_CLAUDE_MODEL = "claude-opus-4-5-20251101"
 
 
 def clip(text: str, limit: int = 300) -> str:
@@ -353,6 +354,8 @@ def main() -> int:
     cmd = [
         "claude",
         "--print",
+        "--model",
+        DEFAULT_CLAUDE_MODEL,
         "--output-format",
         "json",
         "--json-schema",
