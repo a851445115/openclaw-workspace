@@ -103,7 +103,31 @@
       "elapsedMs": 479034,
       "retryCount": 1,
       "updatedAt": "2026-03-03T07:05:20Z"
+    },
+    "T-014|paper-summarizer": {
+      "taskId": "T-014",
+      "agent": "paper-summarizer",
+      "tokenUsage": 165953,
+      "elapsedMs": 1603016,
+      "retryCount": 2,
+      "updatedAt": "2026-03-03T07:32:14Z"
+    },
+    "T-015|knowledge-curator": {
+      "taskId": "T-015",
+      "agent": "knowledge-curator",
+      "tokenUsage": 29067,
+      "elapsedMs": 401547,
+      "retryCount": 1,
+      "updatedAt": "2026-03-03T07:39:08Z"
+    },
+    "T-016|coder": {
+      "taskId": "T-016",
+      "agent": "coder",
+      "tokenUsage": 135214,
+      "elapsedMs": 727351,
+      "retryCount": 2,
+      "updatedAt": "2026-03-03T07:51:28Z"
     }
   },
-  "updatedAt": "2026-03-03T07:05:20Z"
+  "updatedAt": "2026-03-03T07:51:28Z"
 }

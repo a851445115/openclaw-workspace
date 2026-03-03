@@ -113,20 +113,21 @@
     "T-014": {
       "taskId": "T-014",
       "title": "[paper-xhs-3min:A2] Stage E: Generate image prompts",
-      "status": "claimed",
+      "status": "done",
       "owner": "paper-summarizer",
       "assigneeHint": "paper-summarizer",
       "createdBy": "orchestrator",
       "createdAt": "2026-03-02T16:32:07Z",
-      "updatedAt": "2026-03-03T07:05:26Z",
+      "updatedAt": "2026-03-03T07:32:14Z",
       "blockedReason": null,
-      "result": null,
+      "result": "\u5df2\u751f\u62105\u4e2a\u56fe\u7247\u63d0\u793a\u8bcd\u3001\u6620\u5c04\u6e05\u5355\u548c\u98ce\u683c\u5b88\u62a4\u89c4\u5219\uff0cJSON\u9a8c\u8bc1\u901a\u8fc7 | \u786c\u8bc1\u636e: shot-list.json; prompts.md | \u53d8\u66f4: /Users/chengren17/xhs-share/A2/assets/e-images/prompts.md \u521b\u5efa5\u4e2a\u56fe\u7247\u63d0\u793a\u8bcd\uff08IMG-01\u81f3IMG-05\uff09\uff0c\u8986\u76d6\u95ee\u9898\u573a\u666f\u3001\u6c22\u50a8\u80fd\u7cfb\u7edf\u3001\u535a\u5f08\u8bba\u4f18\u5316\u3001\u7ecf\u6d4e\u6536\u76ca\u548c\u5c01\u9762\u4e3b\u56fe\uff0c\u5305\u542b\u82f1\u6587prompt\u548c\u4e2d\u6587\u63cf\u8ff0...",
       "review": null,
       "relatedTo": null,
       "projectId": null,
       "history": [
         "557bd2a7-a239-41a0-bc45-7e904918dd37",
-        "db63c67e-2d41-44bb-9ea4-eb3241718f28"
+        "db63c67e-2d41-44bb-9ea4-eb3241718f28",
+        "f66d10f1-d621-4ed8-bde1-08a94f85add0"
       ],
       "dependsOn": [
         "T-013"
@@ -138,19 +139,21 @@
     "T-015": {
       "taskId": "T-015",
       "title": "[paper-xhs-3min:A2] Stage F: Update knowledge base",
-      "status": "pending",
-      "owner": null,
+      "status": "done",
+      "owner": "knowledge-curator",
       "assigneeHint": "knowledge-curator",
       "createdBy": "orchestrator",
       "createdAt": "2026-03-02T16:32:09Z",
-      "updatedAt": "2026-03-02T16:32:30Z",
+      "updatedAt": "2026-03-03T07:39:08Z",
       "blockedReason": null,
-      "result": null,
+      "result": "\u5df2\u5b8c\u6210A2\u8bba\u6587\u77e5\u8bc6\u5e93\u66f4\u65b0\uff1a\u63d0\u53d623\u4e2a\u5b9e\u4f53\u300112\u4e2a\u5173\u7cfb\uff0c\u8bc6\u522b5\u4e2a\u53ef\u590d\u7528\u6280\u672f\u6a21\u5f0f\u548c3\u4e2a\u6d41\u7a0b\u6539\u8fdb\u70b9 | \u786c\u8bc1\u636e: entities.json; insights.md | \u53d8\u66f4: /Users/chengren17/xhs-share/A2/kb/f-kb/entities.json \u65b0\u589e23\u4e2a\u6807\u51c6\u5316\u5b9e\u4f53\uff08\u6c22\u50a8\u80fd\u3001\u5206\u5e03\u9c81\u68d2\u4f18\u5316\u3001\u535a\u5f08\u8bba\u5efa\u6a21\u7b49\uff09\u548c12\u4e2a\u5173\u7cfb\uff0c\u5305\u542b\u4e2d\u82f1\u6587\u672f\u8bed\u6620\u5c04; /Users/cheng...",
       "review": null,
       "relatedTo": null,
       "projectId": null,
       "history": [
-        "ffa12936-a1a5-43e8-ab84-0d894e11d8a2"
+        "ffa12936-a1a5-43e8-ab84-0d894e11d8a2",
+        "53ac34a9-677b-4f74-bb55-6b07ed737ddd",
+        "cb3c45e3-23cf-416d-a2d4-c7f38c56338e"
       ],
       "dependsOn": [
         "T-014"
@@ -162,20 +165,22 @@
     "T-016": {
       "taskId": "T-016",
       "title": "[paper-xhs-3min:A2] Stage G: Quality gate review",
-      "status": "claimed",
+      "status": "blocked",
       "owner": "coder",
       "assigneeHint": "debugger",
       "createdBy": "orchestrator",
       "createdAt": "2026-03-02T16:32:11Z",
-      "updatedAt": "2026-03-03T06:17:32Z",
-      "blockedReason": null,
+      "updatedAt": "2026-03-03T07:51:28Z",
+      "blockedReason": "coder \u4ea4\u4ed8\u7f3a\u5c11\u9a8c\u6536\u5173\u952e\u8bcd\uff08\u81f3\u5c11\u5305\u542b\u5176\u4e00\uff1atest, pytest, \u9a8c\u8bc1, \u901a\u8fc7, \u65e5\u5fd7, log\uff09\u3002 | Quality gate completed: CONDITIONAL_PASS (score 78.2/80.0) with 4 remediation items identified | \u786c\u8bc1\u636e: gate-score.json; ... | recovery_pending:...",
       "result": null,
       "review": null,
       "relatedTo": null,
       "projectId": null,
       "history": [
         "a5fbb74b-9a4d-4a33-84d6-0fd8a098748e",
-        "74b768ee-ac7a-4dff-870c-69da9d1d4345"
+        "74b768ee-ac7a-4dff-870c-69da9d1d4345",
+        "0614cb4f-a69a-44e9-a1d2-f281056157e5",
+        "7781542d-dd7e-4200-ac10-bee97bd9021f"
       ],
       "dependsOn": [
         "T-015"
@@ -380,6 +385,6 @@
   },
   "meta": {
     "version": 2,
-    "updatedAt": "2026-03-03T07:05:26Z"
+    "updatedAt": "2026-03-03T07:51:28Z"
   }
 }
