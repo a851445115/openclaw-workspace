@@ -1,16 +1,26 @@
 {
-  "running": true,
-  "pid": 75884,
+  "running": false,
+  "pid": 0,
   "startedAt": "2026-03-03T17:00:25Z",
-  "endedAt": "",
-  "updatedAt": "2026-03-03T17:00:25Z",
-  "status": "running",
+  "endedAt": "2026-03-03T17:10:21Z",
+  "updatedAt": "2026-03-03T17:10:21Z",
+  "status": "finished",
   "maxSteps": 3,
   "mode": "send",
   "spawnEnabled": true,
   "visibilityMode": "handoff_visible",
-  "stopReason": "",
+  "stopReason": "max_steps_reached",
   "error": "",
   "logPath": "/Users/chengren17/.openclaw/workspace/plugins/multi-agent-orchestrator/state/autopilot-3-20260303T170025Z.log",
-  "lastResult": {}
+  "lastResult": {
+    "ok": true,
+    "stepsRun": 3,
+    "stopReason": "max_steps_reached",
+    "summary": {
+      "done": 3,
+      "blocked": 0,
+      "manual": 0
+    },
+    "at": "2026-03-03T17:10:21Z"
+  }
 }

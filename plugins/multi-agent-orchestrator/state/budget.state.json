@@ -199,7 +199,15 @@
       "elapsedMs": 94095,
       "retryCount": 1,
       "updatedAt": "2026-03-03T17:02:09Z"
+    },
+    "T-002|broadcaster": {
+      "taskId": "T-002",
+      "agent": "broadcaster",
+      "tokenUsage": 27323,
+      "elapsedMs": 120937,
+      "retryCount": 1,
+      "updatedAt": "2026-03-03T17:10:16Z"
     }
   },
-  "updatedAt": "2026-03-03T17:08:05Z"
+  "updatedAt": "2026-03-03T17:10:16Z"
 }
