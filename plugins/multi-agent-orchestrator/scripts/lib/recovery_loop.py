@@ -289,6 +289,14 @@ def decide_recovery(root: str, task_id: str, current_assignee: str, reason_code:
     attempt = prev_attempt + 1
     next_assignee = next_assignee_for(chain, current_assignee)
 
+    # For formatting/evidence incompleteness, avoid immediate human handoff when
+    # the current assignee sits at the tail of the chain (e.g. invest-analyst).
+    # Rotate back to the chain head and keep retry automated.
+    if reason == "incomplete_output" and next_assignee == "human" and attempt <= max_attempts:
+        non_human_chain = [role for role in chain if role != "human"]
+        if non_human_chain:
+            next_assignee = non_human_chain[0]
+
     if attempt > max_attempts:
         action = "escalate"
         next_assignee = "human"

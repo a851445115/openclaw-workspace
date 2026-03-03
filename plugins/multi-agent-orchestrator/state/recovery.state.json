@@ -54,7 +54,18 @@
       "cooldownUntilTs": 1772524408,
       "cooldownUntil": "2026-03-03T07:53:28Z",
       "updatedAt": "2026-03-03T07:51:28Z"
+    },
+    "T-018|incomplete_output": {
+      "taskId": "T-018",
+      "reasonCode": "incomplete_output",
+      "attempt": 1,
+      "nextAssignee": "human",
+      "action": "human",
+      "recoveryState": "human_handoff",
+      "cooldownUntilTs": 1772530444,
+      "cooldownUntil": "2026-03-03T09:34:04Z",
+      "updatedAt": "2026-03-03T09:32:04Z"
     }
   },
-  "updatedAt": "2026-03-03T07:51:28Z"
+  "updatedAt": "2026-03-03T09:32:04Z"
 }

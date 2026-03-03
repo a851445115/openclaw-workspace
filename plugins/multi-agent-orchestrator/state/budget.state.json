@@ -135,7 +135,23 @@
       "elapsedMs": 3,
       "retryCount": 2,
       "updatedAt": "2026-03-03T08:23:03Z"
+    },
+    "T-017|coder": {
+      "taskId": "T-017",
+      "agent": "coder",
+      "tokenUsage": 162836,
+      "elapsedMs": 2382251,
+      "retryCount": 2,
+      "updatedAt": "2026-03-03T09:26:43Z"
+    },
+    "T-018|invest-analyst": {
+      "taskId": "T-018",
+      "agent": "invest-analyst",
+      "tokenUsage": 90156,
+      "elapsedMs": 309258,
+      "retryCount": 2,
+      "updatedAt": "2026-03-03T09:32:04Z"
     }
   },
-  "updatedAt": "2026-03-03T08:23:03Z"
+  "updatedAt": "2026-03-03T09:32:04Z"
 }

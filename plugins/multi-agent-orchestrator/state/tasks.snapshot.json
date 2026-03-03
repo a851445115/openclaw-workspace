@@ -194,21 +194,22 @@
     "T-017": {
       "taskId": "T-017",
       "title": "[paper-xhs-3min:A2] Stage H: Conversion package export",
-      "status": "in_progress",
+      "status": "done",
       "owner": "coder",
       "assigneeHint": "coder",
       "createdBy": "orchestrator",
       "createdAt": "2026-03-02T16:32:13Z",
-      "updatedAt": "2026-03-03T08:23:56Z",
+      "updatedAt": "2026-03-03T09:26:43Z",
       "blockedReason": null,
-      "result": null,
+      "result": "Stage H conversion package export completed: 3 deliverables generated (post-package.json with valid JSON, channel-adapters.md with multi-platform guidance, release-checklist.md with comprehensive ver...",
       "review": null,
       "relatedTo": null,
       "projectId": null,
       "history": [
         "31e14401-9083-4c2f-8219-551c30f17f9f",
         "d7384135-7b4b-439c-b729-5f6eabb08f05",
-        "c1dfeec9-174b-4ff1-9fed-4c40d5867e63"
+        "c1dfeec9-174b-4ff1-9fed-4c40d5867e63",
+        "5d997efd-0703-48e2-8c6b-147a73f236cf"
       ],
       "dependsOn": [
         "T-016"
@@ -220,19 +221,21 @@
     "T-018": {
       "taskId": "T-018",
       "title": "[paper-xhs-3min:A2] Stage I: Weekly review synthesis",
-      "status": "pending",
-      "owner": null,
+      "status": "blocked",
+      "owner": "invest-analyst",
       "assigneeHint": "invest-analyst",
       "createdBy": "orchestrator",
       "createdAt": "2026-03-02T16:32:15Z",
-      "updatedAt": "2026-03-02T16:32:30Z",
-      "blockedReason": null,
+      "updatedAt": "2026-03-03T09:32:04Z",
+      "blockedReason": "invest-analyst \u4ea4\u4ed8\u7f3a\u5c11\u9a8c\u6536\u5173\u952e\u8bcd\uff08\u81f3\u5c11\u5305\u542b\u5176\u4e00\uff1a\u6765\u6e90, source, \u5f15\u7528, link, \u6570\u636e, report\uff09\u3002 | Weekly review synthesis completed: 94.0 quality score, 78.6% claim coverage, 9 follow-up actions identified | \u786c\u8bc1\u636e: metr... | human...",
       "result": null,
       "review": null,
       "relatedTo": null,
       "projectId": null,
       "history": [
-        "5940c445-1640-4d09-8c70-0d4e5a0a6e87"
+        "5940c445-1640-4d09-8c70-0d4e5a0a6e87",
+        "e73d586a-b5e8-4518-9847-912e2986d345",
+        "9c7e3d22-a70b-4f1d-8dbe-8d61feee9321"
       ],
       "dependsOn": [
         "T-017"
@@ -390,6 +393,6 @@
   },
   "meta": {
     "version": 2,
-    "updatedAt": "2026-03-03T08:23:56Z"
+    "updatedAt": "2026-03-03T09:32:04Z"
   }
 }
