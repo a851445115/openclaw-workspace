@@ -124,6 +124,7 @@ DEFAULT_EXECUTOR_ROUTING: Dict[str, str] = {
 }
 DEFAULT_XHS_WORKFLOW_ROOT = "/Users/chengren17/.openclaw/projects/paper-xhs-3min-workflow"
 DEFAULT_XHS_OUTPUT_ROOT = "/Users/chengren17/xhs-share"
+DEFAULT_XHS_N8N_TRIGGER_SCRIPT = "/Users/chengren17/.openclaw/n8n/trigger-xhs-workflow.sh"
 XHS_WORKFLOW_NAME = "paper-xhs-3min"
 XHS_TEMPLATE_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "templates", "workflows", XHS_WORKFLOW_NAME)
@@ -3239,6 +3240,115 @@ def cmd_xhs_bootstrap(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
+def trigger_xhs_n8n_once(args: argparse.Namespace) -> Dict[str, Any]:
+    actor = str(getattr(args, "actor", "orchestrator") or "orchestrator").strip() or "orchestrator"
+    if actor != "orchestrator":
+        return {"ok": False, "handled": True, "intent": "xhs_n8n_trigger", "error": "xhs n8n trigger is restricted to actor=orchestrator"}
+
+    paper_id = str(getattr(args, "paper_id", "") or "").strip()
+    if not paper_id:
+        return {"ok": False, "handled": True, "intent": "xhs_n8n_trigger", "error": "paper_id is required"}
+
+    raw_pdf_path = str(getattr(args, "pdf_path", "") or "").strip()
+    pdf_path = normalize_project_path(raw_pdf_path)
+    if not pdf_path or not os.path.isfile(pdf_path):
+        return {
+            "ok": False,
+            "handled": True,
+            "intent": "xhs_n8n_trigger",
+            "error": f"pdf path not found: {clip(pdf_path or raw_pdf_path, 200)}",
+        }
+
+    trigger_script = normalize_project_path(str(getattr(args, "n8n_trigger_script", "") or DEFAULT_XHS_N8N_TRIGGER_SCRIPT))
+    if not trigger_script:
+        return {"ok": False, "handled": True, "intent": "xhs_n8n_trigger", "error": "n8n trigger script path is empty"}
+
+    cmd = [
+        trigger_script,
+        paper_id,
+        pdf_path,
+        str(getattr(args, "group_id", DEFAULT_GROUP_ID) or DEFAULT_GROUP_ID),
+        str(getattr(args, "account_id", DEFAULT_ACCOUNT_ID) or DEFAULT_ACCOUNT_ID),
+    ]
+
+    mode = str(getattr(args, "mode", "send") or "send")
+    if mode == "dry-run":
+        return {
+            "ok": True,
+            "handled": True,
+            "intent": "xhs_n8n_trigger",
+            "dryRun": True,
+            "paperId": paper_id,
+            "pdfPath": pdf_path,
+            "plannedCommand": cmd,
+        }
+
+    if not os.path.isfile(trigger_script):
+        err_msg = f"trigger script not found: {clip(trigger_script, 200)}"
+        send = send_group_message(
+            str(getattr(args, "group_id", DEFAULT_GROUP_ID) or DEFAULT_GROUP_ID),
+            str(getattr(args, "account_id", DEFAULT_ACCOUNT_ID) or DEFAULT_ACCOUNT_ID),
+            f"[BLOCKED] n8n 触发失败 | paper_id={paper_id} | {err_msg}",
+            mode,
+        )
+        return {
+            "ok": False,
+            "handled": True,
+            "intent": "xhs_n8n_trigger",
+            "paperId": paper_id,
+            "pdfPath": pdf_path,
+            "error": err_msg,
+            "send": send,
+        }
+
+    timeout_sec = int(getattr(args, "timeout_sec", 0) or 0)
+    run_timeout = max(15, timeout_sec) if timeout_sec > 0 else 30
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=run_timeout)
+    stdout = (proc.stdout or "").strip()
+    stderr = (proc.stderr or "").strip()
+
+    response_obj: Dict[str, Any] = {}
+    if stdout:
+        try:
+            parsed = json.loads(stdout)
+            if isinstance(parsed, dict):
+                response_obj = parsed
+        except Exception:
+            response_obj = {"raw": clip(stdout, 400)}
+
+    if proc.returncode != 0:
+        detail = clip(stderr or stdout or f"exit={proc.returncode}", 200)
+        send = send_group_message(
+            str(getattr(args, "group_id", DEFAULT_GROUP_ID) or DEFAULT_GROUP_ID),
+            str(getattr(args, "account_id", DEFAULT_ACCOUNT_ID) or DEFAULT_ACCOUNT_ID),
+            f"[BLOCKED] n8n 触发失败 | paper_id={paper_id} | {detail}",
+            mode,
+        )
+        return {
+            "ok": False,
+            "handled": True,
+            "intent": "xhs_n8n_trigger",
+            "paperId": paper_id,
+            "pdfPath": pdf_path,
+            "exitCode": proc.returncode,
+            "error": detail,
+            "stdout": clip(stdout, 400),
+            "stderr": clip(stderr, 400),
+            "send": send,
+        }
+
+    return {
+        "ok": True,
+        "handled": True,
+        "intent": "xhs_n8n_trigger",
+        "dryRun": False,
+        "paperId": paper_id,
+        "pdfPath": pdf_path,
+        "command": cmd,
+        "response": response_obj if response_obj else {"raw": clip(stdout, 400)},
+    }
+
+
 def auto_progress_state_path(root: str) -> str:
     return os.path.join(root, "state", AUTO_PROGRESS_STATE_FILE)
 
@@ -3327,8 +3437,9 @@ def build_user_help_message() -> str:
         "[TASK] Orchestrator 快速入口",
         "1) @orchestrator 开始项目 /absolute/path/to/project",
         "2) @orchestrator 项目状态",
-        "3) @orchestrator 自动推进 开 [N] | 关 | 状态",
-        "4) @orchestrator run / autopilot / dispatch 仍可继续使用",
+        "3) @orchestrator 开始xhs流程n8n <paper_id> <pdf_path>",
+        "4) @orchestrator 自动推进 开 [N] | 关 | 状态",
+        "5) @orchestrator run / autopilot / dispatch 仍可继续使用",
     ]
     return "\n".join(lines)
 
@@ -4537,6 +4648,62 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             )
         )
         return 0 if ok else 1
+
+    # Command: @orchestrator 开始xhs流程n8n <paper_id> <pdf_path>
+    # Aliases:
+    #   @orchestrator 开始xhs流程 n8n <paper_id> <pdf_path>
+    #   @orchestrator start xhs n8n <paper_id> <pdf_path>
+    m = re.match(
+        r"^(?:开始xhs流程n8n|开始xhs流程\s+n8n|start\s+xhs(?:\s+workflow)?\s+n8n)\s+(.+)$",
+        cmd_body,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        tail = (m.group(1) or "").strip()
+        try:
+            parts = shlex.split(tail)
+        except Exception as err:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "handled": True,
+                        "intent": "xhs_n8n_trigger",
+                        "error": f"invalid command syntax: {clip(str(err), 160)}",
+                    },
+                    ensure_ascii=True,
+                )
+            )
+            return 1
+        if len(parts) < 2:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "handled": True,
+                        "intent": "xhs_n8n_trigger",
+                        "error": "usage: @orchestrator 开始xhs流程n8n <paper_id> <pdf_path>",
+                    },
+                    ensure_ascii=True,
+                )
+            )
+            return 1
+
+        paper_id = str(parts[0]).strip()
+        pdf_path = " ".join(parts[1:]).strip()
+        n8n_args = argparse.Namespace(
+            actor="orchestrator",
+            paper_id=paper_id,
+            pdf_path=pdf_path,
+            group_id=args.group_id,
+            account_id=args.account_id,
+            mode=args.mode,
+            timeout_sec=args.timeout_sec,
+            n8n_trigger_script=DEFAULT_XHS_N8N_TRIGGER_SCRIPT,
+        )
+        result = trigger_xhs_n8n_once(n8n_args)
+        print(json.dumps(result, ensure_ascii=True))
+        return 0 if result.get("ok") else 1
 
     # Command: @orchestrator 开始xhs流程 <paper_id> <pdf_path>
     # Alias: @orchestrator start xhs workflow <paper_id> <pdf_path>

@@ -249,14 +249,14 @@
     "T-019": {
       "taskId": "T-019",
       "title": "[paper-xhs-3min:A2] Stage J: Reproduction scope and hypothesis mapping",
-      "status": "in_progress",
+      "status": "done",
       "owner": "invest-analyst",
       "assigneeHint": "invest-analyst",
       "createdBy": "orchestrator",
       "createdAt": "2026-03-02T16:32:18Z",
-      "updatedAt": "2026-03-03T12:59:58Z",
+      "updatedAt": "2026-03-03T14:41:02Z",
       "blockedReason": "spawn timeout after 30s | human_handoff",
-      "result": null,
+      "result": "Completed reproduction scope mapping with 12 testable hypotheses, 10-phase execution plan, and 20+ module mappings from paper sections to implementation code | \u786c\u8bc1\u636e: hypothesis-matrix.json; hes_model....",
       "review": null,
       "relatedTo": null,
       "projectId": null,
@@ -265,7 +265,8 @@
         "61d800d6-1533-4724-a8b6-8815865d3b47",
         "85a3d6c7-aa0c-4920-9a80-66028dacdd20",
         "0986ab8e-c520-4b77-8846-e113a8eff61d",
-        "b860c310-c41d-41e9-be5a-96b02e8761d2"
+        "b860c310-c41d-41e9-be5a-96b02e8761d2",
+        "090d5416-7c97-453f-b675-73711d6f99c4"
       ],
       "dependsOn": [
         "T-018"
@@ -399,6 +400,6 @@
   },
   "meta": {
     "version": 2,
-    "updatedAt": "2026-03-03T12:59:58Z"
+    "updatedAt": "2026-03-03T14:41:02Z"
   }
 }

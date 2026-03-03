@@ -45,3 +45,5 @@
 {"event": "dispatch_blocked", "at": "2026-03-03T12:59:40Z", "ts": 1772542780, "taskId": "T-019", "agent": "invest-analyst", "decision": "blocked", "reasonCode": "spawn_failed", "cycleMs": 35008, "autoClose": true, "dispatchMode": "spawn"}
 {"event": "recovery_escalated", "at": "2026-03-03T12:59:40Z", "ts": 1772542780, "taskId": "T-019", "agent": "invest-analyst", "reasonCode": "spawn_failed", "recoveryAction": "human", "recoveryState": "human_handoff", "nextAssignee": "human"}
 {"event": "autopilot_cycle", "at": "2026-03-03T12:59:40Z", "ts": 1772542780, "maxSteps": 1, "stepsRun": 1, "done": 0, "blocked": 1, "manual": 0, "stopReason": "max_steps_reached", "ok": true, "spawnEnabled": true}
+{"event": "dispatch_done", "at": "2026-03-03T14:41:08Z", "ts": 1772548868, "taskId": "T-019", "agent": "invest-analyst", "decision": "done", "reasonCode": "done_with_evidence", "cycleMs": 1994075, "autoClose": true, "dispatchMode": "spawn"}
+{"event": "autopilot_cycle", "at": "2026-03-03T14:41:08Z", "ts": 1772548868, "maxSteps": 1, "stepsRun": 1, "done": 1, "blocked": 0, "manual": 0, "stopReason": "max_steps_reached", "ok": true, "spawnEnabled": true}

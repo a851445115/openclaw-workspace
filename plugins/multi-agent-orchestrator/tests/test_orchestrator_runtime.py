@@ -1279,6 +1279,32 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("dependsOnSync", out, out)
             self.assertIn("bootstrap", out, out)
 
+    def test_feishu_router_supports_xhs_n8n_trigger_intents(self):
+        _, pdf_path = self._prepare_xhs_inputs("P-301")
+        for command in (
+            f"@orchestrator 开始xhs流程n8n P-301 {pdf_path}",
+            f"@orchestrator 开始xhs流程 n8n P-302 {pdf_path}",
+            f"@orchestrator start xhs n8n P-303 {pdf_path}",
+        ):
+            out = run_json([
+                "python3",
+                str(MILE),
+                "feishu-router",
+                "--root",
+                str(self.root),
+                "--actor",
+                "orchestrator",
+                "--text",
+                command,
+                "--mode",
+                "dry-run",
+            ])
+            self.assertTrue(out["ok"], out)
+            self.assertEqual(out.get("intent"), "xhs_n8n_trigger", out)
+            self.assertTrue(out.get("dryRun"), out)
+            planned = out.get("plannedCommand") or []
+            self.assertTrue(any("trigger-xhs-workflow.sh" in str(x) for x in planned), out)
+
     def test_scheme_b_coder_dispatch_uses_claude_worker_executor(self):
         run_json([
             "python3",
