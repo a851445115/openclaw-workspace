@@ -732,6 +732,24 @@ def requirements_for_kind(kind: str) -> List[str]:
     ]
 
 
+def acceptance_keywords_for_agent(root: str, agent: str) -> List[str]:
+    policy = load_acceptance_policy(root)
+    role_key = governance.canonical_agent(agent) or str(agent or "").strip().lower()
+    roles = policy.get("roles") if isinstance(policy.get("roles"), dict) else {}
+    role_conf = roles.get(role_key) if isinstance(roles.get(role_key), dict) else {}
+    required_any = role_conf.get("requireAny")
+    out: List[str] = []
+    if isinstance(required_any, list):
+        for item in required_any:
+            token = str(item or "").strip()
+            if not token or token in out:
+                continue
+            out.append(token)
+            if len(out) >= 12:
+                break
+    return out
+
+
 def build_structured_output_schema(task_id: str, agent: str) -> Dict[str, Any]:
     return {
         "taskId": task_id,
@@ -877,6 +895,15 @@ def build_agent_prompt(
     )
     for idx, item in enumerate(requirements, start=1):
         lines.append(f"{idx}. {item}")
+    acceptance_keywords = acceptance_keywords_for_agent(root, agent)
+    if acceptance_keywords:
+        lines.extend(
+            [
+                "DONE_GATE_HINTS:",
+                "1. status=done 时，summary 或 evidence 至少包含下列任一关键词："
+                + ", ".join(acceptance_keywords),
+            ]
+        )
     if (governance.canonical_agent(agent) or str(agent or "").strip().lower()) == "debugger":
         lines.extend(
             [

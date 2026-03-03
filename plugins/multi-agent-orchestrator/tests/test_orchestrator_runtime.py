@@ -579,6 +579,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("TASK_RECENT_HISTORY", prompt, out)
         self.assertIn("OUTPUT_SCHEMA", prompt, out)
         self.assertIn('"status": "done|blocked|progress"', prompt, out)
+        self.assertIn("DONE_GATE_HINTS", prompt, out)
+        self.assertIn("pytest", prompt, out)
 
     def test_dispatch_prompt_keeps_long_objective_without_tail_truncation(self):
         run_json([

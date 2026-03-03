@@ -257,6 +257,13 @@ class RecoveryLoopTests(unittest.TestCase):
         self.assertEqual(out["spawn"]["action"], "retry", out)
         self.assertEqual(out["spawn"]["nextAssignee"], "coder", out)
 
+    def test_incomplete_output_rotates_to_chain_head_instead_of_human(self):
+        self._create_task("T-141", "invest-analyst", "tail role incomplete output")
+        out = self._dispatch("T-141", "invest-analyst", '{"status":"done","summary":"缺少验收关键词"}')
+        self.assertEqual(out["spawn"]["reasonCode"], "incomplete_output", out)
+        self.assertEqual(out["spawn"]["action"], "retry", out)
+        self.assertEqual(out["spawn"]["nextAssignee"], "coder", out)
+
 
 if __name__ == "__main__":
     unittest.main()
