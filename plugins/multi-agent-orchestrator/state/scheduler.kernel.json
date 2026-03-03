@@ -1,0 +1,9 @@
+{
+  "enabled": false,
+  "intervalSec": 300,
+  "maxSteps": 1,
+  "lastRunTs": 0,
+  "lastRunAt": "",
+  "nextDueTs": 0,
+  "updatedAt": "2026-03-03T08:17:11Z"
+}

@@ -165,14 +165,14 @@
     "T-016": {
       "taskId": "T-016",
       "title": "[paper-xhs-3min:A2] Stage G: Quality gate review",
-      "status": "blocked",
-      "owner": "coder",
+      "status": "done",
+      "owner": "debugger",
       "assigneeHint": "debugger",
       "createdBy": "orchestrator",
       "createdAt": "2026-03-02T16:32:11Z",
-      "updatedAt": "2026-03-03T07:51:28Z",
+      "updatedAt": "2026-03-03T08:23:03Z",
       "blockedReason": "coder \u4ea4\u4ed8\u7f3a\u5c11\u9a8c\u6536\u5173\u952e\u8bcd\uff08\u81f3\u5c11\u5305\u542b\u5176\u4e00\uff1atest, pytest, \u9a8c\u8bc1, \u901a\u8fc7, \u65e5\u5fd7, log\uff09\u3002 | Quality gate completed: CONDITIONAL_PASS (score 78.2/80.0) with 4 remediation items identified | \u786c\u8bc1\u636e: gate-score.json; ... | recovery_pending:...",
-      "result": null,
+      "result": "Quality gate \u9a8c\u8bc1\u901a\u8fc7\uff0clog \u5df2\u66f4\u65b0 | \u786c\u8bc1\u636e: /Users/chengren17/xhs-share/A2/qa/g-gate/run_quality_gate.py; /Users/chengren17/xhs-share/A2/qa/g-gate/remediation-items.md | \u53d8\u66f4: /Users/chengren17/xhs-share/A2/qa/g-...",
       "review": null,
       "relatedTo": null,
       "projectId": null,
@@ -180,7 +180,9 @@
         "a5fbb74b-9a4d-4a33-84d6-0fd8a098748e",
         "74b768ee-ac7a-4dff-870c-69da9d1d4345",
         "0614cb4f-a69a-44e9-a1d2-f281056157e5",
-        "7781542d-dd7e-4200-ac10-bee97bd9021f"
+        "7781542d-dd7e-4200-ac10-bee97bd9021f",
+        "4245b955-f61e-47ae-838f-3e2bdaa65d80",
+        "b041ddb1-2673-4870-be73-98a64e6b2215"
       ],
       "dependsOn": [
         "T-015"
@@ -192,19 +194,21 @@
     "T-017": {
       "taskId": "T-017",
       "title": "[paper-xhs-3min:A2] Stage H: Conversion package export",
-      "status": "pending",
-      "owner": null,
+      "status": "in_progress",
+      "owner": "coder",
       "assigneeHint": "coder",
       "createdBy": "orchestrator",
       "createdAt": "2026-03-02T16:32:13Z",
-      "updatedAt": "2026-03-02T16:32:30Z",
+      "updatedAt": "2026-03-03T08:23:56Z",
       "blockedReason": null,
       "result": null,
       "review": null,
       "relatedTo": null,
       "projectId": null,
       "history": [
-        "31e14401-9083-4c2f-8219-551c30f17f9f"
+        "31e14401-9083-4c2f-8219-551c30f17f9f",
+        "d7384135-7b4b-439c-b729-5f6eabb08f05",
+        "c1dfeec9-174b-4ff1-9fed-4c40d5867e63"
       ],
       "dependsOn": [
         "T-016"
@@ -336,12 +340,12 @@
     "T-023": {
       "taskId": "T-023",
       "title": "[paper-xhs-3min:A2] Stage N: Reproduction integrity audit",
-      "status": "claimed",
-      "owner": "coder",
+      "status": "in_progress",
+      "owner": "debugger",
       "assigneeHint": "debugger",
       "createdBy": "orchestrator",
       "createdAt": "2026-03-02T16:32:26Z",
-      "updatedAt": "2026-03-03T06:17:33Z",
+      "updatedAt": "2026-03-03T08:23:13Z",
       "blockedReason": null,
       "result": null,
       "review": null,
@@ -349,7 +353,8 @@
       "projectId": null,
       "history": [
         "7863e25e-b1e9-42ea-870d-703986e9f31c",
-        "61dffa38-2c17-4063-933e-4cb80b669516"
+        "61dffa38-2c17-4063-933e-4cb80b669516",
+        "63d23c8c-3498-4a5d-97db-49ff9a6e2d21"
       ],
       "dependsOn": [
         "T-022"
@@ -385,6 +390,6 @@
   },
   "meta": {
     "version": 2,
-    "updatedAt": "2026-03-03T07:51:28Z"
+    "updatedAt": "2026-03-03T08:23:56Z"
   }
 }
