@@ -42,3 +42,30 @@ When working on memory plugins, confirm you are editing the intended package (e.
 
 After modifying ANY `.ts` file under `plugins/`, MUST run `rm -rf /tmp/jiti/` BEFORE `openclaw gateway restart`. jiti caches compiled TS; restart alone loads STALE code. This has caused silent bugs multiple times. Config-only changes do NOT need cache clearing.
 
+---
+
+## Rule 21 — 小红书和抖音操作必须使用本地 MCP Skills（MANDATORY）
+
+**Decision principle (social-media-ops)**: When user requests operations on 小红书 (XiaoHongShu/XHS/RedNote) or 抖音 (Douyin/TikTok China) — including fetching info, posting content, or any interaction — MUST use the local MCP skills.
+
+**Skills location**:
+- `~/.openclaw/skills/xhs-douyin-mcp-autostart` (supports both platforms)
+- `~/.openclaw/skills/douyin-mcp-autostart` (Douyin only)
+
+**Service ports**:
+- 小红书: http://127.0.0.1:18060/mcp
+- 抖音: http://127.0.0.1:18070/mcp
+
+**Trigger**: User mentions "小红书", "抖音", "XHS", "RedNote", "Douyin", or requests to get/post content on these platforms.
+
+**Action**:
+1. Read the corresponding SKILL.md file first
+2. Use scripts to ensure service is running (ensure_xhs.sh / ensure_douyin.sh)
+3. Call tools via mcporter (mcporter_call.sh or direct mcporter call)
+
+**Prerequisites**:
+- 小红书 requires prior login with cookies at: `/Users/chengren17/opt/xiaohongshu-mcp-bin/cookies.json`
+- mcporter config: `/Users/chengren17/config/mcporter.json`
+
+**Never**: Attempt to use web scraping, browser automation, or API calls directly without these skills.
+
