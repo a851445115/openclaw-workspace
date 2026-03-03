@@ -261,11 +261,33 @@ def looks_like_report(raw: Any) -> bool:
     return False
 
 
+def parse_report_candidate(candidate: Any) -> Dict[str, Any]:
+    if isinstance(candidate, dict) and looks_like_report(candidate):
+        return candidate
+    if isinstance(candidate, str):
+        try:
+            parsed = parse_json_loose(candidate)
+        except Exception:
+            return {}
+        if isinstance(parsed, dict) and looks_like_report(parsed):
+            return parsed
+    return {}
+
+
 def extract_report_dict(raw_obj: Any) -> Dict[str, Any]:
+    candidates: List[Any] = []
+    if isinstance(raw_obj, dict):
+        for key in ("structured_output", "structuredOutput"):
+            candidates.append(raw_obj.get(key))
+
+        for candidate in candidates:
+            report = parse_report_candidate(candidate)
+            if report:
+                return report
+
     if isinstance(raw_obj, dict) and looks_like_report(raw_obj):
         return raw_obj
 
-    candidates: List[Any] = []
     if isinstance(raw_obj, dict):
         for key in ("result", "output", "response", "data", "message"):
             candidates.append(raw_obj.get(key))
@@ -278,15 +300,9 @@ def extract_report_dict(raw_obj: Any) -> Dict[str, Any]:
                     candidates.append(item)
 
     for candidate in candidates:
-        if isinstance(candidate, dict) and looks_like_report(candidate):
-            return candidate
-        if isinstance(candidate, str):
-            try:
-                parsed = parse_json_loose(candidate)
-            except Exception:
-                continue
-            if isinstance(parsed, dict) and looks_like_report(parsed):
-                return parsed
+        report = parse_report_candidate(candidate)
+        if report:
+            return report
 
     if isinstance(raw_obj, dict):
         return raw_obj
@@ -325,7 +341,8 @@ def main() -> int:
                 obj = parsed
             else:
                 obj = {"status": "progress", "summary": str(parsed)}
-            result = normalize_result(args.task_id, args.agent, obj, fallback_text=fake_text)
+            report_obj = extract_report_dict(obj)
+            result = normalize_result(args.task_id, args.agent, report_obj, fallback_text=fake_text)
         except Exception as err:
             result = blocked(args.task_id, args.agent, f"fake output parse failed: {err}", [fake_text])
         print(json.dumps(attach_metrics(result, obj, start_ms), ensure_ascii=False))
@@ -345,6 +362,7 @@ def main() -> int:
         "bypassPermissions",
         "--add-dir",
         workspace,
+        "-p",
         args.task,
     ]
 
