@@ -159,7 +159,39 @@
       "elapsedMs": 2029083,
       "retryCount": 2,
       "updatedAt": "2026-03-03T14:41:02Z"
+    },
+    "T-020|paper-ingestor": {
+      "taskId": "T-020",
+      "agent": "paper-ingestor",
+      "tokenUsage": 53528,
+      "elapsedMs": 228856,
+      "retryCount": 1,
+      "updatedAt": "2026-03-03T15:35:47Z"
+    },
+    "T-021|coder": {
+      "taskId": "T-021",
+      "agent": "coder",
+      "tokenUsage": 65520,
+      "elapsedMs": 346455,
+      "retryCount": 1,
+      "updatedAt": "2026-03-03T15:41:44Z"
+    },
+    "T-022|coder": {
+      "taskId": "T-022",
+      "agent": "coder",
+      "tokenUsage": 81546,
+      "elapsedMs": 193464,
+      "retryCount": 1,
+      "updatedAt": "2026-03-03T15:45:07Z"
+    },
+    "T-023|debugger": {
+      "taskId": "T-023",
+      "agent": "debugger",
+      "tokenUsage": 51887,
+      "elapsedMs": 1176660,
+      "retryCount": 1,
+      "updatedAt": "2026-03-03T16:04:54Z"
     }
   },
-  "updatedAt": "2026-03-03T14:41:02Z"
+  "updatedAt": "2026-03-03T16:04:54Z"
 }
