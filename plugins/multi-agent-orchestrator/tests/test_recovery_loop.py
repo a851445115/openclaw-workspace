@@ -62,6 +62,19 @@ class RecoveryLoopTests(unittest.TestCase):
             spawn_output,
         ])
 
+    def _status(self, task_id: str):
+        return run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            f"status {task_id}",
+        ])
+
     def test_reason_codes_enter_recovery_chain(self):
         self._create_task("T-101", "coder", "spawn failed branch")
         out1 = self._dispatch("T-101", "coder", '{"status":"failed","message":"worker crashed"}')
@@ -164,6 +177,20 @@ class RecoveryLoopTests(unittest.TestCase):
         self.assertFalse(second["claimSend"].get("skipped", False), second)
         self.assertTrue(second["taskSend"]["ok"], second)
         self.assertFalse(second["taskSend"].get("skipped", False), second)
+
+    def test_incomplete_output_retry_claims_next_assignee_to_keep_task_runnable(self):
+        self._create_task("T-113", "coder", "retry should remain runnable")
+        out = self._dispatch("T-113", "coder", '{"status":"done","summary":"done without evidence"}')
+
+        self.assertEqual(out["spawn"]["reasonCode"], "incomplete_output", out)
+        self.assertEqual(out["spawn"]["action"], "retry", out)
+        self.assertEqual(out["spawn"]["nextAssignee"], "debugger", out)
+        self.assertEqual((out.get("closeApply") or {}).get("intent"), "claim_task", out)
+
+        status = self._status("T-113")
+        task = status.get("task") or {}
+        self.assertEqual(task.get("status"), "in_progress", status)
+        self.assertEqual(task.get("owner"), "debugger", status)
 
     def test_over_budget_escalates_to_human(self):
         policy_path = self.root / "config" / "recovery-policy.json"

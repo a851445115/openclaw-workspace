@@ -2110,14 +2110,8 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                 next_assignee = str(recovery_decision.get("nextAssignee") or "human")
                 recovery_state = str(recovery_decision.get("recoveryState") or "")
                 if recovery_action == "retry":
-                    if reason_code == "incomplete_output":
-                        close_apply = board_apply(
-                            args.root,
-                            "orchestrator",
-                            f"block task {args.task_id}: {clip(detail + ' | recovery_pending:' + next_assignee, 200)}",
-                        )
-                    else:
-                        close_apply = board_apply(args.root, "orchestrator", f"@{next_assignee} claim task {args.task_id}")
+                    # Keep retry-able failures runnable so autopilot can continue the recovery chain.
+                    close_apply = board_apply(args.root, "orchestrator", f"@{next_assignee} claim task {args.task_id}")
                 else:
                     tail = recovery_state or ("escalated_to_human" if recovery_action == "escalate" else "human_handoff")
                     close_apply = board_apply(args.root, "orchestrator", f"block task {args.task_id}: {clip(detail + ' | ' + tail, 200)}")

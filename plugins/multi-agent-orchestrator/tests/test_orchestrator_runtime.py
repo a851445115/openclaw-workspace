@@ -120,7 +120,7 @@ class RuntimeTests(unittest.TestCase):
         ])
         self.assertEqual(status["task"]["status"], "done", status)
 
-    def test_dispatch_spawn_done_without_evidence_is_blocked(self):
+    def test_dispatch_spawn_done_without_evidence_schedules_retry_claim(self):
         run_json([
             "python3",
             str(BOARD),
@@ -152,6 +152,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(dispatch["ok"], dispatch)
         self.assertEqual(dispatch["spawn"]["decision"], "blocked", dispatch)
         self.assertEqual(dispatch["spawn"]["reasonCode"], "incomplete_output", dispatch)
+        self.assertEqual((dispatch.get("closeApply") or {}).get("intent"), "claim_task", dispatch)
 
         status = run_json([
             "python3",
@@ -164,7 +165,8 @@ class RuntimeTests(unittest.TestCase):
             "--text",
             "status T-005",
         ])
-        self.assertEqual(status["task"]["status"], "blocked", status)
+        self.assertEqual(status["task"]["status"], "in_progress", status)
+        self.assertEqual(status["task"]["owner"], "invest-analyst", status)
 
     def test_feishu_router_handles_claim_done_commands(self):
         run_json([
@@ -822,6 +824,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(out["ok"], out)
         self.assertEqual(out["spawn"]["decision"], "blocked", out)
         self.assertEqual(out["spawn"]["reasonCode"], "incomplete_output", out)
+        self.assertEqual((out.get("closeApply") or {}).get("intent"), "claim_task", out)
         status = run_json([
             "python3",
             str(BOARD),
@@ -833,7 +836,8 @@ class RuntimeTests(unittest.TestCase):
             "--text",
             "status T-043",
         ])
-        self.assertEqual(status["task"]["status"], "blocked", status)
+        self.assertEqual(status["task"]["status"], "in_progress", status)
+        self.assertEqual(status["task"]["owner"], "debugger", status)
 
     def test_user_friendly_help_and_project_status_alias(self):
         run_json([
