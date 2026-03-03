@@ -11,8 +11,14 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+
+try:
+    import fcntl
+except Exception:  # pragma: no cover
+    fcntl = None
 
 SCRIPT_LIB_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_LIB_DIR not in sys.path:
@@ -240,6 +246,8 @@ SCHEDULER_DAEMON_STATE_FILE = "scheduler.daemon.json"
 SCHEDULER_DAEMON_DEFAULT_POLL_SEC = 5
 SCHEDULER_DAEMON_MIN_POLL_SEC = 0
 SCHEDULER_DAEMON_MAX_POLL_SEC = 3600
+AUTOPILOT_RUNTIME_STATE_FILE = "autopilot.runtime.json"
+AUTOPILOT_RUNTIME_LOCK_FILE = "autopilot.runtime.lock"
 # 0 means unlimited. Keep this unlimited by default so long workflow hints
 # are not silently dropped from dispatch context.
 KNOWLEDGE_HINT_PROMPT_LIMIT = 0
@@ -2444,6 +2452,95 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
+def cmd_autopilot_runner(args: argparse.Namespace) -> int:
+    if args.actor != "orchestrator":
+        print(json.dumps({"ok": False, "error": "autopilot-runner is restricted to actor=orchestrator"}, ensure_ascii=True))
+        return 1
+
+    with autopilot_runtime_lock(args.root):
+        state = load_autopilot_runtime_state(args.root)
+        state.update(
+            {
+                "running": True,
+                "pid": os.getpid(),
+                "startedAt": now_iso(),
+                "endedAt": "",
+                "status": "running",
+                "maxSteps": int(args.max_steps),
+                "mode": str(args.mode or "send"),
+                "spawnEnabled": bool(args.spawn),
+                "visibilityMode": str(args.visibility_mode or DEFAULT_VISIBILITY_MODE),
+                "stopReason": "",
+                "error": "",
+            }
+        )
+        save_autopilot_runtime_state(args.root, state)
+
+    result: Dict[str, Any]
+    stop_reason = ""
+    error_text = ""
+    status = "finished"
+    try:
+        result = autopilot_once(args)
+        stop_reason = str(result.get("stopReason") or "")
+        if not bool(result.get("ok")):
+            status = "failed"
+            if not stop_reason:
+                stop_reason = "dispatch_failed"
+    except Exception as err:
+        status = "failed"
+        stop_reason = "runner_exception"
+        error_text = clip(str(err), 240)
+        result = {
+            "ok": False,
+            "handled": True,
+            "intent": "autopilot",
+            "maxSteps": int(args.max_steps),
+            "stepsRun": 0,
+            "summary": {"done": 0, "blocked": 0, "manual": 0},
+            "stopReason": stop_reason,
+            "error": error_text,
+            "visibilityMode": str(args.visibility_mode),
+            "steps": [],
+        }
+    finally:
+        with autopilot_runtime_lock(args.root):
+            last = load_autopilot_runtime_state(args.root)
+            last_result = {
+                "ok": bool(result.get("ok")),
+                "stepsRun": int(result.get("stepsRun") or 0),
+                "stopReason": str(result.get("stopReason") or stop_reason),
+                "summary": result.get("summary") if isinstance(result.get("summary"), dict) else {},
+                "at": now_iso(),
+            }
+            last.update(
+                {
+                    "running": False,
+                    "pid": 0,
+                    "endedAt": now_iso(),
+                    "status": status,
+                    "stopReason": stop_reason or str(result.get("stopReason") or ""),
+                    "error": error_text,
+                    "lastResult": last_result,
+                }
+            )
+            save_autopilot_runtime_state(args.root, last)
+
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    done_count = int(summary.get("done") or 0)
+    blocked_count = int(summary.get("blocked") or 0)
+    manual_count = int(summary.get("manual") or 0)
+    final_msg = (
+        f"[TASK] autopilot 已结束 | stepsRun={int(result.get('stepsRun') or 0)} | "
+        f"stopReason={str(result.get('stopReason') or '-')}"
+        f" | done={done_count} | blocked={blocked_count} | manual={manual_count}"
+    )
+    notify = send_group_message(args.group_id, args.account_id, final_msg, args.mode)
+    result["notify"] = notify
+    print(json.dumps(result, ensure_ascii=True))
+    return 0 if result.get("ok") else 1
+
+
 def scheduler_run_once(args: argparse.Namespace) -> Dict[str, Any]:
     if args.actor != "orchestrator":
         return {"ok": False, "error": "scheduler-run is restricted to actor=orchestrator"}
@@ -4280,6 +4377,239 @@ def _pid_is_running(pid: Any) -> bool:
         return False
 
 
+def autopilot_runtime_state_path(root: str) -> str:
+    return os.path.join(root, "state", AUTOPILOT_RUNTIME_STATE_FILE)
+
+
+def autopilot_runtime_lock_path(root: str) -> str:
+    return os.path.join(root, "state", AUTOPILOT_RUNTIME_LOCK_FILE)
+
+
+def load_autopilot_runtime_state(root: str) -> Dict[str, Any]:
+    data = load_json_file(
+        autopilot_runtime_state_path(root),
+        {
+            "running": False,
+            "pid": 0,
+            "startedAt": "",
+            "endedAt": "",
+            "updatedAt": "",
+            "status": "idle",
+            "maxSteps": 0,
+            "mode": "",
+            "spawnEnabled": False,
+            "visibilityMode": "",
+            "stopReason": "",
+            "error": "",
+            "logPath": "",
+            "lastResult": {},
+        },
+    )
+    return {
+        "running": bool(data.get("running")),
+        "pid": int(data.get("pid") or 0),
+        "startedAt": str(data.get("startedAt") or ""),
+        "endedAt": str(data.get("endedAt") or ""),
+        "updatedAt": str(data.get("updatedAt") or ""),
+        "status": str(data.get("status") or "idle"),
+        "maxSteps": int(data.get("maxSteps") or 0),
+        "mode": str(data.get("mode") or ""),
+        "spawnEnabled": bool(data.get("spawnEnabled")),
+        "visibilityMode": str(data.get("visibilityMode") or ""),
+        "stopReason": str(data.get("stopReason") or ""),
+        "error": str(data.get("error") or ""),
+        "logPath": str(data.get("logPath") or ""),
+        "lastResult": data.get("lastResult") if isinstance(data.get("lastResult"), dict) else {},
+    }
+
+
+def save_autopilot_runtime_state(root: str, state: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = {
+        "running": bool(state.get("running")),
+        "pid": int(state.get("pid") or 0),
+        "startedAt": str(state.get("startedAt") or ""),
+        "endedAt": str(state.get("endedAt") or ""),
+        "updatedAt": now_iso(),
+        "status": str(state.get("status") or "idle"),
+        "maxSteps": int(state.get("maxSteps") or 0),
+        "mode": str(state.get("mode") or ""),
+        "spawnEnabled": bool(state.get("spawnEnabled")),
+        "visibilityMode": str(state.get("visibilityMode") or ""),
+        "stopReason": str(state.get("stopReason") or ""),
+        "error": str(state.get("error") or ""),
+        "logPath": str(state.get("logPath") or ""),
+        "lastResult": state.get("lastResult") if isinstance(state.get("lastResult"), dict) else {},
+    }
+    save_json_file(autopilot_runtime_state_path(root), normalized)
+    return normalized
+
+
+@contextmanager
+def autopilot_runtime_lock(root: str):
+    lock_path = autopilot_runtime_lock_path(root)
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def build_autopilot_runner_cmd(
+    args: argparse.Namespace,
+    max_steps: int,
+    spawn_enabled: bool,
+    visibility_mode: str,
+) -> List[str]:
+    cmd = [
+        "python3",
+        os.path.abspath(__file__),
+        "autopilot-runner",
+        "--root",
+        str(args.root),
+        "--actor",
+        "orchestrator",
+        "--mode",
+        "send",
+        "--group-id",
+        str(args.group_id),
+        "--account-id",
+        str(args.account_id),
+        "--session-id",
+        str(getattr(args, "session_id", "") or ""),
+        "--timeout-sec",
+        str(normalize_timeout_sec(getattr(args, "timeout_sec", 0), default=0)),
+        "--max-steps",
+        str(max_steps),
+        "--visibility-mode",
+        str(visibility_mode or DEFAULT_VISIBILITY_MODE),
+    ]
+    if spawn_enabled:
+        cmd.append("--spawn")
+    else:
+        cmd.append("--no-spawn")
+    spawn_cmd = str(getattr(args, "spawn_cmd", "") or "").strip()
+    if spawn_cmd:
+        cmd.extend(["--spawn-cmd", spawn_cmd])
+    spawn_output = str(getattr(args, "spawn_output", "") or "").strip()
+    if spawn_output:
+        cmd.extend(["--spawn-output", spawn_output])
+    return cmd
+
+
+def start_autopilot_background(
+    args: argparse.Namespace,
+    max_steps: int,
+    spawn_enabled: bool,
+    visibility_mode: str,
+) -> Dict[str, Any]:
+    if str(getattr(args, "mode", "send") or "send") != "send":
+        return {"attempted": False, "status": "skipped", "reason": "mode_not_send", "async": False}
+
+    with autopilot_runtime_lock(args.root):
+        current = load_autopilot_runtime_state(args.root)
+        is_running = bool(current.get("running")) and _pid_is_running(current.get("pid"))
+        if is_running:
+            return {
+                "attempted": True,
+                "status": "already_running",
+                "skipped": True,
+                "async": True,
+                "pid": int(current.get("pid") or 0),
+                "state": current,
+                "maxSteps": int(current.get("maxSteps") or max_steps),
+            }
+
+        stale_recovered = bool(current.get("running")) and not is_running
+        if stale_recovered:
+            current.update(
+                {
+                    "running": False,
+                    "pid": 0,
+                    "status": "stale_recovered",
+                    "endedAt": now_iso(),
+                    "stopReason": "stale_pid_recovered",
+                }
+            )
+            save_autopilot_runtime_state(args.root, current)
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        log_path = os.path.join(args.root, "state", f"autopilot-{max_steps}-{stamp}.log")
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+        cmd = build_autopilot_runner_cmd(args, max_steps, spawn_enabled, visibility_mode)
+
+        log_handle = None
+        try:
+            log_handle = open(log_path, "a", encoding="utf-8")
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_handle,
+                stderr=log_handle,
+                start_new_session=True,
+            )
+        except Exception as err:
+            if log_handle is not None and not log_handle.closed:
+                log_handle.close()
+            failed_state = {
+                "running": False,
+                "pid": 0,
+                "startedAt": "",
+                "endedAt": now_iso(),
+                "status": "failed_to_start",
+                "maxSteps": max_steps,
+                "mode": "send",
+                "spawnEnabled": bool(spawn_enabled),
+                "visibilityMode": str(visibility_mode or DEFAULT_VISIBILITY_MODE),
+                "stopReason": "spawn_failed",
+                "error": clip(str(err), 240),
+                "logPath": log_path,
+                "lastResult": {},
+            }
+            saved = save_autopilot_runtime_state(args.root, failed_state)
+            return {
+                "attempted": True,
+                "status": "failed_to_start",
+                "async": True,
+                "error": clip(str(err), 240),
+                "state": saved,
+                "maxSteps": max_steps,
+            }
+        finally:
+            if log_handle is not None and not log_handle.closed:
+                log_handle.close()
+
+        started_state = {
+            "running": True,
+            "pid": int(getattr(proc, "pid", 0) or 0),
+            "startedAt": now_iso(),
+            "endedAt": "",
+            "status": "running",
+            "maxSteps": max_steps,
+            "mode": "send",
+            "spawnEnabled": bool(spawn_enabled),
+            "visibilityMode": str(visibility_mode or DEFAULT_VISIBILITY_MODE),
+            "stopReason": "",
+            "error": "",
+            "logPath": log_path,
+            "lastResult": {},
+        }
+        saved = save_autopilot_runtime_state(args.root, started_state)
+        return {
+            "attempted": True,
+            "status": "started",
+            "async": True,
+            "pid": int(getattr(proc, "pid", 0) or 0),
+            "maxSteps": max_steps,
+            "logPath": log_path,
+            "staleRecovered": stale_recovered,
+            "state": saved,
+        }
+
+
 def ensure_scheduler_daemon_running(
     args: argparse.Namespace,
     spawn_enabled: bool,
@@ -4982,6 +5312,43 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             max_steps=max_steps,
             visibility_mode=visibility_mode,
         )
+        if str(args.mode or "send") == "send":
+            run = start_autopilot_background(
+                args,
+                max_steps=max_steps,
+                spawn_enabled=spawn_enabled,
+                visibility_mode=visibility_mode,
+            )
+            status = str(run.get("status") or "")
+            if status == "started":
+                msg = (
+                    f"[TASK] autopilot 已后台启动 | maxSteps={max_steps} | "
+                    f"pid={int(run.get('pid') or 0)}"
+                )
+            elif status == "already_running":
+                pid = int(run.get("pid") or 0)
+                started_at = str(((run.get("state") or {}).get("startedAt")) or "-")
+                msg = f"[TASK] autopilot 已在运行 | pid={pid} | startedAt={started_at}"
+            else:
+                msg = f"[TASK] autopilot 启动失败 | reason={status or '-'} | error={clip(str(run.get('error') or '-'), 160)}"
+
+            send = send_group_message(args.group_id, args.account_id, msg, args.mode)
+            ok = status in {"started", "already_running"} and bool(send.get("ok"))
+            print(
+                json.dumps(
+                    {
+                        "ok": ok,
+                        "handled": True,
+                        "intent": "autopilot",
+                        "async": True,
+                        "run": run,
+                        "send": send,
+                    },
+                    ensure_ascii=True,
+                )
+            )
+            return 0 if ok else 1
+
         return cmd_autopilot(a_args)
 
     # Command: @orchestrator status [taskId|all|full]
@@ -5255,6 +5622,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_autopilot.add_argument("--max-steps", type=int, default=3)
     p_autopilot.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=DEFAULT_VISIBILITY_MODE)
     p_autopilot.set_defaults(func=cmd_autopilot)
+
+    p_autopilot_runner = sub.add_parser("autopilot-runner")
+    p_autopilot_runner.add_argument("--root", required=True)
+    p_autopilot_runner.add_argument("--actor", default="orchestrator")
+    p_autopilot_runner.add_argument("--group-id", default=DEFAULT_GROUP_ID)
+    p_autopilot_runner.add_argument("--account-id", default=DEFAULT_ACCOUNT_ID)
+    p_autopilot_runner.add_argument("--mode", choices=["send", "dry-run"], default="send")
+    p_autopilot_runner.add_argument("--session-id", default="")
+    p_autopilot_runner.add_argument("--timeout-sec", type=int, default=0)
+    p_autopilot_runner.add_argument("--spawn", dest="spawn", action="store_true", default=True)
+    p_autopilot_runner.add_argument("--no-spawn", dest="spawn", action="store_false")
+    p_autopilot_runner.add_argument("--spawn-cmd", default="")
+    p_autopilot_runner.add_argument("--spawn-output", default="")
+    p_autopilot_runner.add_argument("--max-steps", type=int, default=3)
+    p_autopilot_runner.add_argument("--visibility-mode", choices=list(VISIBILITY_MODES), default=DEFAULT_VISIBILITY_MODE)
+    p_autopilot_runner.set_defaults(func=cmd_autopilot_runner)
 
     p_scheduler = sub.add_parser("scheduler-run")
     p_scheduler.add_argument("--root", required=True)

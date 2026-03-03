@@ -1056,6 +1056,178 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(run_payload.get("maxSteps"), 1, out)
         self.assertEqual(run_payload.get("stepsRun"), 1, out)
 
+    def test_feishu_router_autopilot_send_mode_starts_background_runner(self):
+        module = load_milestone_module()
+        real_send = module.send_group_message
+        real_popen = module.subprocess.Popen
+        real_cmd_autopilot = module.cmd_autopilot
+        out_buffer = io.StringIO()
+        popen_calls = {"count": 0, "cmd": []}
+
+        class FakePopen:
+            def __init__(self, pid: int):
+                self.pid = pid
+
+        def fake_popen(cmd, stdout=None, stderr=None, start_new_session=False):
+            popen_calls["count"] += 1
+            popen_calls["cmd"] = list(cmd)
+            self.assertTrue(start_new_session)
+            return FakePopen(55221)
+
+        args = argparse.Namespace(
+            root=str(self.root),
+            actor="orchestrator",
+            text="@orchestrator autopilot 4",
+            group_id="oc_041146c92a9ccb403a7f4f48fb59701d",
+            account_id="orchestrator",
+            mode="send",
+            session_id="",
+            timeout_sec=0,
+            dispatch_spawn=False,
+            dispatch_manual=False,
+            visibility_mode="handoff_visible",
+            autopilot_max_steps=3,
+            spawn_cmd="",
+            spawn_output="",
+            clarify_cooldown_sec=300,
+            clarify_state_file="",
+        )
+
+        try:
+            module.send_group_message = lambda *_args, **_kwargs: {"ok": True}
+            module.subprocess.Popen = fake_popen
+            module.cmd_autopilot = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("feishu-router autopilot should not call cmd_autopilot synchronously in send mode")
+            )
+            with contextlib.redirect_stdout(out_buffer):
+                rc = module.cmd_feishu_router(args)
+        finally:
+            module.send_group_message = real_send
+            module.subprocess.Popen = real_popen
+            module.cmd_autopilot = real_cmd_autopilot
+
+        self.assertEqual(rc, 0)
+        payload = json.loads(out_buffer.getvalue().strip())
+        self.assertEqual(payload.get("intent"), "autopilot", payload)
+        run = payload.get("run") or {}
+        self.assertTrue(run.get("async"), payload)
+        self.assertEqual(run.get("status"), "started", payload)
+        self.assertEqual(run.get("maxSteps"), 4, payload)
+        self.assertEqual(popen_calls["count"], 1, payload)
+        self.assertIn("autopilot-runner", " ".join(popen_calls["cmd"]), payload)
+
+    def test_feishu_router_autopilot_send_mode_skips_when_already_running(self):
+        module = load_milestone_module()
+        real_send = module.send_group_message
+        real_popen = module.subprocess.Popen
+        real_cmd_autopilot = module.cmd_autopilot
+        out_buffer = io.StringIO()
+
+        state_path = self.root / "state" / "autopilot.runtime.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "running": True,
+                    "pid": os.getpid(),
+                    "startedAt": "2026-03-04T00:00:00Z",
+                    "updatedAt": "2026-03-04T00:00:00Z",
+                    "maxSteps": 4,
+                },
+                ensure_ascii=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        args = argparse.Namespace(
+            root=str(self.root),
+            actor="orchestrator",
+            text="@orchestrator autopilot 4",
+            group_id="oc_041146c92a9ccb403a7f4f48fb59701d",
+            account_id="orchestrator",
+            mode="send",
+            session_id="",
+            timeout_sec=0,
+            dispatch_spawn=False,
+            dispatch_manual=False,
+            visibility_mode="handoff_visible",
+            autopilot_max_steps=3,
+            spawn_cmd="",
+            spawn_output="",
+            clarify_cooldown_sec=300,
+            clarify_state_file="",
+        )
+
+        try:
+            module.send_group_message = lambda *_args, **_kwargs: {"ok": True}
+            module.subprocess.Popen = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("already running autopilot should not start a new subprocess")
+            )
+            module.cmd_autopilot = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("send mode should use async autopilot path")
+            )
+            with contextlib.redirect_stdout(out_buffer):
+                rc = module.cmd_feishu_router(args)
+        finally:
+            module.send_group_message = real_send
+            module.subprocess.Popen = real_popen
+            module.cmd_autopilot = real_cmd_autopilot
+
+        self.assertEqual(rc, 0)
+        payload = json.loads(out_buffer.getvalue().strip())
+        self.assertEqual(payload.get("intent"), "autopilot", payload)
+        run = payload.get("run") or {}
+        self.assertTrue(run.get("async"), payload)
+        self.assertEqual(run.get("status"), "already_running", payload)
+        self.assertTrue(run.get("skipped"), payload)
+
+    def test_feishu_router_autopilot_send_mode_reports_spawn_failure_without_crash(self):
+        module = load_milestone_module()
+        real_send = module.send_group_message
+        real_popen = module.subprocess.Popen
+        real_cmd_autopilot = module.cmd_autopilot
+        out_buffer = io.StringIO()
+
+        args = argparse.Namespace(
+            root=str(self.root),
+            actor="orchestrator",
+            text="@orchestrator autopilot 4",
+            group_id="oc_041146c92a9ccb403a7f4f48fb59701d",
+            account_id="orchestrator",
+            mode="send",
+            session_id="",
+            timeout_sec=0,
+            dispatch_spawn=False,
+            dispatch_manual=False,
+            visibility_mode="handoff_visible",
+            autopilot_max_steps=3,
+            spawn_cmd="",
+            spawn_output="",
+            clarify_cooldown_sec=300,
+            clarify_state_file="",
+        )
+
+        try:
+            module.send_group_message = lambda *_args, **_kwargs: {"ok": True}
+            module.subprocess.Popen = lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("spawn unavailable"))
+            module.cmd_autopilot = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("send mode should use async autopilot path")
+            )
+            with contextlib.redirect_stdout(out_buffer):
+                rc = module.cmd_feishu_router(args)
+        finally:
+            module.send_group_message = real_send
+            module.subprocess.Popen = real_popen
+            module.cmd_autopilot = real_cmd_autopilot
+
+        self.assertEqual(rc, 1)
+        payload = json.loads(out_buffer.getvalue().strip())
+        self.assertTrue(payload.get("handled"), payload)
+        self.assertEqual(payload.get("intent"), "autopilot", payload)
+        run = payload.get("run") or {}
+        self.assertEqual(run.get("status"), "failed_to_start", payload)
+        self.assertIn("spawn unavailable", str(run.get("error") or ""), payload)
+
     def test_user_friendly_start_project_bootstrap(self):
         proj = self.root / "demo-project"
         proj.mkdir(parents=True, exist_ok=True)
