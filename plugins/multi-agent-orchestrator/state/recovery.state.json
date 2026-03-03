@@ -65,7 +65,18 @@
       "cooldownUntilTs": 1772530444,
       "cooldownUntil": "2026-03-03T09:34:04Z",
       "updatedAt": "2026-03-03T09:32:04Z"
+    },
+    "T-019|spawn_failed": {
+      "taskId": "T-019",
+      "reasonCode": "spawn_failed",
+      "attempt": 1,
+      "nextAssignee": "human",
+      "action": "human",
+      "recoveryState": "human_handoff",
+      "cooldownUntilTs": 1772542957,
+      "cooldownUntil": "2026-03-03T13:02:37Z",
+      "updatedAt": "2026-03-03T12:59:37Z"
     }
   },
-  "updatedAt": "2026-03-03T09:32:04Z"
+  "updatedAt": "2026-03-03T12:59:37Z"
 }

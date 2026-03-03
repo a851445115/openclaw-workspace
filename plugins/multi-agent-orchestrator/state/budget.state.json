@@ -147,11 +147,19 @@
     "T-018|invest-analyst": {
       "taskId": "T-018",
       "agent": "invest-analyst",
-      "tokenUsage": 90156,
-      "elapsedMs": 309258,
-      "retryCount": 2,
-      "updatedAt": "2026-03-03T09:32:04Z"
+      "tokenUsage": 135405,
+      "elapsedMs": 446542,
+      "retryCount": 3,
+      "updatedAt": "2026-03-03T12:25:03Z"
+    },
+    "T-019|invest-analyst": {
+      "taskId": "T-019",
+      "agent": "invest-analyst",
+      "tokenUsage": 0,
+      "elapsedMs": 35008,
+      "retryCount": 1,
+      "updatedAt": "2026-03-03T12:59:37Z"
     }
   },
-  "updatedAt": "2026-03-03T09:32:04Z"
+  "updatedAt": "2026-03-03T12:59:37Z"
 }

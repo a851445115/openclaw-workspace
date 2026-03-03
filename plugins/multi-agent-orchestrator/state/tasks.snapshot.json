@@ -221,21 +221,23 @@
     "T-018": {
       "taskId": "T-018",
       "title": "[paper-xhs-3min:A2] Stage I: Weekly review synthesis",
-      "status": "blocked",
+      "status": "done",
       "owner": "invest-analyst",
       "assigneeHint": "invest-analyst",
       "createdBy": "orchestrator",
       "createdAt": "2026-03-02T16:32:15Z",
-      "updatedAt": "2026-03-03T09:32:04Z",
+      "updatedAt": "2026-03-03T12:25:03Z",
       "blockedReason": "invest-analyst \u4ea4\u4ed8\u7f3a\u5c11\u9a8c\u6536\u5173\u952e\u8bcd\uff08\u81f3\u5c11\u5305\u542b\u5176\u4e00\uff1a\u6765\u6e90, source, \u5f15\u7528, link, \u6570\u636e, report\uff09\u3002 | Weekly review synthesis completed: 94.0 quality score, 78.6% claim coverage, 9 follow-up actions identified | \u786c\u8bc1\u636e: metr... | human...",
-      "result": null,
+      "result": "Weekly review synthesis completed: 94.0 quality score, 78.6% claim coverage, 3 unverified case study claims requiring manual PDF check | \u786c\u8bc1\u636e: metric-trends.json; /Users/chengren17/xhs-share/A2/qa/......",
       "review": null,
       "relatedTo": null,
       "projectId": null,
       "history": [
         "5940c445-1640-4d09-8c70-0d4e5a0a6e87",
         "e73d586a-b5e8-4518-9847-912e2986d345",
-        "9c7e3d22-a70b-4f1d-8dbe-8d61feee9321"
+        "9c7e3d22-a70b-4f1d-8dbe-8d61feee9321",
+        "891cfc1a-0ce4-41db-8249-4ad180274e8e",
+        "6b9163d3-0d0f-4139-9494-34c996e36e93"
       ],
       "dependsOn": [
         "T-017"
@@ -247,19 +249,23 @@
     "T-019": {
       "taskId": "T-019",
       "title": "[paper-xhs-3min:A2] Stage J: Reproduction scope and hypothesis mapping",
-      "status": "pending",
-      "owner": null,
+      "status": "in_progress",
+      "owner": "invest-analyst",
       "assigneeHint": "invest-analyst",
       "createdBy": "orchestrator",
       "createdAt": "2026-03-02T16:32:18Z",
-      "updatedAt": "2026-03-02T16:32:30Z",
-      "blockedReason": null,
+      "updatedAt": "2026-03-03T12:59:58Z",
+      "blockedReason": "spawn timeout after 30s | human_handoff",
       "result": null,
       "review": null,
       "relatedTo": null,
       "projectId": null,
       "history": [
-        "80c9bec9-58d9-43a9-b38c-a62ec40da0e8"
+        "80c9bec9-58d9-43a9-b38c-a62ec40da0e8",
+        "61d800d6-1533-4724-a8b6-8815865d3b47",
+        "85a3d6c7-aa0c-4920-9a80-66028dacdd20",
+        "0986ab8e-c520-4b77-8846-e113a8eff61d",
+        "b860c310-c41d-41e9-be5a-96b02e8761d2"
       ],
       "dependsOn": [
         "T-018"
@@ -393,6 +399,6 @@
   },
   "meta": {
     "version": 2,
-    "updatedAt": "2026-03-03T09:32:04Z"
+    "updatedAt": "2026-03-03T12:59:58Z"
   }
 }
