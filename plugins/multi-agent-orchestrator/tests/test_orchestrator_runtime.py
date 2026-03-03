@@ -686,6 +686,34 @@ class RuntimeTests(unittest.TestCase):
         self.assertIsNone(captured["timeout"], captured)
         self.assertNotIn("--timeout", captured["cmd"], captured)
 
+    def test_spawn_timeout_exception_returns_blocked_instead_of_crash(self):
+        module = load_milestone_module()
+        real_run = module.subprocess.run
+
+        def fake_run(cmd, capture_output, text, check, timeout):
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout, output='{"status":"progress"}', stderr="model busy")
+
+        args = argparse.Namespace(
+            root=str(self.root),
+            task_id="T-TS1",
+            agent="invest-analyst",
+            timeout_sec=120,
+            spawn_cmd="",
+            mode="send",
+            spawn_output="",
+        )
+        try:
+            module.subprocess.run = fake_run
+            out = module.run_dispatch_spawn(args, "T-TS1: timeout should not crash dispatch")
+        finally:
+            module.subprocess.run = real_run
+
+        self.assertFalse(out.get("ok"), out)
+        self.assertEqual(out.get("decision"), "blocked", out)
+        self.assertEqual(out.get("reasonCode"), "spawn_failed", out)
+        self.assertEqual(out.get("spawnErrorKind"), "timeout", out)
+        self.assertIn("timeout", str(out.get("error") or "").lower(), out)
+
     def test_dispatch_structured_done_report_marks_done(self):
         run_json([
             "python3",

@@ -81,6 +81,15 @@ def resolve_workspace(args: argparse.Namespace) -> str:
     return os.getcwd()
 
 
+def noninteractive_env() -> Dict[str, str]:
+    env = os.environ.copy()
+    # Claude worker runs as a background bridge and must never wait for TTY prompts.
+    env.setdefault("CI", "1")
+    env.setdefault("NO_COLOR", "1")
+    env.setdefault("TERM", "dumb")
+    return env
+
+
 def as_list(value: Any) -> List[str]:
     if isinstance(value, list):
         return [str(x).strip() for x in value if str(x).strip()]
@@ -379,6 +388,8 @@ def main() -> int:
             check=False,
             cwd=workspace,
             timeout=run_timeout,
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_env(),
         )
     except Exception as err:
         result = blocked(args.task_id, args.agent, f"claude print failed: {err}", [])

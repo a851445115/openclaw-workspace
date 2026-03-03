@@ -1803,9 +1803,49 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
         }
 
     run_timeout = None if timeout_sec <= 0 else max(10, timeout_sec + 5)
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=run_timeout)
-    stdout = (proc.stdout or "").strip()
-    stderr = (proc.stderr or "").strip()
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=run_timeout)
+        stdout = (proc.stdout or "").strip()
+        stderr = (proc.stderr or "").strip()
+    except subprocess.TimeoutExpired as err:
+        elapsed_ms = max(0, int(time.time() * 1000) - start_ms)
+        timeout_stdout = (str(err.stdout) if err.stdout else "").strip()
+        timeout_stderr = (str(err.stderr) if err.stderr else "").strip()
+        detail = clip(
+            f"spawn timeout after {timeout_sec}s" if timeout_sec > 0 else "spawn timeout",
+            200,
+        )
+        return {
+            "ok": False,
+            "error": f"spawn timeout after {timeout_sec}s" if timeout_sec > 0 else "spawn timeout",
+            "stdout": timeout_stdout,
+            "stderr": timeout_stderr,
+            "command": cmd,
+            "executor": executor,
+            "plannedCommand": planned_cmd,
+            "decision": "blocked",
+            "detail": detail,
+            "reasonCode": "spawn_failed",
+            "spawnErrorKind": "timeout",
+            "metrics": {"elapsedMs": elapsed_ms, "tokenUsage": 0},
+        }
+    except Exception as err:
+        elapsed_ms = max(0, int(time.time() * 1000) - start_ms)
+        return {
+            "ok": False,
+            "error": f"spawn execution error: {err}",
+            "stdout": "",
+            "stderr": "",
+            "command": cmd,
+            "executor": executor,
+            "plannedCommand": planned_cmd,
+            "decision": "blocked",
+            "detail": clip(str(err), 200),
+            "reasonCode": "spawn_failed",
+            "spawnErrorKind": "exception",
+            "metrics": {"elapsedMs": elapsed_ms, "tokenUsage": 0},
+        }
+
     elapsed_ms = max(0, int(time.time() * 1000) - start_ms)
 
     parsed: Dict[str, Any] = {}

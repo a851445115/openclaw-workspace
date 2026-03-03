@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Optional
 from unittest import mock
 
 
@@ -35,7 +36,7 @@ class ClaudeWorkerBridgeTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _invoke_main(self, task: str = "执行任务", env: dict | None = None):
+    def _invoke_main(self, task: str = "执行任务", env: Optional[dict] = None):
         argv = [
             "claude_worker_bridge.py",
             "--root",
@@ -84,6 +85,12 @@ class ClaudeWorkerBridgeTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--model") + 1], "claude-opus-4-5-20251101")
         self.assertIn("-p", cmd, f"expected explicit prompt flag in command, got: {cmd}")
         self.assertEqual(cmd[cmd.index("-p") + 1], "请修复 coder->claude_cli 桥接")
+        kwargs = captured.get("kwargs") or {}
+        self.assertIs(kwargs.get("stdin"), self.bridge.subprocess.DEVNULL)
+        env = kwargs.get("env") or {}
+        self.assertEqual(env.get("CI"), "1")
+        self.assertEqual(env.get("NO_COLOR"), "1")
+        self.assertEqual(env.get("TERM"), "dumb")
         self.assertEqual(out.get("status"), "progress")
 
     def test_structured_output_takes_priority_from_claude_envelope(self):
