@@ -74,6 +74,18 @@ class RuntimeTests(unittest.TestCase):
         state["tasks"] = tasks
         state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
+    def _read_collab_messages(self):
+        path = self.root / "state" / "collab.messages.jsonl"
+        if not path.exists():
+            return []
+        rows = []
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            rows.append(json.loads(line))
+        return rows
+
     def test_dispatch_spawn_closes_task_done(self):
         run_json([
             "python3",
@@ -312,6 +324,95 @@ class RuntimeTests(unittest.TestCase):
         key_keep = module.session_registry.session_key("T-203", "coder", "codex_cli")
         self.assertEqual((sessions.get(key_done) or {}).get("status"), "done", sessions)
         self.assertEqual((sessions.get(key_keep) or {}).get("status"), "active", sessions)
+
+    def test_feishu_router_done_wakeup_relays_decision_to_collaboration_thread(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-220: done relay",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "coder",
+            "--text",
+            "@coder claim task T-220",
+        ])
+
+        out = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "coder",
+            "--text",
+            "@orchestrator T-220 已完成，证据: logs/t220.log",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(out.get("ok"), out)
+        relay = out.get("collabRelay") if isinstance(out.get("collabRelay"), dict) else {}
+        self.assertTrue(relay.get("ok"), out)
+        self.assertEqual(relay.get("messageType"), "decision", out)
+
+        rows = self._read_collab_messages()
+        self.assertTrue(rows, rows)
+        last = rows[-1]
+        self.assertEqual(last.get("taskId"), "T-220", last)
+        self.assertEqual(last.get("messageType"), "decision", last)
+        self.assertEqual(last.get("fromAgent"), "coder", last)
+        self.assertEqual(last.get("toAgent"), "orchestrator", last)
+
+    def test_feishu_router_progress_wakeup_relays_answer_to_collaboration_thread(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-221: progress relay",
+        ])
+
+        out = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "coder",
+            "--text",
+            "@orchestrator T-221 进展同步：主因已定位，正在补充验证数据",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(out.get("ok"), out)
+        relay = out.get("collabRelay") if isinstance(out.get("collabRelay"), dict) else {}
+        self.assertTrue(relay.get("ok"), out)
+        self.assertEqual(relay.get("messageType"), "answer", out)
+
+        rows = self._read_collab_messages()
+        self.assertTrue(rows, rows)
+        last = rows[-1]
+        self.assertEqual(last.get("taskId"), "T-221", last)
+        self.assertEqual(last.get("messageType"), "answer", last)
+        self.assertEqual(last.get("fromAgent"), "coder", last)
+        self.assertEqual(last.get("toAgent"), "orchestrator", last)
 
     def test_feishu_router_board_mark_done_cleans_only_target_task_state(self):
         run_json([
@@ -963,6 +1064,117 @@ class RuntimeTests(unittest.TestCase):
         collab = out.get("collaboration") or {}
         self.assertFalse(collab.get("available", True), out)
         self.assertEqual(collab.get("reason"), "summary_invalid", out)
+
+    def test_dispatch_sets_escalation_when_collaboration_round_limit_hit(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-040ER: 协作轮次阈值升级",
+        ])
+
+        module = load_milestone_module()
+        thread_id = module.collaboration_thread_id("T-040ER", "coder")
+        for index in range(3):
+            appended = module.collaboration_hub.append_message(
+                self.root.as_posix(),
+                {
+                    "taskId": "T-040ER",
+                    "threadId": thread_id,
+                    "fromAgent": "orchestrator",
+                    "toAgent": "coder",
+                    "messageType": "question",
+                    "summary": f"第{index + 1}轮确认",
+                    "evidence": [f"q-{index + 1}"],
+                    "request": f"请更新第{index + 1}轮结果",
+                    "deadline": module.now_iso(),
+                    "createdAt": f"2026-03-04T09:{10 + index:02d}:00Z",
+                },
+            )
+            self.assertTrue(appended.get("ok"), appended)
+
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-040ER",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(out.get("ok"), out)
+        collab = out.get("collaboration") if isinstance(out.get("collaboration"), dict) else {}
+        escalation = collab.get("escalation") if isinstance(collab.get("escalation"), dict) else {}
+        self.assertTrue(escalation.get("required"), out)
+        self.assertEqual(escalation.get("reason"), "round_limit", out)
+        self.assertIn("协作线程已触发升级门槛", out.get("agentPrompt", ""), out)
+
+        task_text = (((out.get("taskSend") or {}).get("payload") or {}).get("text") or "")
+        self.assertIn("协作线程已触发升级门槛", task_text, out)
+
+    def test_dispatch_sets_escalation_when_collaboration_timeout_hit(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-040ET: 协作超时升级",
+        ])
+
+        module = load_milestone_module()
+        thread_id = module.collaboration_thread_id("T-040ET", "coder")
+        appended = module.collaboration_hub.append_message(
+            self.root.as_posix(),
+            {
+                "taskId": "T-040ET",
+                "threadId": thread_id,
+                "fromAgent": "orchestrator",
+                "toAgent": "coder",
+                "messageType": "answer",
+                "summary": "上次同步",
+                "evidence": ["logs/timeout.log"],
+                "request": "等待下一次回传",
+                "deadline": module.now_iso(),
+                "createdAt": "2020-03-04T09:00:00Z",
+            },
+        )
+        self.assertTrue(appended.get("ok"), appended)
+
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-040ET",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(out.get("ok"), out)
+        collab = out.get("collaboration") if isinstance(out.get("collaboration"), dict) else {}
+        escalation = collab.get("escalation") if isinstance(collab.get("escalation"), dict) else {}
+        self.assertTrue(escalation.get("required"), out)
+        self.assertEqual(escalation.get("reason"), "timeout", out)
+        self.assertIn("协作线程已触发升级门槛", out.get("agentPrompt", ""), out)
+
+        task_text = (((out.get("taskSend") or {}).get("payload") or {}).get("text") or "")
+        self.assertIn("协作线程已触发升级门槛", task_text, out)
 
     def test_dispatch_prompt_injects_retry_context_pack(self):
         run_json([

@@ -339,6 +339,132 @@ def resolve_collaboration_thread_summary(root: str, task_id: str, role: str) -> 
     }
 
 
+def resolve_collaboration_escalation(root: str, summary_state: Dict[str, Any]) -> Dict[str, Any]:
+    escalation: Dict[str, Any] = {
+        "required": False,
+        "reason": "not_required",
+        "maxRounds": 0,
+        "timeoutMinutes": 0,
+    }
+
+    try:
+        policy = collaboration_hub.load_policy(root)
+    except Exception as err:
+        LOGGER.warning("failed to load collaboration policy for escalation check", exc_info=True)
+        escalation["reason"] = "policy_load_failed"
+        escalation["error"] = clip(str(err), 180)
+        return escalation
+
+    try:
+        max_rounds = max(0, int(policy.get("maxRoundsPerThread") or 0))
+    except Exception:
+        max_rounds = 0
+    try:
+        timeout_minutes = max(0, int(policy.get("timeoutMinutes") or 0))
+    except Exception:
+        timeout_minutes = 0
+
+    escalation["maxRounds"] = max_rounds
+    escalation["timeoutMinutes"] = timeout_minutes
+
+    thread_summary = (
+        summary_state.get("summary")
+        if isinstance(summary_state, dict) and isinstance(summary_state.get("summary"), dict)
+        else {}
+    )
+    if collaboration_hub.should_escalate_round_limit(thread_summary, max_rounds):
+        escalation["required"] = True
+        escalation["reason"] = "round_limit"
+        return escalation
+    if collaboration_hub.should_escalate_timeout(thread_summary, timeout_minutes, now_iso_value=now_iso()):
+        escalation["required"] = True
+        escalation["reason"] = "timeout"
+    return escalation
+
+
+def relay_wakeup_collaboration_event(root: str, task_id: str, actor: str, kind: str, text: str) -> Dict[str, Any]:
+    task_key = str(task_id or "").strip()
+    actor_key = governance.canonical_agent(actor) or str(actor or "").strip().lower()
+    if not task_key:
+        return {"ok": False, "reason": "task_id_missing"}
+    if not actor_key:
+        return {"ok": False, "reason": "actor_missing"}
+    if actor_key == "orchestrator":
+        return {"ok": True, "skipped": True, "reason": "actor_is_orchestrator"}
+
+    thread_id = collaboration_thread_id(task_key, actor_key)
+    if not thread_id:
+        return {"ok": False, "reason": "thread_id_missing"}
+
+    kind_key = str(kind or "").strip().lower()
+    message_type = "decision" if kind_key in {"done", "blocked"} else "answer"
+    created_at = now_iso()
+    hint_text = clip(text, 220)
+    summary = (
+        clip(f"{actor_key} wakeup decision for {task_key}: {kind_key or 'progress'}", 180)
+        if message_type == "decision"
+        else clip(f"{actor_key} wakeup progress update for {task_key}", 180)
+    )
+    request = (
+        "请 orchestrator 基于该决策更新状态并确认下一步。"
+        if message_type == "decision"
+        else "请 orchestrator 确认是否继续协作或升级。"
+    )
+    evidence = merge_unique_strings([hint_text, f"kind:{kind_key or 'progress'}", "source:wakeup"], limit=4, item_limit=220)
+    payload = {
+        "taskId": task_key,
+        "threadId": thread_id,
+        "fromAgent": actor_key,
+        "toAgent": "orchestrator",
+        "messageType": message_type,
+        "summary": summary,
+        "evidence": evidence,
+        "request": request,
+        "deadline": created_at,
+        "createdAt": created_at,
+    }
+    try:
+        append_result = collaboration_hub.append_message(root, payload)
+    except Exception as err:
+        LOGGER.warning(
+            "failed to append wakeup collaboration relay: taskId=%s actor=%s threadId=%s",
+            task_key,
+            actor_key,
+            thread_id,
+            exc_info=True,
+        )
+        return {
+            "ok": False,
+            "threadId": thread_id,
+            "messageType": message_type,
+            "reason": "append_exception",
+            "error": clip(str(err), 200),
+        }
+
+    if append_result.get("ok"):
+        return {
+            "ok": True,
+            "threadId": thread_id,
+            "messageType": message_type,
+            "createdAt": created_at,
+            "reason": "appended",
+        }
+
+    reason = str(append_result.get("reason") or append_result.get("error") or "append_failed").strip() or "append_failed"
+    relay: Dict[str, Any] = {
+        "ok": False,
+        "threadId": thread_id,
+        "messageType": message_type,
+        "reason": clip(reason, 200),
+    }
+    errors = append_result.get("errors")
+    if isinstance(errors, list) and errors:
+        relay["error"] = clip("; ".join(str(item) for item in errors if str(item).strip()), 200)
+    elif append_result.get("error"):
+        relay["error"] = clip(str(append_result.get("error")), 200)
+    return relay
+
+
 def normalize_timeout_sec(value: Any, default: int = 0) -> int:
     try:
         parsed = int(value)
@@ -2138,6 +2264,16 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     selected_strategy = resolve_prompt_strategy(args.root, task, args.agent, dispatch_task)
     retry_context_pack = context_pack.build_retry_context(args.root, args.task_id)
     collab_summary_state = resolve_collaboration_thread_summary(args.root, args.task_id, args.agent)
+    collab_escalation = resolve_collaboration_escalation(args.root, collab_summary_state)
+    if isinstance(collab_summary_state, dict):
+        collab_summary_state["escalation"] = collab_escalation
+
+    escalation_hint = ""
+    if bool(collab_escalation.get("required")):
+        escalation_reason = str(collab_escalation.get("reason") or "").strip().lower()
+        reason_label = "轮次上限" if escalation_reason == "round_limit" else "超时阈值" if escalation_reason == "timeout" else "升级阈值"
+        escalation_hint = f"协作线程已触发升级门槛（{reason_label}），请优先给出可直接升级/仲裁的结论。"
+
     collab_summary_for_prompt = (
         collab_summary_state.get("summary")
         if bool(collab_summary_state.get("available")) and isinstance(collab_summary_state.get("summary"), dict)
@@ -2153,6 +2289,15 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         retry_context=retry_context_pack,
         collab_thread_summary=collab_summary_for_prompt,
     )
+    if escalation_hint:
+        agent_prompt = "\n".join(
+            [
+                agent_prompt,
+                "",
+                "COLLAB_ESCALATION_HINTS:",
+                f"1. {escalation_hint}",
+            ]
+        )
 
     dispatch_mode_line = "派发模式: 手动协作（等待回报）" if not args.spawn else "派发模式: 自动执行闭环（spawn并回写看板）"
 
@@ -2168,13 +2313,14 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     orchestrator_mention = mention_tag_for("orchestrator", mentions, fallback="@orchestrator")
     assignee_mention = mention_tag_for(args.agent, mentions, fallback=f"@{args.agent}")
     report_template = f"{orchestrator_mention} {args.task_id} 已完成，证据: 日志/截图/链接"
-    task_text = "\n".join(
-        [
-            f"[TASK] {args.task_id} | 负责人={args.agent}",
-            f"任务: {dispatch_task_message}",
-            f"请 {assignee_mention} 执行，完成后按模板回报：{report_template}。",
-        ]
-    )
+    task_lines = [
+        f"[TASK] {args.task_id} | 负责人={args.agent}",
+        f"任务: {dispatch_task_message}",
+    ]
+    if escalation_hint:
+        task_lines.append(f"提醒: {escalation_hint}")
+    task_lines.append(f"请 {assignee_mention} 执行，完成后按模板回报：{report_template}。")
+    task_text = "\n".join(task_lines)
     claim_send: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "not_sent"}
     task_send: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "not_sent"}
     session_meta: Dict[str, Any] = {}
@@ -5906,6 +6052,7 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             return 0 if sent.get("ok") else 1
 
         kind = parse_wakeup_kind(norm)
+        collab_relay = relay_wakeup_collaboration_event(args.root, task_id, args.actor, kind, norm)
         if kind == "blocked":
             apply_obj = board_apply(args.root, "orchestrator", f"block task {task_id}: {clip(norm, 120)}")
             publish = publish_apply_result(
@@ -5918,7 +6065,19 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
                 allow_broadcaster=False,
             )
             ok = bool(apply_obj.get("ok")) and bool(publish.get("ok"))
-            print(json.dumps({"ok": ok, "handled": True, "intent": "wakeup", "kind": kind, "apply": apply_obj, "publish": publish}))
+            print(
+                json.dumps(
+                    {
+                        "ok": ok,
+                        "handled": True,
+                        "intent": "wakeup",
+                        "kind": kind,
+                        "apply": apply_obj,
+                        "publish": publish,
+                        "collabRelay": collab_relay,
+                    }
+                )
+            )
             return 0 if ok else 1
 
         if kind == "done":
@@ -5953,6 +6112,7 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
                         "apply": apply_obj,
                         "publish": publish,
                         "doneCleanup": done_cleanup,
+                        "collabRelay": collab_relay,
                     }
                 )
             )
@@ -5975,8 +6135,12 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             spawn_output=args.spawn_output,
             visibility_mode=visibility_mode,
         )
-        rc = cmd_dispatch(d_args)
-        return rc
+        dispatch_result = dispatch_once(d_args)
+        if not isinstance(dispatch_result, dict):
+            dispatch_result = {"ok": False, "error": "dispatch_result_invalid"}
+        dispatch_result["collabRelay"] = collab_relay
+        print(json.dumps(dispatch_result, ensure_ascii=True))
+        return 0 if dispatch_result.get("ok") else 1
 
     print(json.dumps({"ok": True, "handled": False, "intent": "pass-through"}))
     return 0
