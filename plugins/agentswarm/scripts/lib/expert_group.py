@@ -4,8 +4,16 @@ import hashlib
 import json
 import logging
 import os
+import re
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+
+try:
+    import fcntl
+except Exception:  # pragma: no cover
+    fcntl = None
 
 
 EXPERT_GROUP_POLICY_CONFIG_CANDIDATES = (
@@ -64,6 +72,7 @@ ACTIVE_LIFECYCLE_STATUSES = {
     LIFECYCLE_STATUS_EXECUTING,
     LIFECYCLE_STATUS_CONVERGED,
 }
+LIFECYCLE_GROUP_ID_RE = re.compile(r"^eg_[0-9a-f]{16}$")
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -243,19 +252,45 @@ def build_lifecycle_group_id(task_id: str) -> str:
     return f"eg_{digest}"
 
 
+def is_valid_lifecycle_group_id(group_id: Any) -> bool:
+    value = str(group_id or "").strip().lower()
+    return bool(LIFECYCLE_GROUP_ID_RE.fullmatch(value))
+
+
+def resolve_lifecycle_group_id(task_id: str = "", group_id: str = "") -> str:
+    task_key = str(task_id or "").strip()
+    candidate = str(group_id or "").strip().lower()
+    if is_valid_lifecycle_group_id(candidate):
+        return candidate
+    if task_key:
+        return build_lifecycle_group_id(task_key)
+    return ""
+
+
 def lifecycle_state_path(root: str, group_id: str) -> str:
-    group_key = str(group_id or "").strip()
+    group_key = resolve_lifecycle_group_id(group_id=group_id)
     if not group_key:
         return ""
     return os.path.join(root, EXPERT_GROUP_LIFECYCLE_DIR, f"{group_key}.json")
 
 
-def load_lifecycle_state(root: str, task_id: str = "", group_id: str = "") -> Dict[str, Any]:
-    task_key = str(task_id or "").strip()
-    group_key = str(group_id or "").strip() or (build_lifecycle_group_id(task_key) if task_key else "")
-    if not group_key:
-        return {}
-    path = lifecycle_state_path(root, group_key)
+def _normalize_lifecycle_record(loaded: Dict[str, Any], task_key: str, group_key: str) -> Dict[str, Any]:
+    task_value = str(loaded.get("taskId") or task_key).strip() or task_key
+    safe_group = resolve_lifecycle_group_id(task_value, loaded.get("groupId")) or group_key
+    return {
+        "groupId": safe_group,
+        "taskId": task_value,
+        "status": _normalize_lifecycle_status(loaded.get("status")),
+        "createdAt": str(loaded.get("createdAt") or "").strip(),
+        "updatedAt": str(loaded.get("updatedAt") or "").strip(),
+        "history": _normalize_history(loaded.get("history")),
+        "reasons": _normalize_reason_codes(loaded.get("reasons"), []),
+        "templates": _compact_templates(loaded.get("templates")),
+        "consensus": _normalize_consensus(loaded.get("consensus")),
+    }
+
+
+def _load_lifecycle_state_from_path(path: str, task_key: str, group_key: str) -> Dict[str, Any]:
     if not path or not os.path.exists(path):
         return {}
     try:
@@ -270,18 +305,62 @@ def load_lifecycle_state(root: str, task_id: str = "", group_id: str = "") -> Di
         return {}
     if not isinstance(loaded, dict):
         return {}
-    normalized: Dict[str, Any] = {
-        "groupId": str(loaded.get("groupId") or group_key).strip() or group_key,
-        "taskId": str(loaded.get("taskId") or task_key).strip() or task_key,
-        "status": _normalize_lifecycle_status(loaded.get("status")),
-        "createdAt": str(loaded.get("createdAt") or "").strip(),
-        "updatedAt": str(loaded.get("updatedAt") or "").strip(),
-        "history": _normalize_history(loaded.get("history")),
-        "reasons": _normalize_reason_codes(loaded.get("reasons"), []),
-        "templates": _compact_templates(loaded.get("templates")),
-        "consensus": _normalize_consensus(loaded.get("consensus")),
-    }
-    return normalized
+    return _normalize_lifecycle_record(loaded, task_key, group_key)
+
+
+@contextmanager
+def lifecycle_file_lock(path: str):
+    lock_path = f"{path}.lock"
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        if fcntl is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except Exception:
+                pass
+        os.close(fd)
+
+
+def _write_lifecycle_state_atomic(path: str, record: Dict[str, Any]) -> None:
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd: Optional[int] = None
+    temp_path = ""
+    try:
+        fd, temp_path = tempfile.mkstemp(prefix=".expert-group-", suffix=".tmp", dir=directory)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fd = None
+            json.dump(record, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, path)
+    except Exception:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
+        raise
+
+
+def load_lifecycle_state(root: str, task_id: str = "", group_id: str = "") -> Dict[str, Any]:
+    task_key = str(task_id or "").strip()
+    group_key = resolve_lifecycle_group_id(task_key, group_id)
+    if not group_key:
+        return {}
+    path = lifecycle_state_path(root, group_key)
+    return _load_lifecycle_state_from_path(path, task_key, group_key)
 
 
 def is_lifecycle_active(record: Dict[str, Any]) -> bool:
@@ -299,13 +378,14 @@ def lifecycle_summary(
 ) -> Dict[str, Any]:
     task_key = str(task_id or "").strip()
     rec = record if isinstance(record, dict) else {}
-    group_key = str(rec.get("groupId") or group_id or "").strip() or (build_lifecycle_group_id(task_key) if task_key else "")
+    record_task = str(rec.get("taskId") or task_key).strip() or task_key
+    group_key = resolve_lifecycle_group_id(record_task, str(rec.get("groupId") or group_id or "").strip())
     status = _normalize_lifecycle_status(rec.get("status")) or "inactive"
     history_count = len(rec.get("history") or []) if isinstance(rec.get("history"), list) else 0
     path = lifecycle_state_path(root, group_key) if root and group_key else ""
     return {
         "groupId": group_key,
-        "taskId": str(rec.get("taskId") or task_key).strip(),
+        "taskId": record_task,
         "status": status,
         "path": path,
         "historyCount": max(0, int(history_count)),
@@ -325,47 +405,44 @@ def transition_lifecycle_state(
 ) -> Dict[str, Any]:
     task_key = str(task_id or "").strip()
     status_target = _normalize_lifecycle_status(target_status) or LIFECYCLE_STATUS_CREATED
-    group_key = str(group_id or "").strip() or (build_lifecycle_group_id(task_key) if task_key else "")
+    group_key = resolve_lifecycle_group_id(task_key, group_id)
     if not group_key:
         return {}
     path = lifecycle_state_path(root, group_key)
     if not path:
         return {}
 
-    existing = load_lifecycle_state(root, task_id=task_key, group_id=group_key)
-    now_iso = _utc_now_iso()
-    previous_status = _normalize_lifecycle_status(existing.get("status"))
-    history = _normalize_history(existing.get("history"))
-    if previous_status != status_target:
-        history.append(
-            {
-                "at": now_iso,
-                "from": previous_status,
-                "to": status_target,
-                "event": str(event or "status_transition").strip() or "status_transition",
-            }
-        )
+    with lifecycle_file_lock(path):
+        existing = _load_lifecycle_state_from_path(path, task_key, group_key)
+        now_iso = _utc_now_iso()
+        previous_status = _normalize_lifecycle_status(existing.get("status"))
+        history = _normalize_history(existing.get("history"))
+        if previous_status != status_target:
+            history.append(
+                {
+                    "at": now_iso,
+                    "from": previous_status,
+                    "to": status_target,
+                    "event": str(event or "status_transition").strip() or "status_transition",
+                }
+            )
 
-    owner_fallback = str((existing.get("consensus") or {}).get("owner") or "orchestrator")
-    record: Dict[str, Any] = {
-        "groupId": group_key,
-        "taskId": task_key or str(existing.get("taskId") or "").strip(),
-        "status": status_target,
-        "createdAt": str(existing.get("createdAt") or now_iso).strip() or now_iso,
-        "updatedAt": now_iso,
-        "history": history,
-        "reasons": _normalize_reason_codes(reasons, existing.get("reasons") if reasons is None else []),
-        "templates": _compact_templates(templates if templates is not None else existing.get("templates")),
-        "consensus": _normalize_consensus(
-            consensus if consensus is not None else existing.get("consensus"),
-            fallback_owner=owner_fallback,
-        ),
-    }
-
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(record, f, ensure_ascii=False, indent=2)
-        f.write("\n")
+        owner_fallback = str((existing.get("consensus") or {}).get("owner") or "orchestrator")
+        record: Dict[str, Any] = {
+            "groupId": group_key,
+            "taskId": task_key or str(existing.get("taskId") or "").strip(),
+            "status": status_target,
+            "createdAt": str(existing.get("createdAt") or now_iso).strip() or now_iso,
+            "updatedAt": now_iso,
+            "history": history,
+            "reasons": _normalize_reason_codes(reasons, existing.get("reasons") if reasons is None else []),
+            "templates": _compact_templates(templates if templates is not None else existing.get("templates")),
+            "consensus": _normalize_consensus(
+                consensus if consensus is not None else existing.get("consensus"),
+                fallback_owner=owner_fallback,
+            ),
+        }
+        _write_lifecycle_state_atomic(path, record)
     return record
 
 
@@ -575,6 +652,31 @@ def _extract_confidence(entry: Dict[str, Any]) -> float:
     return max(0.0, min(1.0, confidence))
 
 
+def is_valid_expert_output(entry: Any, min_confidence: float = 0.01) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    proposed_fix = str(entry.get("proposedFix") or "").strip()
+    confidence = _extract_confidence(entry)
+    has_analysis = bool(
+        str(entry.get("hypothesis") or "").strip()
+        or str(entry.get("evidence") or "").strip()
+        or str(entry.get("risk") or "").strip()
+    )
+    return bool(proposed_fix and confidence >= max(0.0, float(min_confidence)) and has_analysis)
+
+
+def filter_valid_expert_outputs(expert_outputs: Any) -> List[Dict[str, Any]]:
+    if not isinstance(expert_outputs, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for raw in expert_outputs:
+        if not isinstance(raw, dict):
+            continue
+        if is_valid_expert_output(raw):
+            out.append(raw)
+    return out
+
+
 def converge_expert_conclusions(
     expert_outputs: List[Dict[str, Any]],
     reasons: List[str] = None,
@@ -596,13 +698,16 @@ def converge_expert_conclusions(
 
     if not isinstance(expert_outputs, list) or not expert_outputs:
         return out
+    valid_outputs = filter_valid_expert_outputs(expert_outputs)
+    if not valid_outputs:
+        return out
 
     best_entry: Dict[str, Any] = {}
     best_score = -1.0
     extra_checklist: List[str] = []
     extra_gates: List[str] = []
 
-    for raw in expert_outputs:
+    for raw in valid_outputs:
         entry = raw if isinstance(raw, dict) else {}
         hypothesis = str(entry.get("hypothesis") or "").strip()
         evidence = str(entry.get("evidence") or "").strip()

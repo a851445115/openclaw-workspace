@@ -239,6 +239,84 @@ class ExpertGroupTests(unittest.TestCase):
             self.assertEqual(out.get("status"), "created", out)
             self.assertEqual(len(out.get("history") or []), 1, out)
 
+    def test_lifecycle_transition_rejects_unsafe_group_id_and_sanitizes_loaded_group_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task_id = "T-902"
+            fallback_group_id = self.mod.build_lifecycle_group_id(task_id)
+
+            created = self.mod.transition_lifecycle_state(
+                root=tmp,
+                task_id=task_id,
+                target_status="created",
+                reasons=["retry_limit"],
+                templates=[],
+                consensus={"consensusPlan": "collect logs", "owner": "coder"},
+                group_id="../../outside-path",
+            )
+            self.assertEqual(created.get("groupId"), fallback_group_id, created)
+            lifecycle_path = Path(tmp) / "state" / "expert-groups" / f"{fallback_group_id}.json"
+            self.assertTrue(lifecycle_path.exists(), lifecycle_path)
+
+            polluted = json.loads(lifecycle_path.read_text(encoding="utf-8"))
+            polluted["groupId"] = "../polluted"
+            lifecycle_path.write_text(json.dumps(polluted, ensure_ascii=False), encoding="utf-8")
+
+            loaded = self.mod.load_lifecycle_state(
+                root=tmp,
+                task_id=task_id,
+                group_id=fallback_group_id,
+            )
+            self.assertEqual(loaded.get("groupId"), fallback_group_id, loaded)
+
+    def test_lifecycle_transition_same_status_does_not_append_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = self.mod.transition_lifecycle_state(
+                root=tmp,
+                task_id="T-903",
+                target_status="created",
+                reasons=["retry_limit"],
+                templates=[],
+                consensus={"consensusPlan": "collect logs", "owner": "coder"},
+            )
+            self.assertEqual(len(first.get("history") or []), 1, first)
+
+            second = self.mod.transition_lifecycle_state(
+                root=tmp,
+                task_id="T-903",
+                target_status="created",
+                reasons=["retry_limit"],
+                templates=[],
+                consensus={"consensusPlan": "collect logs", "owner": "coder"},
+            )
+            self.assertEqual(len(second.get("history") or []), 1, second)
+
+            loaded = self.mod.load_lifecycle_state(root=tmp, task_id="T-903")
+            self.assertEqual(loaded.get("status"), "created", loaded)
+            self.assertEqual(len(loaded.get("history") or []), 1, loaded)
+
+            third = self.mod.transition_lifecycle_state(
+                root=tmp,
+                task_id="T-903",
+                target_status="executing",
+                reasons=["retry_limit"],
+                templates=[],
+                consensus={"consensusPlan": "collect logs", "owner": "coder"},
+            )
+            self.assertEqual(len(third.get("history") or []), 2, third)
+
+            fourth = self.mod.transition_lifecycle_state(
+                root=tmp,
+                task_id="T-903",
+                target_status="executing",
+                reasons=["retry_limit"],
+                templates=[],
+                consensus={"consensusPlan": "collect logs", "owner": "coder"},
+            )
+            self.assertEqual(len(fourth.get("history") or []), 2, fourth)
+            loaded_again = self.mod.load_lifecycle_state(root=tmp, task_id="T-903")
+            self.assertEqual(loaded_again.get("status"), "executing", loaded_again)
+            self.assertEqual(len(loaded_again.get("history") or []), 2, loaded_again)
+
 
 if __name__ == "__main__":
     unittest.main()

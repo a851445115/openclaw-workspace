@@ -1795,6 +1795,13 @@ def cleanup_done_state(root: str, task_id: str, session_agent: str = "", session
         "recoveryCleared": False,
         "sessionUpdated": False,
         "session": {},
+        "lifecycle": {
+            "archived": False,
+            "status": "inactive",
+            "groupId": "",
+            "taskId": task_key,
+            "reason": "not_attempted",
+        },
     }
     if not task_key:
         return out
@@ -1824,6 +1831,11 @@ def cleanup_done_state(root: str, task_id: str, session_agent: str = "", session
             out["sessionUpdated"] = True
     except Exception:
         LOGGER.warning("done cleanup failed for session registry: taskId=%s", task_key, exc_info=True)
+
+    try:
+        out["lifecycle"] = archive_expert_group_lifecycle(root, task_key, event="task_done_cleanup")
+    except Exception:
+        LOGGER.warning("done cleanup failed for expert-group lifecycle: taskId=%s", task_key, exc_info=True)
 
     return out
 
@@ -2179,6 +2191,67 @@ def _summarize_expert_group_lifecycle(root: str, task_id: str, lifecycle_record:
         }
 
 
+def archive_expert_group_lifecycle(root: str, task_id: str, event: str = "task_done") -> Dict[str, Any]:
+    task_key = str(task_id or "").strip()
+    if not task_key:
+        return {
+            "taskId": "",
+            "groupId": "",
+            "status": "inactive",
+            "archived": False,
+            "reason": "task_id_missing",
+        }
+
+    lifecycle_record = _load_expert_group_lifecycle(root, task_key)
+    if not expert_group.is_lifecycle_active(lifecycle_record):
+        summary = _summarize_expert_group_lifecycle(root, task_key, lifecycle_record)
+        return {
+            "taskId": task_key,
+            "groupId": str(summary.get("groupId") or ""),
+            "status": str(summary.get("status") or "inactive"),
+            "archived": False,
+            "reason": "inactive_or_missing",
+            "summary": summary,
+        }
+
+    try:
+        lifecycle_record = expert_group.transition_lifecycle_state(
+            root=root,
+            task_id=task_key,
+            target_status=expert_group.LIFECYCLE_STATUS_ARCHIVED,
+            reasons=lifecycle_record.get("reasons"),
+            templates=lifecycle_record.get("templates"),
+            consensus=lifecycle_record.get("consensus"),
+            group_id=str(lifecycle_record.get("groupId") or ""),
+            event=str(event or "task_done").strip() or "task_done",
+        )
+    except Exception:
+        LOGGER.warning(
+            "expert-group lifecycle archive failed: taskId=%s",
+            task_key,
+            exc_info=True,
+        )
+        summary = _summarize_expert_group_lifecycle(root, task_key, lifecycle_record)
+        return {
+            "taskId": task_key,
+            "groupId": str(summary.get("groupId") or ""),
+            "status": str(summary.get("status") or "inactive"),
+            "archived": False,
+            "reason": "archive_failed",
+            "summary": summary,
+        }
+
+    summary = _summarize_expert_group_lifecycle(root, task_key, lifecycle_record)
+    return {
+        "taskId": task_key,
+        "groupId": str(summary.get("groupId") or ""),
+        "status": str(summary.get("status") or "inactive"),
+        "archived": str(summary.get("status") or "") == expert_group.LIFECYCLE_STATUS_ARCHIVED,
+        "reason": "archived",
+        "summary": summary,
+    }
+
+
 def default_expert_group_out(policy: Dict[str, Any], root: str = "", task_id: str = "") -> Dict[str, Any]:
     digest = ""
     try:
@@ -2232,24 +2305,12 @@ def evaluate_dispatch_expert_group(
         return base_out
     decision = str(spawn.get("decision") or "").strip().lower()
     if decision != "blocked":
-        if decision == "done" and expert_group.is_lifecycle_active(lifecycle_record):
-            try:
-                lifecycle_record = expert_group.transition_lifecycle_state(
-                    root=root,
-                    task_id=task_key,
-                    target_status=expert_group.LIFECYCLE_STATUS_ARCHIVED,
-                    reasons=lifecycle_record.get("reasons"),
-                    templates=lifecycle_record.get("templates"),
-                    consensus=lifecycle_record.get("consensus"),
-                    group_id=str(lifecycle_record.get("groupId") or ""),
-                    event="task_done",
-                )
-            except Exception:
-                LOGGER.warning(
-                    "expert-group lifecycle archive failed: taskId=%s",
-                    task_key,
-                    exc_info=True,
-                )
+        if decision == "done":
+            archive = archive_expert_group_lifecycle(root, task_key, event="task_done")
+            archived_summary = archive.get("summary") if isinstance(archive, dict) else {}
+            if isinstance(archived_summary, dict) and archived_summary:
+                base_out["lifecycle"] = archived_summary
+                return base_out
         base_out["lifecycle"] = _summarize_expert_group_lifecycle(root, task_key, lifecycle_record)
         return base_out
 
@@ -2321,6 +2382,16 @@ def evaluate_dispatch_expert_group(
     if raw_expert_outputs is None and isinstance(spawn_result.get("expertOutputs"), list):
         raw_expert_outputs = spawn_result.get("expertOutputs")
     expert_outputs = raw_expert_outputs if isinstance(raw_expert_outputs, list) else []
+    try:
+        valid_expert_outputs = expert_group.filter_valid_expert_outputs(expert_outputs)
+    except Exception:
+        LOGGER.warning(
+            "expert-group valid output filter failed: taskId=%s expertOutputs=%s",
+            task_key,
+            len(expert_outputs),
+            exc_info=True,
+        )
+        valid_expert_outputs = []
 
     fallback_owner = (
         str(spawn.get("nextAssignee") or "").strip()
@@ -2340,7 +2411,7 @@ def evaluate_dispatch_expert_group(
     else:
         try:
             consensus = expert_group.converge_expert_conclusions(
-                expert_outputs=expert_outputs,
+                expert_outputs=valid_expert_outputs,
                 reasons=reasons,
                 fallback_owner=fallback_owner,
                 active=True,
@@ -2363,7 +2434,8 @@ def evaluate_dispatch_expert_group(
 
         current_status = str(lifecycle_record.get("status") or "").strip().lower()
         has_consensus = bool(str((consensus or {}).get("consensusPlan") or "").strip())
-        if expert_outputs and has_consensus:
+        has_valid_outputs = bool(valid_expert_outputs)
+        if has_valid_outputs and has_consensus:
             target_status = expert_group.LIFECYCLE_STATUS_CONVERGED
         elif current_status == expert_group.LIFECYCLE_STATUS_CREATED:
             target_status = expert_group.LIFECYCLE_STATUS_EXECUTING

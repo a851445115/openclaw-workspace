@@ -659,6 +659,143 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(record4.get("status"), "archived", record4)
         self.assertEqual(len(record4.get("history") or []), 4, record4)
 
+    def test_dispatch_expert_group_weak_outputs_do_not_mark_converged(self):
+        self._write_json_file(
+            "config/recovery-policy.json",
+            {
+                "default": {"maxAttempts": 6, "cooldownSec": 0},
+                "reasonPolicies": {
+                    "spawn_failed": {"maxAttempts": 6, "cooldownSec": 0},
+                },
+            },
+        )
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-008W: 弱输出不收敛",
+        ])
+
+        first = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-008W",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"failed","message":"worker runtime crashed"}',
+        ])
+        lifecycle1 = ((first.get("expertGroup") or {}).get("lifecycle") or {})
+        self.assertEqual(lifecycle1.get("status"), "created", first)
+
+        second = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-008W",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"failed","message":"worker runtime crashed","expertOutputs":[{"role":"debugger","confidence":0.99}]}',
+        ])
+        lifecycle2 = ((second.get("expertGroup") or {}).get("lifecycle") or {})
+        self.assertIn(lifecycle2.get("status"), {"created", "executing"}, second)
+        self.assertNotEqual(lifecycle2.get("status"), "converged", second)
+
+    def test_feishu_router_done_wakeup_archives_expert_group_lifecycle(self):
+        self._write_json_file(
+            "config/recovery-policy.json",
+            {
+                "default": {"maxAttempts": 6, "cooldownSec": 0},
+                "reasonPolicies": {
+                    "spawn_failed": {"maxAttempts": 6, "cooldownSec": 0},
+                },
+            },
+        )
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-242: done wakeup archive lifecycle",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "coder",
+            "--text",
+            "@coder claim task T-242",
+        ])
+
+        blocked = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-242",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"failed","message":"worker runtime crashed"}',
+        ])
+        lifecycle = ((blocked.get("expertGroup") or {}).get("lifecycle") or {})
+        group_id = str(lifecycle.get("groupId") or "")
+        self.assertTrue(group_id, blocked)
+        lifecycle_path = self.root / "state" / "expert-groups" / f"{group_id}.json"
+        self.assertTrue(lifecycle_path.exists(), blocked)
+
+        done = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "coder",
+            "--text",
+            "@orchestrator T-242 已完成，测试通过，证据: logs/t242.log",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(done["ok"], done)
+        done_cleanup = done.get("doneCleanup") if isinstance(done.get("doneCleanup"), dict) else {}
+        lifecycle_cleanup = done_cleanup.get("lifecycle") if isinstance(done_cleanup.get("lifecycle"), dict) else {}
+        self.assertEqual(lifecycle_cleanup.get("status"), "archived", done)
+
+        archived_record = json.loads(lifecycle_path.read_text(encoding="utf-8"))
+        self.assertEqual(archived_record.get("status"), "archived", archived_record)
+
     def test_evaluate_dispatch_expert_group_logs_warning_when_template_build_fails(self):
         module = load_milestone_module()
         original_build_templates = module.expert_group.build_expert_templates
