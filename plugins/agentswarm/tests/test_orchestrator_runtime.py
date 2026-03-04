@@ -180,6 +180,118 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(status["task"]["status"], "in_progress", status)
         self.assertEqual(status["task"]["owner"], "invest-analyst", status)
 
+    def test_dispatch_blocked_high_risk_reason_triggers_expert_group(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-006: 高风险阻塞触发专家组",
+        ])
+
+        dispatch = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-006",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"failed","message":"worker runtime crashed"}',
+        ])
+        self.assertEqual(dispatch["spawn"]["decision"], "blocked", dispatch)
+        self.assertEqual(dispatch["spawn"]["reasonCode"], "spawn_failed", dispatch)
+
+        expert_group = dispatch.get("expertGroup") or {}
+        self.assertTrue(expert_group.get("triggered"), dispatch)
+        self.assertIn("high_risk_reason", expert_group.get("reasons") or [], dispatch)
+        self.assertGreaterEqual(int(expert_group.get("score") or 0), 1, dispatch)
+
+    def test_dispatch_blocked_non_high_risk_under_threshold_not_triggered(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-007: 非高危阻塞不触发专家组",
+        ])
+
+        dispatch = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-007",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"message":"[BLOCKED] waiting for upstream data"}',
+        ])
+        self.assertEqual(dispatch["spawn"]["decision"], "blocked", dispatch)
+        self.assertEqual(dispatch["spawn"]["reasonCode"], "blocked_signal", dispatch)
+
+        expert_group = dispatch.get("expertGroup") or {}
+        self.assertFalse(expert_group.get("triggered"), dispatch)
+        self.assertEqual(expert_group.get("score"), 0, dispatch)
+        self.assertEqual(expert_group.get("reasons"), [], dispatch)
+
+    def test_dispatch_expert_group_output_shape_is_stable(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-008: 专家组输出结构稳定性",
+        ])
+
+        dispatch = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-008",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"message":"[BLOCKED] waiting for external API quota"}',
+        ])
+        expert_group = dispatch.get("expertGroup")
+        self.assertIsInstance(expert_group, dict, dispatch)
+        self.assertIn("triggered", expert_group, dispatch)
+        self.assertIn("reasons", expert_group, dispatch)
+        self.assertIn("score", expert_group, dispatch)
+        self.assertIn("policyDigest", expert_group, dispatch)
+        self.assertIsInstance(expert_group.get("reasons"), list, dispatch)
+        self.assertIsInstance(expert_group.get("score"), int, dispatch)
+
     def test_feishu_router_handles_claim_done_commands(self):
         run_json([
             "python3",

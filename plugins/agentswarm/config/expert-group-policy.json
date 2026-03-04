@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "blockedRetriesThreshold": 2,
+  "blockedDurationMinutes": 30,
+  "downstreamImpactThreshold": 2,
+  "highRiskReasonCodes": [
+    "spawn_failed",
+    "budget_exceeded",
+    "invalid_spawn_output"
+  ]
+}

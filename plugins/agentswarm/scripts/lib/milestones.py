@@ -36,6 +36,7 @@ import knowledge_adapter
 import session_registry
 import context_pack
 import collaboration_hub
+import expert_group
 
 LOGGER = logging.getLogger(__name__)
 
@@ -2091,6 +2092,131 @@ def collect_spawn_metrics(payload: Dict[str, Any], fallback_elapsed_ms: int = 0)
     }
 
 
+def parse_iso_to_ts(raw: Any) -> int:
+    text = str(raw or "").strip()
+    if not text:
+        return 0
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except Exception:
+        return 0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    try:
+        return int(parsed.timestamp())
+    except Exception:
+        return 0
+
+
+def estimate_blocked_duration_minutes(task: Dict[str, Any], now_ts: Optional[int] = None) -> int:
+    if not isinstance(task, dict):
+        return 0
+    status = str(task.get("status") or "").strip().lower()
+    if status != "blocked":
+        return 0
+    anchor_ts = max(nonneg_int(task.get("updatedAtTs"), 0), parse_iso_to_ts(task.get("updatedAt")))
+    if anchor_ts <= 0:
+        return 0
+    current_ts = int(time.time()) if now_ts is None else max(0, int(now_ts))
+    if current_ts <= anchor_ts:
+        return 0
+    return int((current_ts - anchor_ts) / 60)
+
+
+def count_downstream_impact(task_id: str, snapshot_tasks: Dict[str, Any]) -> int:
+    task_key = str(task_id or "").strip()
+    if not task_key or not isinstance(snapshot_tasks, dict):
+        return 0
+    impacted = 0
+    for raw in snapshot_tasks.values():
+        if not isinstance(raw, dict):
+            continue
+        current_id = str(raw.get("taskId") or "").strip()
+        if current_id == task_key:
+            continue
+        refs = set(_fallback_normalize_refs(raw.get("dependsOn")))
+        refs.update(_fallback_normalize_refs(raw.get("blockedBy")))
+        if task_key not in refs:
+            continue
+        status = str(raw.get("status") or "").strip().lower()
+        if status == "done":
+            continue
+        impacted += 1
+    return impacted
+
+
+def default_expert_group_out(policy: Dict[str, Any]) -> Dict[str, Any]:
+    digest = ""
+    try:
+        digest = expert_group.policy_digest(policy)
+    except Exception:
+        digest = ""
+    return {
+        "triggered": False,
+        "reasons": [],
+        "score": 0,
+        "policyDigest": digest,
+    }
+
+
+def evaluate_dispatch_expert_group(
+    root: str,
+    task_id: str,
+    task: Dict[str, Any],
+    spawn: Dict[str, Any],
+    session_meta: Dict[str, Any],
+    policy: Dict[str, Any],
+) -> Dict[str, Any]:
+    base_out = default_expert_group_out(policy)
+    if not isinstance(spawn, dict):
+        return base_out
+    decision = str(spawn.get("decision") or "").strip().lower()
+    if decision != "blocked":
+        return base_out
+
+    try:
+        snapshot = load_snapshot(root)
+    except Exception:
+        snapshot = {"tasks": {}}
+    tasks = snapshot.get("tasks") if isinstance(snapshot.get("tasks"), dict) else {}
+    downstream_impact = count_downstream_impact(task_id, tasks)
+    retry_count = nonneg_int(spawn.get("attempt"), -1)
+    if retry_count < 0:
+        session_in_spawn = spawn.get("session") if isinstance(spawn.get("session"), dict) else {}
+        retry_count = nonneg_int(session_in_spawn.get("retryCount"), -1)
+    if retry_count < 0 and isinstance(session_meta, dict):
+        retry_count = nonneg_int(session_meta.get("retryCount"), -1)
+
+    task_snapshot = {
+        "taskId": str(task_id or "").strip(),
+        "status": str((task or {}).get("status") or "").strip(),
+        "blockedDurationMinutes": estimate_blocked_duration_minutes(task),
+        "downstreamImpact": downstream_impact,
+        "retryCount": max(0, retry_count),
+    }
+    runtime_snapshot = {
+        "reasonCode": str(spawn.get("reasonCode") or "").strip(),
+        "retryCount": max(0, retry_count),
+        "blockedDurationMinutes": nonneg_int(spawn.get("blockedDurationMinutes"), 0),
+        "downstreamImpact": nonneg_int(spawn.get("downstreamImpact"), downstream_impact),
+    }
+
+    try:
+        judgement = expert_group.evaluate_trigger(task_snapshot, runtime_snapshot, policy)
+    except Exception:
+        return base_out
+
+    reasons = [str(item).strip() for item in (judgement.get("reasons") or []) if str(item).strip()]
+    score = nonneg_int(judgement.get("score"), len(reasons))
+    return {
+        "triggered": bool(judgement.get("triggered")),
+        "reasons": reasons,
+        "score": score,
+        "policyDigest": base_out.get("policyDigest", ""),
+    }
+
+
 def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, Any]:
     start_ms = int(time.time() * 1000)
     plan = resolve_spawn_plan(args, task_prompt)
@@ -2401,6 +2527,11 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     spawn_attempt_count = 0
     aggregate_elapsed_ms = 0
     aggregate_token_usage = 0
+    try:
+        expert_group_policy = expert_group.load_expert_group_policy(args.root)
+    except Exception:
+        expert_group_policy = expert_group.normalize_expert_group_policy({}, expert_group.DEFAULT_EXPERT_GROUP_POLICY)
+    expert_group_out = default_expert_group_out(expert_group_policy)
 
     if args.spawn:
         try:
@@ -2766,6 +2897,15 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         spawn["session"] = session_meta
     if isinstance(retry_context_pack, dict) and retry_context_pack:
         spawn["retryContext"] = retry_context_pack
+    if args.spawn:
+        expert_group_out = evaluate_dispatch_expert_group(
+            args.root,
+            args.task_id,
+            task,
+            spawn,
+            session_meta,
+            expert_group_policy,
+        )
 
     auto_close = bool(args.spawn and not spawn.get("skipped"))
     selection = getattr(args, "selection", None)
@@ -2803,6 +2943,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         "collaboration": collab_summary_state,
         "session": session_meta,
         "retryContext": retry_context_pack,
+        "expertGroup": expert_group_out,
     }
     if isinstance(selection, dict):
         result["selection"] = selection
