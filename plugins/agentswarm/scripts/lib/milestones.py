@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -1031,6 +1032,46 @@ def collect_expert_group_closure_minutes(root: str, days: int = 7, now_ts: Optio
     return durations
 
 
+def compute_blocked_recovery_rate(root: str, days: int = 7) -> float:
+    safe_days = max(0, int(days))
+    try:
+        rows = ops_metrics.load_events(root, days=safe_days)
+    except Exception:
+        return 0.0
+
+    task_states: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        event = str(row.get("event") or "").strip()
+        if event not in {"dispatch_blocked", "dispatch_done"}:
+            continue
+        task_id = str(row.get("taskId") or "").strip()
+        if not task_id:
+            continue
+        state = task_states.setdefault(
+            task_id,
+            {
+                "everBlocked": False,
+                "lastEvent": "",
+            },
+        )
+        if event == "dispatch_blocked":
+            state["everBlocked"] = True
+        state["lastEvent"] = event
+
+    blocked_total = 0
+    blocked_recovered = 0
+    for state in task_states.values():
+        if not bool(state.get("everBlocked")):
+            continue
+        blocked_total += 1
+        if str(state.get("lastEvent") or "") == "dispatch_done":
+            blocked_recovered += 1
+
+    return safe_ratio(blocked_recovered, blocked_total)
+
+
 def build_manager_kpis(
     root: str,
     tasks: Optional[Dict[str, Any]] = None,
@@ -1044,18 +1085,9 @@ def build_manager_kpis(
         snapshot = load_snapshot(root)
         current_tasks = snapshot.get("tasks") if isinstance(snapshot.get("tasks"), dict) else {}
 
-    summary = ops_summary if isinstance(ops_summary, dict) else {}
-    if not summary:
-        try:
-            summary = ops_metrics.aggregate_metrics(root, days=days)
-        except Exception:
-            summary = {}
-
     progress = collect_board_progress(current_tasks)
     completion_rate = safe_ratio(progress.get("done"), progress.get("total"))
-    blocked_recovery_rate = float(summary.get("recoveryRate") or 0.0)
-    if blocked_recovery_rate < 0:
-        blocked_recovery_rate = 0.0
+    blocked_recovery_rate = compute_blocked_recovery_rate(root, days=days)
     closure_minutes = collect_expert_group_closure_minutes(root, days=days)
     expert_group_median = median_value(closure_minutes)
 
@@ -1154,8 +1186,24 @@ def build_manager_report(root: str, period: str = "daily") -> Dict[str, Any]:
             "- 对执行中专家组设置收敛截止时间，超时即触发仲裁。",
         ]
     )
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write(markdown + "\n")
+    fd, tmp_path = tempfile.mkstemp(
+        dir=reports_dir,
+        prefix=f".{date_key}-{period_key}.",
+        suffix=".tmp",
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(markdown + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, report_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+        raise
 
     return {
         "ok": True,
@@ -6167,8 +6215,31 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
         elif "日报" in command_head or period_hint in {"daily", "日报", ""}:
             period = "daily"
 
-        report_meta = build_manager_report(args.root, period=period)
-        summary_text = build_manager_report_summary_text(report_meta)
+        try:
+            report_meta = build_manager_report(args.root, period=period)
+            summary_text = build_manager_report_summary_text(report_meta)
+        except Exception as exc:
+            error_text = f"{type(exc).__name__}: {exc}"
+            notify_text = clip(f"[REPORT] {period} 生成失败: {error_text}", 1200)
+            try:
+                out = send_group_message(args.group_id, args.account_id, notify_text, args.mode)
+            except Exception as send_exc:
+                out = {"ok": False, "error": f"{type(send_exc).__name__}: {send_exc}"}
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "handled": True,
+                        "intent": "report",
+                        "period": period,
+                        "error": error_text,
+                        "send": out,
+                    },
+                    ensure_ascii=True,
+                )
+            )
+            return 1
+
         out = send_group_message(args.group_id, args.account_id, summary_text, args.mode)
         ok = bool(report_meta.get("ok")) and bool(out.get("ok"))
         print(

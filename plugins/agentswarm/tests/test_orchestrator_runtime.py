@@ -3779,6 +3779,86 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("协作线程摘要", texts, out)
         self.assertIn("专家组状态", texts, out)
 
+    def test_build_manager_kpis_blocked_recovery_rate_uses_blocked_done_final_ratio(self):
+        now_ts = int(time.time())
+        metrics_path = self.root / "state" / "ops.metrics.jsonl"
+        rows = [
+            {"event": "dispatch_blocked", "taskId": "T-BR-1", "ts": now_ts + 1},
+            {"event": "dispatch_done", "taskId": "T-BR-1", "ts": now_ts + 2},
+            {"event": "dispatch_blocked", "taskId": "T-BR-2", "ts": now_ts + 3},
+            {"event": "dispatch_blocked", "taskId": "T-BR-3", "ts": now_ts + 4},
+            {"event": "dispatch_done", "taskId": "T-BR-3", "ts": now_ts + 5},
+            {"event": "dispatch_blocked", "taskId": "T-BR-3", "ts": now_ts + 6},
+            {"event": "dispatch_done", "taskId": "T-DONE-ONLY", "ts": now_ts + 7},
+        ]
+        metrics_path.write_text(
+            "\n".join(json.dumps(row, ensure_ascii=True) for row in rows) + "\n",
+            encoding="utf-8",
+        )
+
+        module = load_milestone_module()
+        kpis = module.build_manager_kpis(str(self.root), tasks={}, days=1)
+        self.assertIn("blockedRecoveryRate", kpis, kpis)
+        self.assertAlmostEqual(kpis.get("blockedRecoveryRate"), round(1.0 / 3.0, 4), places=4, msg=str(kpis))
+
+    def test_feishu_router_report_failure_returns_structured_error(self):
+        module = load_milestone_module()
+        real_build_report = module.build_manager_report
+        real_send_group_message = module.send_group_message
+        out_buffer = io.StringIO()
+        sent_messages = []
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("report exploded")
+
+        def fake_send_group_message(group_id, account_id, text, mode):
+            sent_messages.append(
+                {
+                    "group_id": group_id,
+                    "account_id": account_id,
+                    "text": text,
+                    "mode": mode,
+                }
+            )
+            return {"ok": True, "dryRun": True, "payload": {"text": text}}
+
+        args = argparse.Namespace(
+            root=str(self.root),
+            actor="orchestrator",
+            text="@orchestrator report daily",
+            group_id="oc_041146c92a9ccb403a7f4f48fb59701d",
+            account_id="orchestrator",
+            mode="dry-run",
+            session_id="",
+            timeout_sec=120,
+            dispatch_spawn=False,
+            dispatch_manual=False,
+            visibility_mode="milestone_only",
+            autopilot_max_steps=3,
+            spawn_cmd="",
+            spawn_output="",
+            clarify_cooldown_sec=300,
+            clarify_state_file="",
+        )
+
+        try:
+            module.build_manager_report = boom
+            module.send_group_message = fake_send_group_message
+            with contextlib.redirect_stdout(out_buffer):
+                rc = module.cmd_feishu_router(args)
+        finally:
+            module.build_manager_report = real_build_report
+            module.send_group_message = real_send_group_message
+
+        self.assertEqual(rc, 1)
+        payload = json.loads(out_buffer.getvalue().strip())
+        self.assertFalse(payload.get("ok"), payload)
+        self.assertEqual(payload.get("intent"), "report", payload)
+        self.assertIn("report exploded", str(payload.get("error") or ""), payload)
+        self.assertTrue((payload.get("send") or {}).get("ok"), payload)
+        self.assertTrue(sent_messages, payload)
+        self.assertIn("report exploded", str(sent_messages[0].get("text") or ""), sent_messages)
+
     def test_feishu_router_report_daily_generates_markdown_with_kpi_metadata(self):
         now_ts = int(time.time())
         metrics_path = self.root / "state" / "ops.metrics.jsonl"
