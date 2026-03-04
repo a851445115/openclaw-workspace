@@ -465,6 +465,32 @@ def relay_wakeup_collaboration_event(root: str, task_id: str, actor: str, kind: 
     return relay
 
 
+def maybe_relay_wakeup_collaboration_event(
+    root: str,
+    task_id: str,
+    actor: str,
+    kind: str,
+    text: str,
+    mode: str,
+) -> Dict[str, Any]:
+    actor_key = governance.canonical_agent(actor) or str(actor or "").strip().lower()
+    thread_id = collaboration_thread_id(task_id, actor_key) if task_id and actor_key else ""
+    message_type = "decision" if str(kind or "").strip().lower() in {"done", "blocked"} else "answer"
+    if str(mode or "").strip().lower() != "send":
+        relay: Dict[str, Any] = {
+            "ok": True,
+            "skipped": True,
+            "reason": "mode_not_send",
+            "messageType": message_type,
+        }
+        if thread_id:
+            relay["threadId"] = thread_id
+        return relay
+
+    # Wakeup relay is best-effort and must not impact the wakeup main path result.
+    return relay_wakeup_collaboration_event(root, task_id, actor, kind, text)
+
+
 def normalize_timeout_sec(value: Any, default: int = 0) -> int:
     try:
         parsed = int(value)
@@ -6052,7 +6078,14 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             return 0 if sent.get("ok") else 1
 
         kind = parse_wakeup_kind(norm)
-        collab_relay = relay_wakeup_collaboration_event(args.root, task_id, args.actor, kind, norm)
+        collab_relay = maybe_relay_wakeup_collaboration_event(
+            args.root,
+            task_id,
+            args.actor,
+            kind,
+            norm,
+            args.mode,
+        )
         if kind == "blocked":
             apply_obj = board_apply(args.root, "orchestrator", f"block task {task_id}: {clip(norm, 120)}")
             publish = publish_apply_result(

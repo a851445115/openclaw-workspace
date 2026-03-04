@@ -325,7 +325,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual((sessions.get(key_done) or {}).get("status"), "done", sessions)
         self.assertEqual((sessions.get(key_keep) or {}).get("status"), "active", sessions)
 
-    def test_feishu_router_done_wakeup_relays_decision_to_collaboration_thread(self):
+    def test_feishu_router_done_wakeup_dry_run_skips_collaboration_relay_persistence(self):
         run_json([
             "python3",
             str(BOARD),
@@ -365,17 +365,14 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(out.get("ok"), out)
         relay = out.get("collabRelay") if isinstance(out.get("collabRelay"), dict) else {}
         self.assertTrue(relay.get("ok"), out)
-        self.assertEqual(relay.get("messageType"), "decision", out)
+        self.assertTrue(relay.get("skipped"), out)
+        self.assertEqual(relay.get("reason"), "mode_not_send", out)
+        self.assertEqual(relay.get("threadId"), "T-220:coder", out)
 
-        rows = self._read_collab_messages()
-        self.assertTrue(rows, rows)
-        last = rows[-1]
-        self.assertEqual(last.get("taskId"), "T-220", last)
-        self.assertEqual(last.get("messageType"), "decision", last)
-        self.assertEqual(last.get("fromAgent"), "coder", last)
-        self.assertEqual(last.get("toAgent"), "orchestrator", last)
+        collab_messages = self.root / "state" / "collab.messages.jsonl"
+        self.assertFalse(collab_messages.exists(), out)
 
-    def test_feishu_router_progress_wakeup_relays_answer_to_collaboration_thread(self):
+    def test_feishu_router_progress_wakeup_dry_run_skips_collaboration_relay_persistence(self):
         run_json([
             "python3",
             str(BOARD),
@@ -404,15 +401,78 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(out.get("ok"), out)
         relay = out.get("collabRelay") if isinstance(out.get("collabRelay"), dict) else {}
         self.assertTrue(relay.get("ok"), out)
-        self.assertEqual(relay.get("messageType"), "answer", out)
+        self.assertTrue(relay.get("skipped"), out)
+        self.assertEqual(relay.get("reason"), "mode_not_send", out)
+        self.assertEqual(relay.get("threadId"), "T-221:coder", out)
 
-        rows = self._read_collab_messages()
-        self.assertTrue(rows, rows)
-        last = rows[-1]
-        self.assertEqual(last.get("taskId"), "T-221", last)
-        self.assertEqual(last.get("messageType"), "answer", last)
-        self.assertEqual(last.get("fromAgent"), "coder", last)
-        self.assertEqual(last.get("toAgent"), "orchestrator", last)
+        collab_messages = self.root / "state" / "collab.messages.jsonl"
+        self.assertFalse(collab_messages.exists(), out)
+
+    def test_feishu_router_done_wakeup_relay_failure_in_send_mode_does_not_break_success(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-222: relay failure non-blocking",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "coder",
+            "--text",
+            "@coder claim task T-222",
+        ])
+
+        module = load_milestone_module()
+        real_send_group_message = module.send_group_message
+        real_append_message = module.collaboration_hub.append_message
+        out_buffer = io.StringIO()
+        args = argparse.Namespace(
+            root=str(self.root),
+            actor="coder",
+            text="@orchestrator T-222 已完成，证据: logs/t222.log",
+            group_id="oc_041146c92a9ccb403a7f4f48fb59701d",
+            account_id="orchestrator",
+            mode="send",
+            session_id="",
+            timeout_sec=0,
+            dispatch_spawn=False,
+            dispatch_manual=False,
+            visibility_mode=module.DEFAULT_VISIBILITY_MODE,
+            autopilot_max_steps=3,
+            spawn_cmd="",
+            spawn_output="",
+            clarify_cooldown_sec=300,
+            clarify_state_file="",
+        )
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("forced wakeup relay failure")
+
+        try:
+            module.send_group_message = lambda *_args, **_kwargs: {"ok": True, "dryRun": False}
+            module.collaboration_hub.append_message = boom
+            with contextlib.redirect_stdout(out_buffer):
+                rc = module.cmd_feishu_router(args)
+        finally:
+            module.send_group_message = real_send_group_message
+            module.collaboration_hub.append_message = real_append_message
+
+        self.assertEqual(rc, 0)
+        payload = json.loads(out_buffer.getvalue().strip())
+        self.assertTrue(payload.get("ok"), payload)
+        relay = payload.get("collabRelay") if isinstance(payload.get("collabRelay"), dict) else {}
+        self.assertFalse(relay.get("ok", True), payload)
+        self.assertEqual(relay.get("reason"), "append_exception", payload)
 
     def test_feishu_router_board_mark_done_cleans_only_target_task_state(self):
         run_json([
