@@ -13,7 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -35,6 +35,7 @@ import strategy_library
 import knowledge_adapter
 import session_registry
 import context_pack
+import collaboration_hub
 
 LOGGER = logging.getLogger(__name__)
 
@@ -275,6 +276,67 @@ def clip(text: Optional[str], limit: int = 160) -> str:
     if len(s) <= limit:
         return s
     return s[: limit - 1] + "..."
+
+
+def collaboration_thread_id(task_id: str, role: str) -> str:
+    task_key = str(task_id or "").strip()
+    role_key = governance.canonical_agent(role) or str(role or "").strip().lower()
+    if not task_key or not role_key:
+        return ""
+    return f"{task_key}:{role_key}"
+
+
+def resolve_collaboration_thread_summary(root: str, task_id: str, role: str) -> Dict[str, Any]:
+    thread_id = collaboration_thread_id(task_id, role)
+    if not thread_id:
+        return {"ok": False, "available": False, "threadId": "", "reason": "thread_id_missing"}
+
+    try:
+        summary = collaboration_hub.summarize_thread(root, thread_id)
+    except Exception as err:
+        LOGGER.warning(
+            "failed to summarize collaboration thread: taskId=%s role=%s threadId=%s",
+            task_id,
+            role,
+            thread_id,
+            exc_info=True,
+        )
+        return {
+            "ok": False,
+            "available": False,
+            "threadId": thread_id,
+            "reason": "summary_read_failed",
+            "error": clip(str(err), 180),
+        }
+
+    if not isinstance(summary, dict):
+        LOGGER.warning(
+            "invalid collaboration summary payload: taskId=%s role=%s threadId=%s",
+            task_id,
+            role,
+            thread_id,
+        )
+        return {
+            "ok": False,
+            "available": False,
+            "threadId": thread_id,
+            "reason": "summary_invalid",
+        }
+
+    try:
+        message_count = max(0, int(summary.get("messageCount") or 0))
+    except Exception:
+        message_count = 0
+    status = str(summary.get("status") or "").strip().lower()
+    available = bool(summary) and (message_count > 0 or status not in {"", "missing"})
+    reason = "summary_available" if available else "summary_missing"
+    return {
+        "ok": True,
+        "available": available,
+        "threadId": thread_id,
+        "reason": reason,
+        "summary": summary,
+    }
 
 
 def normalize_timeout_sec(value: Any, default: int = 0) -> int:
@@ -876,6 +938,7 @@ def build_agent_prompt(
     strategy: Optional[Dict[str, Any]] = None,
     knowledge_hints: Optional[List[str]] = None,
     retry_context: Optional[Dict[str, Any]] = None,
+    collab_thread_summary: Optional[Dict[str, Any]] = None,
 ) -> str:
     task_id = str(task.get("taskId") or "")
     title = str(task.get("title") or "")
@@ -893,6 +956,7 @@ def build_agent_prompt(
     selected_strategy = strategy if isinstance(strategy, dict) else resolve_prompt_strategy(root, task, agent, dispatch_task)
     hints = normalize_knowledge_hints(knowledge_hints)
     retry_pack = retry_context if isinstance(retry_context, dict) else {}
+    collab_summary = collab_thread_summary if isinstance(collab_thread_summary, dict) else {}
 
     task_context = {
         "taskId": task_id,
@@ -916,6 +980,13 @@ def build_agent_prompt(
         "TASK_RECENT_HISTORY:",
         json.dumps(history, ensure_ascii=False, indent=2),
     ]
+    if collab_summary:
+        lines.extend(
+            [
+                "COLLAB_THREAD_SUMMARY:",
+                json.dumps(collab_summary, ensure_ascii=False, indent=2),
+            ]
+        )
     if retry_pack:
         lines.extend(
             [
@@ -2066,6 +2137,12 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     knowledge_meta, knowledge_hints = resolve_dispatch_knowledge(args.root, task, args.agent, dispatch_task)
     selected_strategy = resolve_prompt_strategy(args.root, task, args.agent, dispatch_task)
     retry_context_pack = context_pack.build_retry_context(args.root, args.task_id)
+    collab_summary_state = resolve_collaboration_thread_summary(args.root, args.task_id, args.agent)
+    collab_summary_for_prompt = (
+        collab_summary_state.get("summary")
+        if bool(collab_summary_state.get("available")) and isinstance(collab_summary_state.get("summary"), dict)
+        else None
+    )
     agent_prompt = build_agent_prompt(
         args.root,
         task,
@@ -2074,6 +2151,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         strategy=selected_strategy,
         knowledge_hints=knowledge_hints,
         retry_context=retry_context_pack,
+        collab_thread_summary=collab_summary_for_prompt,
     )
 
     dispatch_mode_line = "派发模式: 手动协作（等待回报）" if not args.spawn else "派发模式: 自动执行闭环（spawn并回写看板）"
@@ -2518,6 +2596,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         "agentPrompt": agent_prompt,
         "objectiveSource": objective_source,
         "knowledge": knowledge_meta,
+        "collaboration": collab_summary_state,
         "session": session_meta,
         "retryContext": retry_context_pack,
     }
@@ -3167,7 +3246,76 @@ def cmd_clarify(args: argparse.Namespace) -> int:
         entries[key] = stamp
         entries[global_key] = stamp
         save_json_file(state_file, state)
-    print(json.dumps({"ok": bool(sent.get("ok")), "send": sent, "throttleKey": key, "globalThrottleKey": global_key}, ensure_ascii=True))
+
+    collab_log: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "send_not_ok"}
+    if sent.get("ok"):
+        thread_id = collaboration_thread_id(args.task_id, args.role)
+        created_at = now_iso()
+        deadline_sec = max(600, normalize_timeout_sec(getattr(args, "cooldown_sec", 0), default=600))
+        deadline = (
+            datetime.now(timezone.utc) + timedelta(seconds=deadline_sec)
+        ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        collab_payload = {
+            "taskId": str(args.task_id),
+            "threadId": thread_id,
+            "fromAgent": "orchestrator",
+            "toAgent": str(args.role),
+            "messageType": "question",
+            "summary": clip(f"clarify -> {args.role}: {q}", 180),
+            "evidence": [f"group:{args.group_id}", f"mode:{args.mode}"],
+            "request": q,
+            "deadline": deadline,
+            "createdAt": created_at,
+        }
+        try:
+            append_result = collaboration_hub.append_message(args.root, collab_payload)
+        except Exception as err:
+            LOGGER.warning(
+                "failed to append collaboration clarify log: taskId=%s role=%s threadId=%s",
+                args.task_id,
+                args.role,
+                thread_id,
+                exc_info=True,
+            )
+            collab_log = {
+                "ok": False,
+                "threadId": thread_id,
+                "reason": "append_exception",
+                "error": clip(str(err), 200),
+            }
+        else:
+            if append_result.get("ok"):
+                collab_log = {
+                    "ok": True,
+                    "threadId": thread_id,
+                    "messageType": "question",
+                    "createdAt": created_at,
+                    "deadline": deadline,
+                }
+            else:
+                reason = (
+                    str(append_result.get("reason") or "")
+                    or str(append_result.get("error") or "")
+                    or clip(json.dumps(append_result, ensure_ascii=False), 200)
+                )
+                collab_log = {
+                    "ok": False,
+                    "threadId": thread_id,
+                    "reason": clip(reason, 200),
+                    "append": append_result,
+                }
+    print(
+        json.dumps(
+            {
+                "ok": bool(sent.get("ok")),
+                "send": sent,
+                "throttleKey": key,
+                "globalThrottleKey": global_key,
+                "collabLog": collab_log,
+            },
+            ensure_ascii=True,
+        )
+    )
     return 0 if sent.get("ok") else 1
 
 

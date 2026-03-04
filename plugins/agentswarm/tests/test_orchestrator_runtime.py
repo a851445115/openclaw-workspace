@@ -448,6 +448,81 @@ class RuntimeTests(unittest.TestCase):
         payload = json.loads(second_proc.stdout.strip())
         self.assertTrue(payload.get("throttled"), payload)
 
+    def test_clarify_success_writes_collaboration_question_log(self):
+        out = run_json([
+            "python3",
+            str(MILE),
+            "clarify",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-003C",
+            "--role",
+            "debugger",
+            "--question",
+            "请给出最新错误栈",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(out.get("ok"), out)
+        collab_log = out.get("collabLog") if isinstance(out.get("collabLog"), dict) else {}
+        self.assertTrue(collab_log.get("ok"), out)
+        self.assertEqual(collab_log.get("threadId"), "T-003C:debugger", out)
+
+        collab_messages = self.root / "state" / "collab.messages.jsonl"
+        self.assertTrue(collab_messages.exists(), out)
+        rows = [
+            json.loads(line)
+            for line in collab_messages.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertTrue(rows, rows)
+        last = rows[-1]
+        self.assertEqual(last.get("taskId"), "T-003C", last)
+        self.assertEqual(last.get("threadId"), "T-003C:debugger", last)
+        self.assertEqual(last.get("fromAgent"), "orchestrator", last)
+        self.assertEqual(last.get("toAgent"), "debugger", last)
+        self.assertEqual(last.get("messageType"), "question", last)
+        self.assertTrue(last.get("summary"), last)
+        self.assertTrue(last.get("request"), last)
+        self.assertTrue(last.get("deadline"), last)
+        self.assertTrue(last.get("createdAt"), last)
+
+    def test_clarify_collaboration_log_failure_does_not_break_success(self):
+        module = load_milestone_module()
+        real_append_message = module.collaboration_hub.append_message
+        out_buffer = io.StringIO()
+        args = argparse.Namespace(
+            root=str(self.root),
+            task_id="T-003CF",
+            role="debugger",
+            question="请提供失败原因",
+            actor="orchestrator",
+            group_id="oc_041146c92a9ccb403a7f4f48fb59701d",
+            account_id="orchestrator",
+            cooldown_sec=300,
+            state_file="",
+            mode="dry-run",
+            force=False,
+        )
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("forced collab append failure")
+
+        try:
+            module.collaboration_hub.append_message = boom
+            with contextlib.redirect_stdout(out_buffer):
+                rc = module.cmd_clarify(args)
+        finally:
+            module.collaboration_hub.append_message = real_append_message
+
+        self.assertEqual(rc, 0)
+        payload = json.loads(out_buffer.getvalue().strip())
+        self.assertTrue(payload.get("ok"), payload)
+        collab_log = payload.get("collabLog") if isinstance(payload.get("collabLog"), dict) else {}
+        self.assertFalse(collab_log.get("ok", True), payload)
+        self.assertIn("reason", collab_log, payload)
+
     def test_rebuild_and_recover_scripts(self):
         run_json([
             "python3",
@@ -759,6 +834,57 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn('"status": "done|blocked|progress"', prompt, out)
         self.assertIn("DONE_GATE_HINTS", prompt, out)
         self.assertIn("pytest", prompt, out)
+
+    def test_dispatch_prompt_includes_collab_thread_summary_when_available(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-040C: 协作线程摘要注入",
+        ])
+
+        module = load_milestone_module()
+        thread_id = module.collaboration_thread_id("T-040C", "coder")
+        append = module.collaboration_hub.append_message(
+            self.root.as_posix(),
+            {
+                "taskId": "T-040C",
+                "threadId": thread_id,
+                "fromAgent": "orchestrator",
+                "toAgent": "coder",
+                "messageType": "question",
+                "summary": "请先确认测试边界",
+                "evidence": ["clarify dry-run"],
+                "request": "补充输入边界并回传日志",
+                "deadline": module.now_iso(),
+                "createdAt": module.now_iso(),
+            },
+        )
+        self.assertTrue(append.get("ok"), append)
+
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-040C",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(out["ok"], out)
+        prompt = out.get("agentPrompt", "")
+        self.assertIn("COLLAB_THREAD_SUMMARY", prompt, out)
+        self.assertIn('"threadId": "T-040C:coder"', prompt, out)
+        self.assertIn('"messageCount": 1', prompt, out)
 
     def test_dispatch_prompt_injects_retry_context_pack(self):
         run_json([
