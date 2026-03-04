@@ -36,6 +36,10 @@ LOGGER = logging.getLogger(__name__)
 _RECOVERY_STATE_LOCK = threading.RLock()
 
 
+class RecoveryStateLockError(RuntimeError):
+    pass
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -184,31 +188,45 @@ def _write_json_atomic(path: str, payload: Dict[str, Any]) -> None:
 
 
 @contextmanager
-def _recovery_state_guard(root: str):
+def _recovery_state_guard(root: str, require_lock: bool = False):
     lock_path = recovery_state_lock_path(root)
     lock_fp = None
+    lock_acquired = False
     with _RECOVERY_STATE_LOCK:
-        if fcntl is not None:
+        if fcntl is None:
+            if require_lock:
+                message = f"failed to acquire recovery state lock: root={root} lock={lock_path} (fcntl unavailable)"
+                LOGGER.error(message)
+                raise RecoveryStateLockError(message)
+        else:
             try:
                 os.makedirs(os.path.dirname(lock_path), exist_ok=True)
                 lock_fp = open(lock_path, "a+", encoding="utf-8")
                 fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX)
-            except Exception:
-                LOGGER.warning("failed to acquire recovery state lock: root=%s lock=%s", root, lock_path, exc_info=True)
+                lock_acquired = True
+            except Exception as err:
+                LOGGER.exception("failed to acquire recovery state lock: root=%s lock=%s", root, lock_path)
                 if lock_fp is not None:
                     try:
                         lock_fp.close()
                     except Exception:
                         LOGGER.warning("failed to close lock file after acquire error: lock=%s", lock_path, exc_info=True)
                     lock_fp = None
+                if require_lock:
+                    raise RecoveryStateLockError(
+                        f"failed to acquire recovery state lock: root={root} lock={lock_path}"
+                    ) from err
         try:
             yield
         finally:
             if lock_fp is not None:
-                try:
-                    fcntl.flock(lock_fp.fileno(), fcntl.LOCK_UN)
-                except Exception:
-                    LOGGER.warning("failed to release recovery state lock: root=%s lock=%s", root, lock_path, exc_info=True)
+                if lock_acquired:
+                    try:
+                        fcntl.flock(lock_fp.fileno(), fcntl.LOCK_UN)
+                    except Exception:
+                        LOGGER.warning(
+                            "failed to release recovery state lock: root=%s lock=%s", root, lock_path, exc_info=True
+                        )
                 try:
                     lock_fp.close()
                 except Exception:
@@ -243,7 +261,7 @@ def _save_recovery_state_unlocked(root: str, state: Dict[str, Any]) -> None:
 
 
 def save_recovery_state(root: str, state: Dict[str, Any]) -> None:
-    with _recovery_state_guard(root):
+    with _recovery_state_guard(root, require_lock=True):
         _save_recovery_state_unlocked(root, state)
 
 
@@ -343,7 +361,7 @@ def decide_recovery(root: str, task_id: str, current_assignee: str, reason_code:
     max_attempts = max(1, safe_int(reason_conf.get("maxAttempts"), 2))
     cooldown_sec = max(0, safe_int(reason_conf.get("cooldownSec"), 180))
 
-    with _recovery_state_guard(root):
+    with _recovery_state_guard(root, require_lock=True):
         state = _load_recovery_state_unlocked(root)
         entries = state.setdefault("entries", {})
         key = f"{task_id}|{reason}"
@@ -431,7 +449,7 @@ def clear_task(root: str, task_id: str) -> Dict[str, Any]:
     if not task_key:
         return {"taskId": "", "cleared": False, "removedKeys": []}
 
-    with _recovery_state_guard(root):
+    with _recovery_state_guard(root, require_lock=True):
         state = _load_recovery_state_unlocked(root)
         entries = state.setdefault("entries", {})
         removed_keys: List[str] = []

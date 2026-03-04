@@ -5,6 +5,7 @@ import tempfile
 import time
 import unittest
 import importlib.util
+from unittest import mock
 from pathlib import Path
 
 
@@ -54,6 +55,29 @@ def _decide_recovery_worker(root: str, worker_index: int, rounds: int, start_eve
         result_queue.put({"ok": True, "worker": worker_index})
     except Exception as err:
         result_queue.put({"ok": False, "worker": worker_index, "error": repr(err)})
+
+
+def _decide_recovery_same_key_worker(root: str, rounds: int, start_event, result_queue) -> None:
+    try:
+        recovery_mod = load_recovery_module()
+        if not start_event.wait(timeout=10):
+            raise TimeoutError("start_event timed out")
+        attempts = []
+        for round_index in range(rounds):
+            result = recovery_mod.decide_recovery(
+                root,
+                "T-MP-SAME",
+                "coder",
+                "spawn_failed",
+                now_ts=1_700_100_000 + round_index,
+            )
+            attempt = int(result.get("attempt") or 0)
+            if attempt <= 0:
+                raise AssertionError(f"invalid attempt in same-key worker: {result}")
+            attempts.append(attempt)
+        result_queue.put({"ok": True, "attempts": attempts})
+    except Exception as err:
+        result_queue.put({"ok": False, "error": repr(err)})
 
 
 class RecoveryLoopTests(unittest.TestCase):
@@ -328,6 +352,19 @@ class RecoveryLoopTests(unittest.TestCase):
         self.assertEqual(after_first, {}, after_first)
         self.assertTrue(after_second, after_second)
 
+    def test_decide_recovery_requires_lock_for_state_write(self):
+        with mock.patch.object(self.recovery_mod, "fcntl", None):
+            with self.assertLogs(self.recovery_mod.LOGGER.name, level="ERROR") as logs:
+                with self.assertRaises(RuntimeError):
+                    self.recovery_mod.decide_recovery(
+                        self.root.as_posix(),
+                        "T-LOCK-FAIL",
+                        "coder",
+                        "spawn_failed",
+                        now_ts=1_700_200_000,
+                    )
+        self.assertIn("failed to acquire recovery state lock", "\n".join(logs.output))
+
     def test_decide_recovery_multi_process_keeps_state_json_intact(self):
         workers = 8
         rounds = 6
@@ -363,6 +400,62 @@ class RecoveryLoopTests(unittest.TestCase):
         loaded = json.loads(state_path.read_text(encoding="utf-8"))
         entries = loaded.get("entries") if isinstance(loaded.get("entries"), dict) else {}
         self.assertEqual(set(entries.keys()), expected_keys, loaded)
+
+    def test_decide_recovery_multi_process_same_key_counts_all_updates(self):
+        workers = 6
+        rounds = 5
+        expected_attempts = workers * rounds
+
+        policy_path = self.root / "config" / "recovery-policy.json"
+        policy_path.parent.mkdir(parents=True, exist_ok=True)
+        policy_path.write_text(
+            json.dumps(
+                {
+                    "default": {"maxAttempts": expected_attempts + 5, "cooldownSec": 0},
+                    "reasonPolicies": {
+                        "spawn_failed": {"maxAttempts": expected_attempts + 5, "cooldownSec": 0},
+                    },
+                },
+                ensure_ascii=True,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        ctx = multiprocessing.get_context("spawn")
+        start_event = ctx.Event()
+        result_queue = ctx.Queue()
+        processes = []
+        for _ in range(workers):
+            process = ctx.Process(
+                target=_decide_recovery_same_key_worker,
+                args=(self.root.as_posix(), rounds, start_event, result_queue),
+            )
+            process.start()
+            processes.append(process)
+
+        start_event.set()
+        for process in processes:
+            process.join(timeout=60)
+            self.assertFalse(process.is_alive(), f"same-key worker did not finish: pid={process.pid}")
+            self.assertEqual(process.exitcode, 0, f"same-key worker exit code mismatch: pid={process.pid}")
+
+        worker_results = [result_queue.get(timeout=5) for _ in range(workers)]
+        failures = [item for item in worker_results if not item.get("ok")]
+        self.assertEqual(failures, [], worker_results)
+
+        attempts = [attempt for item in worker_results for attempt in item.get("attempts", [])]
+        self.assertEqual(len(attempts), expected_attempts, worker_results)
+        self.assertEqual(sorted(attempts), list(range(1, expected_attempts + 1)), worker_results)
+
+        state_path = self.root / "state" / "recovery.state.json"
+        loaded = json.loads(state_path.read_text(encoding="utf-8"))
+        entries = loaded.get("entries") if isinstance(loaded.get("entries"), dict) else {}
+        row = entries.get("T-MP-SAME|spawn_failed") if isinstance(entries.get("T-MP-SAME|spawn_failed"), dict) else {}
+        self.assertEqual(int(row.get("attempt") or 0), expected_attempts, loaded)
+        self.assertEqual(row.get("action"), "retry", loaded)
+        self.assertEqual(row.get("recoveryState"), "recovery_scheduled", loaded)
 
 
 if __name__ == "__main__":
