@@ -3247,9 +3247,11 @@ def cmd_clarify(args: argparse.Namespace) -> int:
         entries[global_key] = stamp
         save_json_file(state_file, state)
 
-    collab_log: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "send_not_ok"}
-    if sent.get("ok"):
-        thread_id = collaboration_thread_id(args.task_id, args.role)
+    thread_id = collaboration_thread_id(args.task_id, args.role)
+    collab_log: Dict[str, Any] = {"ok": True, "skipped": True, "threadId": thread_id, "reason": "send_not_ok"}
+    if sent.get("ok") and args.mode != "send":
+        collab_log = {"ok": True, "skipped": True, "threadId": thread_id, "reason": "mode_not_send"}
+    elif sent.get("ok"):
         created_at = now_iso()
         deadline_sec = max(600, normalize_timeout_sec(getattr(args, "cooldown_sec", 0), default=600))
         deadline = (

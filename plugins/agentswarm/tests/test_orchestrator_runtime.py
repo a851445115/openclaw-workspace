@@ -448,7 +448,7 @@ class RuntimeTests(unittest.TestCase):
         payload = json.loads(second_proc.stdout.strip())
         self.assertTrue(payload.get("throttled"), payload)
 
-    def test_clarify_success_writes_collaboration_question_log(self):
+    def test_clarify_dry_run_skips_collaboration_question_log(self):
         out = run_json([
             "python3",
             str(MILE),
@@ -466,30 +466,16 @@ class RuntimeTests(unittest.TestCase):
         ])
         self.assertTrue(out.get("ok"), out)
         collab_log = out.get("collabLog") if isinstance(out.get("collabLog"), dict) else {}
-        self.assertTrue(collab_log.get("ok"), out)
+        self.assertTrue(collab_log.get("skipped"), out)
+        self.assertEqual(collab_log.get("reason"), "mode_not_send", out)
         self.assertEqual(collab_log.get("threadId"), "T-003C:debugger", out)
 
         collab_messages = self.root / "state" / "collab.messages.jsonl"
-        self.assertTrue(collab_messages.exists(), out)
-        rows = [
-            json.loads(line)
-            for line in collab_messages.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        self.assertTrue(rows, rows)
-        last = rows[-1]
-        self.assertEqual(last.get("taskId"), "T-003C", last)
-        self.assertEqual(last.get("threadId"), "T-003C:debugger", last)
-        self.assertEqual(last.get("fromAgent"), "orchestrator", last)
-        self.assertEqual(last.get("toAgent"), "debugger", last)
-        self.assertEqual(last.get("messageType"), "question", last)
-        self.assertTrue(last.get("summary"), last)
-        self.assertTrue(last.get("request"), last)
-        self.assertTrue(last.get("deadline"), last)
-        self.assertTrue(last.get("createdAt"), last)
+        self.assertFalse(collab_messages.exists(), out)
 
-    def test_clarify_collaboration_log_failure_does_not_break_success(self):
+    def test_clarify_collaboration_log_failure_in_send_mode_does_not_break_success(self):
         module = load_milestone_module()
+        real_send_group_message = module.send_group_message
         real_append_message = module.collaboration_hub.append_message
         out_buffer = io.StringIO()
         args = argparse.Namespace(
@@ -502,7 +488,7 @@ class RuntimeTests(unittest.TestCase):
             account_id="orchestrator",
             cooldown_sec=300,
             state_file="",
-            mode="dry-run",
+            mode="send",
             force=False,
         )
 
@@ -510,10 +496,12 @@ class RuntimeTests(unittest.TestCase):
             raise RuntimeError("forced collab append failure")
 
         try:
+            module.send_group_message = lambda *_args, **_kwargs: {"ok": True, "dryRun": False}
             module.collaboration_hub.append_message = boom
             with contextlib.redirect_stdout(out_buffer):
                 rc = module.cmd_clarify(args)
         finally:
+            module.send_group_message = real_send_group_message
             module.collaboration_hub.append_message = real_append_message
 
         self.assertEqual(rc, 0)
@@ -522,6 +510,7 @@ class RuntimeTests(unittest.TestCase):
         collab_log = payload.get("collabLog") if isinstance(payload.get("collabLog"), dict) else {}
         self.assertFalse(collab_log.get("ok", True), payload)
         self.assertIn("reason", collab_log, payload)
+        self.assertEqual(collab_log.get("reason"), "append_exception", payload)
 
     def test_rebuild_and_recover_scripts(self):
         run_json([
@@ -885,6 +874,95 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("COLLAB_THREAD_SUMMARY", prompt, out)
         self.assertIn('"threadId": "T-040C:coder"', prompt, out)
         self.assertIn('"messageCount": 1', prompt, out)
+
+    def test_dispatch_prompt_degrades_when_collab_summary_raises(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-040CE: 协作摘要异常降级",
+        ])
+
+        module = load_milestone_module()
+        real_summarize_thread = module.collaboration_hub.summarize_thread
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("forced summarize failure")
+
+        args = module.build_parser().parse_args(
+            [
+                "dispatch",
+                "--root",
+                str(self.root),
+                "--task-id",
+                "T-040CE",
+                "--agent",
+                "coder",
+                "--mode",
+                "dry-run",
+            ]
+        )
+
+        try:
+            module.collaboration_hub.summarize_thread = boom
+            out = module.dispatch_once(args)
+        finally:
+            module.collaboration_hub.summarize_thread = real_summarize_thread
+
+        self.assertTrue(out["ok"], out)
+        prompt = out.get("agentPrompt", "")
+        self.assertNotIn("COLLAB_THREAD_SUMMARY", prompt, out)
+        collab = out.get("collaboration") or {}
+        self.assertFalse(collab.get("available", True), out)
+        self.assertEqual(collab.get("reason"), "summary_read_failed", out)
+        self.assertIn("forced summarize failure", str(collab.get("error") or ""), out)
+
+    def test_dispatch_prompt_degrades_when_collab_summary_invalid(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-040CI: 协作摘要非法值降级",
+        ])
+
+        module = load_milestone_module()
+        real_summarize_thread = module.collaboration_hub.summarize_thread
+        args = module.build_parser().parse_args(
+            [
+                "dispatch",
+                "--root",
+                str(self.root),
+                "--task-id",
+                "T-040CI",
+                "--agent",
+                "coder",
+                "--mode",
+                "dry-run",
+            ]
+        )
+
+        try:
+            module.collaboration_hub.summarize_thread = lambda *_args, **_kwargs: "invalid-summary"
+            out = module.dispatch_once(args)
+        finally:
+            module.collaboration_hub.summarize_thread = real_summarize_thread
+
+        self.assertTrue(out["ok"], out)
+        prompt = out.get("agentPrompt", "")
+        self.assertNotIn("COLLAB_THREAD_SUMMARY", prompt, out)
+        collab = out.get("collaboration") or {}
+        self.assertFalse(collab.get("available", True), out)
+        self.assertEqual(collab.get("reason"), "summary_invalid", out)
 
     def test_dispatch_prompt_injects_retry_context_pack(self):
         run_json([
