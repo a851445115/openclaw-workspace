@@ -226,7 +226,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertIsInstance(templates, list, dispatch)
         self.assertGreaterEqual(len(templates), 3, dispatch)
         role_map = {str(item.get("role") or "") for item in templates if isinstance(item, dict)}
-        self.assertTrue({"coder", "debugger", "analyst"}.issubset(role_map), dispatch)
+        self.assertTrue({"coder", "debugger", "invest-analyst"}.issubset(role_map), dispatch)
         for item in templates:
             self.assertIsInstance(item.get("requiredFields"), list, dispatch)
             self.assertIn("hypothesis", item.get("requiredFields") or [], dispatch)
@@ -276,6 +276,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(expert_group.get("triggered"), dispatch)
         self.assertEqual(expert_group.get("score"), 0, dispatch)
         self.assertEqual(expert_group.get("reasons"), [], dispatch)
+        consensus = expert_group.get("consensus") or {}
+        self.assertEqual(consensus.get("consensusPlan"), "", dispatch)
+        self.assertEqual(consensus.get("executionChecklist"), [], dispatch)
+        self.assertEqual(consensus.get("acceptanceGate"), [], dispatch)
 
     def test_dispatch_blocked_retry_limit_triggers_expert_group_with_non_high_risk_reason(self):
         self._write_json_file(
@@ -516,6 +520,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("policyDigest", expert_group, dispatch)
         self.assertIn("templates", expert_group, dispatch)
         self.assertIn("consensus", expert_group, dispatch)
+        self.assertIn("lifecycle", expert_group, dispatch)
         self.assertIsInstance(expert_group.get("reasons"), list, dispatch)
         self.assertIsInstance(expert_group.get("score"), int, dispatch)
         self.assertIsInstance(expert_group.get("templates"), list, dispatch)
@@ -525,6 +530,188 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("owner", consensus, dispatch)
         self.assertIn("executionChecklist", consensus, dispatch)
         self.assertIn("acceptanceGate", consensus, dispatch)
+        lifecycle = expert_group.get("lifecycle") or {}
+        self.assertIsInstance(lifecycle, dict, dispatch)
+        self.assertIn("groupId", lifecycle, dispatch)
+        self.assertIn("status", lifecycle, dispatch)
+        self.assertIn("path", lifecycle, dispatch)
+        self.assertIn("historyCount", lifecycle, dispatch)
+
+    def test_dispatch_expert_group_lifecycle_persists_and_progresses(self):
+        self._write_json_file(
+            "config/recovery-policy.json",
+            {
+                "default": {"maxAttempts": 6, "cooldownSec": 0},
+                "reasonPolicies": {
+                    "spawn_failed": {"maxAttempts": 6, "cooldownSec": 0},
+                    "blocked_signal": {"maxAttempts": 6, "cooldownSec": 0},
+                },
+            },
+        )
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-008A: 生命周期管理",
+        ])
+
+        first = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-008A",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"failed","message":"worker runtime crashed"}',
+        ])
+        lifecycle1 = ((first.get("expertGroup") or {}).get("lifecycle") or {})
+        group_id = str(lifecycle1.get("groupId") or "")
+        self.assertTrue(group_id, first)
+        self.assertEqual(lifecycle1.get("status"), "created", first)
+        lifecycle_path = self.root / "state" / "expert-groups" / f"{group_id}.json"
+        self.assertTrue(lifecycle_path.exists(), first)
+        record1 = json.loads(lifecycle_path.read_text(encoding="utf-8"))
+        self.assertEqual(record1.get("status"), "created", record1)
+        self.assertEqual(len(record1.get("history") or []), 1, record1)
+
+        second = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-008A",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"failed","message":"worker runtime crashed"}',
+        ])
+        lifecycle2 = ((second.get("expertGroup") or {}).get("lifecycle") or {})
+        self.assertEqual(lifecycle2.get("groupId"), group_id, second)
+        self.assertEqual(lifecycle2.get("status"), "executing", second)
+        self.assertGreaterEqual(int(lifecycle2.get("historyCount") or 0), 2, second)
+        record2 = json.loads(lifecycle_path.read_text(encoding="utf-8"))
+        self.assertEqual(record2.get("status"), "executing", record2)
+        self.assertEqual(len(record2.get("history") or []), 2, record2)
+
+        third = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-008A",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"failed","message":"worker runtime crashed","expertOutputs":[{"role":"debugger","confidence":0.92,"hypothesis":"race condition","evidence":"trace id=42","proposedFix":"serialize cache writes","risk":"latency"}]}',
+        ])
+        lifecycle3 = ((third.get("expertGroup") or {}).get("lifecycle") or {})
+        self.assertEqual(lifecycle3.get("groupId"), group_id, third)
+        self.assertEqual(lifecycle3.get("status"), "converged", third)
+        self.assertGreaterEqual(int(lifecycle3.get("historyCount") or 0), 3, third)
+        record3 = json.loads(lifecycle_path.read_text(encoding="utf-8"))
+        self.assertEqual(record3.get("status"), "converged", record3)
+        self.assertEqual(len(record3.get("history") or []), 3, record3)
+
+        fourth = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-008A",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","message":"T-008A 完成，证据: logs/run.log"}',
+        ])
+        self.assertEqual((fourth.get("spawn") or {}).get("decision"), "done", fourth)
+        lifecycle4 = ((fourth.get("expertGroup") or {}).get("lifecycle") or {})
+        self.assertEqual(lifecycle4.get("groupId"), group_id, fourth)
+        self.assertEqual(lifecycle4.get("status"), "archived", fourth)
+        self.assertGreaterEqual(int(lifecycle4.get("historyCount") or 0), 4, fourth)
+        record4 = json.loads(lifecycle_path.read_text(encoding="utf-8"))
+        self.assertEqual(record4.get("status"), "archived", record4)
+        self.assertEqual(len(record4.get("history") or []), 4, record4)
+
+    def test_evaluate_dispatch_expert_group_logs_warning_when_template_build_fails(self):
+        module = load_milestone_module()
+        original_build_templates = module.expert_group.build_expert_templates
+        try:
+            def boom(*_args, **_kwargs):
+                raise RuntimeError("forced template failure")
+
+            module.expert_group.build_expert_templates = boom
+            with self.assertLogs(module.LOGGER.name, level="WARNING") as captured:
+                out = module.evaluate_dispatch_expert_group(
+                    root=self.root.as_posix(),
+                    task_id="T-008B",
+                    task={"taskId": "T-008B", "status": "blocked"},
+                    spawn={"decision": "blocked", "reasonCode": "spawn_failed"},
+                    session_meta={},
+                    policy=module.expert_group.DEFAULT_EXPERT_GROUP_POLICY,
+                )
+        finally:
+            module.expert_group.build_expert_templates = original_build_templates
+
+        self.assertTrue(out.get("triggered"), out)
+        self.assertEqual(out.get("templates"), [], out)
+        self.assertTrue(
+            any("expert-group template build failed" in msg for msg in captured.output),
+            captured.output,
+        )
+
+    def test_evaluate_dispatch_expert_group_logs_warning_when_consensus_build_fails(self):
+        module = load_milestone_module()
+        original_converge = module.expert_group.converge_expert_conclusions
+        try:
+            def boom(*_args, **_kwargs):
+                raise RuntimeError("forced consensus failure")
+
+            module.expert_group.converge_expert_conclusions = boom
+            with self.assertLogs(module.LOGGER.name, level="WARNING") as captured:
+                out = module.evaluate_dispatch_expert_group(
+                    root=self.root.as_posix(),
+                    task_id="T-008C",
+                    task={"taskId": "T-008C", "status": "blocked", "owner": "coder"},
+                    spawn={"decision": "blocked", "reasonCode": "spawn_failed", "nextAssignee": "debugger"},
+                    session_meta={},
+                    policy=module.expert_group.DEFAULT_EXPERT_GROUP_POLICY,
+                )
+        finally:
+            module.expert_group.converge_expert_conclusions = original_converge
+
+        self.assertTrue(out.get("triggered"), out)
+        self.assertIsInstance(out.get("consensus"), dict, out)
+        self.assertTrue(
+            any("expert-group consensus build failed" in msg for msg in captured.output),
+            captured.output,
+        )
 
     def test_feishu_router_handles_claim_done_commands(self):
         run_json([

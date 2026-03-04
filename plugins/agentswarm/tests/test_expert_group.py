@@ -109,7 +109,7 @@ class ExpertGroupTests(unittest.TestCase):
         self.assertIsInstance(templates, list, templates)
         self.assertGreaterEqual(len(templates), 3, templates)
         roles = {str(item.get("role") or "") for item in templates if isinstance(item, dict)}
-        self.assertTrue({"coder", "debugger", "analyst"}.issubset(roles), templates)
+        self.assertTrue({"coder", "debugger", "invest-analyst"}.issubset(roles), templates)
         for item in templates:
             self.assertIn("task", item, item)
             self.assertIsInstance(item.get("task"), str, item)
@@ -157,7 +157,7 @@ class ExpertGroupTests(unittest.TestCase):
                     "risk": "may slightly increase latency",
                 },
                 {
-                    "role": "analyst",
+                    "role": "invest-analyst",
                     "hypothesis": "downstream dependency mismatch",
                 },
             ]
@@ -166,6 +166,78 @@ class ExpertGroupTests(unittest.TestCase):
         self.assertIn("serialize cache writes with lock", out.get("consensusPlan") or "", out)
         self.assertGreater(len(out.get("executionChecklist") or []), 0, out)
         self.assertGreater(len(out.get("acceptanceGate") or []), 0, out)
+
+    def test_build_expert_templates_accepts_alias_roles_but_outputs_canonical(self):
+        templates = self.mod.build_expert_templates(
+            reasons=["retry_limit"],
+            task_snapshot={"taskId": "T-010"},
+            runtime_snapshot={},
+            roles=["coder", "Analyst", "invest_analyst", "debugger"],
+        )
+        roles = [str(item.get("role") or "") for item in templates if isinstance(item, dict)]
+        self.assertIn("invest-analyst", roles, templates)
+        self.assertNotIn("analyst", roles, templates)
+        self.assertEqual(roles.count("invest-analyst"), 1, templates)
+
+    def test_lifecycle_transition_create_execute_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            created = self.mod.transition_lifecycle_state(
+                root=tmp,
+                task_id="T-900",
+                target_status="created",
+                reasons=["retry_limit"],
+                templates=[{"role": "coder", "task": "triage"}],
+                consensus={"consensusPlan": "collect logs", "owner": "coder"},
+            )
+            self.assertEqual(created.get("status"), "created", created)
+            group_id = created.get("groupId")
+            self.assertTrue(group_id, created)
+
+            executing = self.mod.transition_lifecycle_state(
+                root=tmp,
+                task_id="T-900",
+                target_status="executing",
+                reasons=["retry_limit"],
+                templates=[{"role": "debugger", "task": "trace"}],
+                consensus={"consensusPlan": "run debugger", "owner": "debugger"},
+            )
+            self.assertEqual(executing.get("status"), "executing", executing)
+
+            archived = self.mod.transition_lifecycle_state(
+                root=tmp,
+                task_id="T-900",
+                target_status="archived",
+                reasons=[],
+                templates=[],
+                consensus={"consensusPlan": "", "owner": "orchestrator"},
+            )
+            self.assertEqual(archived.get("status"), "archived", archived)
+            history = archived.get("history") or []
+            self.assertEqual(len(history), 3, archived)
+            self.assertEqual(history[0].get("to"), "created", archived)
+            self.assertEqual(history[1].get("to"), "executing", archived)
+            self.assertEqual(history[2].get("to"), "archived", archived)
+
+            lifecycle_path = Path(tmp) / "state" / "expert-groups" / f"{group_id}.json"
+            self.assertTrue(lifecycle_path.exists(), lifecycle_path)
+
+    def test_lifecycle_transition_tolerates_corrupt_state_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            group_id = self.mod.build_lifecycle_group_id("T-901")
+            lifecycle_path = Path(tmp) / "state" / "expert-groups" / f"{group_id}.json"
+            lifecycle_path.parent.mkdir(parents=True, exist_ok=True)
+            lifecycle_path.write_text("{bad json", encoding="utf-8")
+
+            out = self.mod.transition_lifecycle_state(
+                root=tmp,
+                task_id="T-901",
+                target_status="created",
+                reasons=["blocked_duration"],
+                templates=[],
+                consensus={"consensusPlan": "", "owner": "orchestrator"},
+            )
+            self.assertEqual(out.get("status"), "created", out)
+            self.assertEqual(len(out.get("history") or []), 1, out)
 
 
 if __name__ == "__main__":

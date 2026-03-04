@@ -2146,22 +2146,65 @@ def count_downstream_impact(task_id: str, snapshot_tasks: Dict[str, Any]) -> int
     return impacted
 
 
-def default_expert_group_out(policy: Dict[str, Any]) -> Dict[str, Any]:
+def _load_expert_group_lifecycle(root: str, task_id: str) -> Dict[str, Any]:
+    try:
+        return expert_group.load_lifecycle_state(root, task_id=task_id)
+    except Exception:
+        LOGGER.warning(
+            "expert-group lifecycle load failed: root=%s taskId=%s",
+            root,
+            task_id,
+            exc_info=True,
+        )
+        return {}
+
+
+def _summarize_expert_group_lifecycle(root: str, task_id: str, lifecycle_record: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        return expert_group.lifecycle_summary(lifecycle_record, root=root, task_id=task_id)
+    except Exception:
+        LOGGER.warning(
+            "expert-group lifecycle summarize failed: root=%s taskId=%s",
+            root,
+            task_id,
+            exc_info=True,
+        )
+        return {
+            "groupId": "",
+            "taskId": str(task_id or "").strip(),
+            "status": "inactive",
+            "path": "",
+            "historyCount": 0,
+            "updatedAt": "",
+        }
+
+
+def default_expert_group_out(policy: Dict[str, Any], root: str = "", task_id: str = "") -> Dict[str, Any]:
     digest = ""
     try:
         digest = expert_group.policy_digest(policy)
     except Exception:
+        LOGGER.warning("expert-group policy digest failed", exc_info=True)
         digest = ""
     consensus: Dict[str, Any]
     try:
-        consensus = expert_group.converge_expert_conclusions([], reasons=[], fallback_owner="orchestrator")
+        consensus = expert_group.converge_expert_conclusions(
+            [],
+            reasons=[],
+            fallback_owner="orchestrator",
+            active=False,
+        )
     except Exception:
+        LOGGER.warning("expert-group neutral consensus build failed", exc_info=True)
         consensus = {
             "consensusPlan": "",
             "owner": "orchestrator",
             "executionChecklist": [],
             "acceptanceGate": [],
+            "inactive": True,
         }
+    lifecycle_record = _load_expert_group_lifecycle(root, task_id) if root else {}
+    lifecycle_summary = _summarize_expert_group_lifecycle(root, task_id, lifecycle_record)
     return {
         "triggered": False,
         "reasons": [],
@@ -2169,6 +2212,7 @@ def default_expert_group_out(policy: Dict[str, Any]) -> Dict[str, Any]:
         "policyDigest": digest,
         "templates": [],
         "consensus": consensus,
+        "lifecycle": lifecycle_summary,
     }
 
 
@@ -2180,11 +2224,33 @@ def evaluate_dispatch_expert_group(
     session_meta: Dict[str, Any],
     policy: Dict[str, Any],
 ) -> Dict[str, Any]:
-    base_out = default_expert_group_out(policy)
+    task_key = str(task_id or "").strip()
+    base_out = default_expert_group_out(policy, root=root, task_id=task_key)
+    lifecycle_record = _load_expert_group_lifecycle(root, task_key)
     if not isinstance(spawn, dict):
+        base_out["lifecycle"] = _summarize_expert_group_lifecycle(root, task_key, lifecycle_record)
         return base_out
     decision = str(spawn.get("decision") or "").strip().lower()
     if decision != "blocked":
+        if decision == "done" and expert_group.is_lifecycle_active(lifecycle_record):
+            try:
+                lifecycle_record = expert_group.transition_lifecycle_state(
+                    root=root,
+                    task_id=task_key,
+                    target_status=expert_group.LIFECYCLE_STATUS_ARCHIVED,
+                    reasons=lifecycle_record.get("reasons"),
+                    templates=lifecycle_record.get("templates"),
+                    consensus=lifecycle_record.get("consensus"),
+                    group_id=str(lifecycle_record.get("groupId") or ""),
+                    event="task_done",
+                )
+            except Exception:
+                LOGGER.warning(
+                    "expert-group lifecycle archive failed: taskId=%s",
+                    task_key,
+                    exc_info=True,
+                )
+        base_out["lifecycle"] = _summarize_expert_group_lifecycle(root, task_key, lifecycle_record)
         return base_out
 
     try:
@@ -2219,6 +2285,12 @@ def evaluate_dispatch_expert_group(
     try:
         judgement = expert_group.evaluate_trigger(task_snapshot, runtime_snapshot, policy)
     except Exception:
+        LOGGER.warning(
+            "expert-group trigger evaluation failed: taskId=%s",
+            task_key,
+            exc_info=True,
+        )
+        base_out["lifecycle"] = _summarize_expert_group_lifecycle(root, task_key, lifecycle_record)
         return base_out
 
     reasons = [str(item).strip() for item in (judgement.get("reasons") or []) if str(item).strip()]
@@ -2234,6 +2306,12 @@ def evaluate_dispatch_expert_group(
                 runtime_snapshot=runtime_snapshot,
             )
         except Exception:
+            LOGGER.warning(
+                "expert-group template build failed: taskId=%s reasons=%s",
+                task_key,
+                ",".join(reasons),
+                exc_info=True,
+            )
             templates = []
 
     raw_expert_outputs: Any = None
@@ -2250,19 +2328,71 @@ def evaluate_dispatch_expert_group(
         or str(task.get("owner") or "").strip()
         or "orchestrator"
     )
-    try:
-        consensus = expert_group.converge_expert_conclusions(
-            expert_outputs=expert_outputs,
-            reasons=reasons,
-            fallback_owner=fallback_owner,
-        )
-    except Exception:
+    if not triggered:
         consensus = base_out.get("consensus") if isinstance(base_out.get("consensus"), dict) else {
             "consensusPlan": "",
             "owner": fallback_owner,
             "executionChecklist": [],
             "acceptanceGate": [],
+            "inactive": True,
         }
+        lifecycle_summary = _summarize_expert_group_lifecycle(root, task_key, lifecycle_record)
+    else:
+        try:
+            consensus = expert_group.converge_expert_conclusions(
+                expert_outputs=expert_outputs,
+                reasons=reasons,
+                fallback_owner=fallback_owner,
+                active=True,
+            )
+        except Exception:
+            LOGGER.warning(
+                "expert-group consensus build failed: taskId=%s reasons=%s expertOutputs=%s",
+                task_key,
+                ",".join(reasons),
+                len(expert_outputs),
+                exc_info=True,
+            )
+            consensus = {
+                "consensusPlan": "",
+                "owner": fallback_owner,
+                "executionChecklist": [],
+                "acceptanceGate": [],
+                "inactive": False,
+            }
+
+        current_status = str(lifecycle_record.get("status") or "").strip().lower()
+        has_consensus = bool(str((consensus or {}).get("consensusPlan") or "").strip())
+        if expert_outputs and has_consensus:
+            target_status = expert_group.LIFECYCLE_STATUS_CONVERGED
+        elif current_status == expert_group.LIFECYCLE_STATUS_CREATED:
+            target_status = expert_group.LIFECYCLE_STATUS_EXECUTING
+        elif current_status in {
+            expert_group.LIFECYCLE_STATUS_EXECUTING,
+            expert_group.LIFECYCLE_STATUS_CONVERGED,
+        }:
+            target_status = current_status
+        else:
+            target_status = expert_group.LIFECYCLE_STATUS_CREATED
+        try:
+            lifecycle_record = expert_group.transition_lifecycle_state(
+                root=root,
+                task_id=task_key,
+                target_status=target_status,
+                reasons=reasons,
+                templates=templates,
+                consensus=consensus,
+                group_id=str(lifecycle_record.get("groupId") or ""),
+                event="dispatch_blocked",
+            )
+        except Exception:
+            LOGGER.warning(
+                "expert-group lifecycle transition failed: taskId=%s targetStatus=%s",
+                task_key,
+                target_status,
+                exc_info=True,
+            )
+        lifecycle_summary = _summarize_expert_group_lifecycle(root, task_key, lifecycle_record)
     return {
         "triggered": triggered,
         "reasons": reasons,
@@ -2270,6 +2400,7 @@ def evaluate_dispatch_expert_group(
         "policyDigest": base_out.get("policyDigest", ""),
         "templates": templates,
         "consensus": consensus,
+        "lifecycle": lifecycle_summary,
     }
 
 
@@ -2587,7 +2718,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         expert_group_policy = expert_group.load_expert_group_policy(args.root)
     except Exception:
         expert_group_policy = expert_group.normalize_expert_group_policy({}, expert_group.DEFAULT_EXPERT_GROUP_POLICY)
-    expert_group_out = default_expert_group_out(expert_group_policy)
+    expert_group_out = default_expert_group_out(expert_group_policy, root=args.root, task_id=args.task_id)
 
     if args.spawn:
         try:

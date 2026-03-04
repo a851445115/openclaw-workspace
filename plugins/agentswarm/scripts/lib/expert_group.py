@@ -4,7 +4,8 @@ import hashlib
 import json
 import logging
 import os
-from typing import Any, Dict, List, Tuple
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 
 EXPERT_GROUP_POLICY_CONFIG_CANDIDATES = (
@@ -20,11 +21,18 @@ DEFAULT_EXPERT_GROUP_POLICY: Dict[str, Any] = {
 }
 LOGGER = logging.getLogger(__name__)
 EXPERT_OUTPUT_FIELDS: Tuple[str, ...] = ("hypothesis", "evidence", "confidence", "proposedFix", "risk")
-DEFAULT_EXPERT_ROLES: Tuple[str, ...] = ("coder", "debugger", "analyst")
+EXPERT_ROLE_INVEST_ANALYST = "invest-analyst"
+DEFAULT_EXPERT_ROLES: Tuple[str, ...] = ("coder", "debugger", EXPERT_ROLE_INVEST_ANALYST)
+ROLE_ALIASES: Dict[str, str] = {
+    "analyst": EXPERT_ROLE_INVEST_ANALYST,
+    "invest_analyst": EXPERT_ROLE_INVEST_ANALYST,
+    "invest analyst": EXPERT_ROLE_INVEST_ANALYST,
+    "researcher": EXPERT_ROLE_INVEST_ANALYST,
+}
 ROLE_TASK_PREFIX: Dict[str, str] = {
     "coder": "Produce a code-level remediation plan with concrete implementation steps.",
     "debugger": "Trace the blocker path and isolate the most probable failure mechanism.",
-    "analyst": "Evaluate system impact, sequencing, and validation strategy across tasks.",
+    EXPERT_ROLE_INVEST_ANALYST: "Evaluate system impact, sequencing, and validation strategy across tasks.",
 }
 REASON_GUIDANCE: Dict[str, str] = {
     "retry_limit": "repeated retries indicate current fix attempts are not converging",
@@ -38,6 +46,23 @@ FIELD_GUIDANCE: Dict[str, str] = {
     "confidence": "Confidence score in range [0, 1].",
     "proposedFix": "Actionable fix plan, including owner-facing execution detail.",
     "risk": "Primary risk if proposedFix is applied and how to mitigate it.",
+}
+
+EXPERT_GROUP_LIFECYCLE_DIR = os.path.join("state", "expert-groups")
+LIFECYCLE_STATUS_CREATED = "created"
+LIFECYCLE_STATUS_EXECUTING = "executing"
+LIFECYCLE_STATUS_CONVERGED = "converged"
+LIFECYCLE_STATUS_ARCHIVED = "archived"
+LIFECYCLE_STATUSES: Tuple[str, ...] = (
+    LIFECYCLE_STATUS_CREATED,
+    LIFECYCLE_STATUS_EXECUTING,
+    LIFECYCLE_STATUS_CONVERGED,
+    LIFECYCLE_STATUS_ARCHIVED,
+)
+ACTIVE_LIFECYCLE_STATUSES = {
+    LIFECYCLE_STATUS_CREATED,
+    LIFECYCLE_STATUS_EXECUTING,
+    LIFECYCLE_STATUS_CONVERGED,
 }
 
 
@@ -90,12 +115,26 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _canonical_role(role: Any) -> str:
+    role_text = str(role or "").strip().lower()
+    if not role_text:
+        return ""
+    alias = ROLE_ALIASES.get(role_text)
+    if alias:
+        return alias
+    role_dash = role_text.replace("_", "-")
+    alias = ROLE_ALIASES.get(role_dash)
+    if alias:
+        return alias
+    return role_dash
+
+
 def _normalize_roles(raw_roles: Any) -> List[str]:
     values = raw_roles if isinstance(raw_roles, list) else list(DEFAULT_EXPERT_ROLES)
     out: List[str] = []
     seen = set()
     for item in values:
-        role = str(item or "").strip().lower()
+        role = _canonical_role(item)
         if not role or role in seen:
             continue
         seen.add(role)
@@ -111,6 +150,234 @@ def _reason_context_lines(reasons: List[str]) -> List[str]:
         guidance = REASON_GUIDANCE.get(reason, "unclassified trigger reason; assess impact and mitigations")
         lines.append(f"{reason}: {guidance}")
     return lines
+
+
+def _normalize_string_list(raw: Any, limit: int = 64) -> List[str]:
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    seen = set()
+    for item in raw:
+        value = str(item or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _normalize_lifecycle_status(status: Any) -> str:
+    value = str(status or "").strip().lower()
+    if value in LIFECYCLE_STATUSES:
+        return value
+    return ""
+
+
+def _normalize_history(raw: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        to_status = _normalize_lifecycle_status(item.get("to"))
+        if not to_status:
+            continue
+        out.append(
+            {
+                "at": str(item.get("at") or "").strip(),
+                "from": _normalize_lifecycle_status(item.get("from")),
+                "to": to_status,
+                "event": str(item.get("event") or "").strip(),
+            }
+        )
+    return out
+
+
+def _compact_template_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    role = _canonical_role(entry.get("role"))
+    task = str(entry.get("task") or "").strip()
+    required_fields = _normalize_string_list(entry.get("requiredFields"), limit=16)
+    out: Dict[str, Any] = {"role": role, "task": task}
+    if required_fields:
+        out["requiredFields"] = required_fields
+    return out
+
+
+def _compact_templates(raw_templates: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw_templates, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in raw_templates:
+        if not isinstance(item, dict):
+            continue
+        compact = _compact_template_entry(item)
+        if not compact.get("role") and not compact.get("task"):
+            continue
+        out.append(compact)
+        if len(out) >= 12:
+            break
+    return out
+
+
+def _normalize_consensus(consensus: Any, fallback_owner: str = "orchestrator") -> Dict[str, Any]:
+    raw = consensus if isinstance(consensus, dict) else {}
+    owner_text = _canonical_role(raw.get("owner")) or str(raw.get("owner") or "").strip() or fallback_owner
+    return {
+        "consensusPlan": str(raw.get("consensusPlan") or "").strip(),
+        "owner": owner_text or fallback_owner,
+        "executionChecklist": _normalize_string_list(raw.get("executionChecklist"), limit=64),
+        "acceptanceGate": _normalize_string_list(raw.get("acceptanceGate"), limit=64),
+    }
+
+
+def build_lifecycle_group_id(task_id: str) -> str:
+    normalized_task_id = str(task_id or "").strip() or "unknown-task"
+    digest = hashlib.sha256(normalized_task_id.encode("utf-8")).hexdigest()[:16]
+    return f"eg_{digest}"
+
+
+def lifecycle_state_path(root: str, group_id: str) -> str:
+    group_key = str(group_id or "").strip()
+    if not group_key:
+        return ""
+    return os.path.join(root, EXPERT_GROUP_LIFECYCLE_DIR, f"{group_key}.json")
+
+
+def load_lifecycle_state(root: str, task_id: str = "", group_id: str = "") -> Dict[str, Any]:
+    task_key = str(task_id or "").strip()
+    group_key = str(group_id or "").strip() or (build_lifecycle_group_id(task_key) if task_key else "")
+    if not group_key:
+        return {}
+    path = lifecycle_state_path(root, group_key)
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+    except Exception as err:
+        LOGGER.warning(
+            "failed to load expert-group lifecycle: path=%s error=%s",
+            path,
+            str(err),
+        )
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    normalized: Dict[str, Any] = {
+        "groupId": str(loaded.get("groupId") or group_key).strip() or group_key,
+        "taskId": str(loaded.get("taskId") or task_key).strip() or task_key,
+        "status": _normalize_lifecycle_status(loaded.get("status")),
+        "createdAt": str(loaded.get("createdAt") or "").strip(),
+        "updatedAt": str(loaded.get("updatedAt") or "").strip(),
+        "history": _normalize_history(loaded.get("history")),
+        "reasons": _normalize_reason_codes(loaded.get("reasons"), []),
+        "templates": _compact_templates(loaded.get("templates")),
+        "consensus": _normalize_consensus(loaded.get("consensus")),
+    }
+    return normalized
+
+
+def is_lifecycle_active(record: Dict[str, Any]) -> bool:
+    if not isinstance(record, dict):
+        return False
+    status = _normalize_lifecycle_status(record.get("status"))
+    return status in ACTIVE_LIFECYCLE_STATUSES
+
+
+def lifecycle_summary(
+    record: Dict[str, Any],
+    root: str = "",
+    task_id: str = "",
+    group_id: str = "",
+) -> Dict[str, Any]:
+    task_key = str(task_id or "").strip()
+    rec = record if isinstance(record, dict) else {}
+    group_key = str(rec.get("groupId") or group_id or "").strip() or (build_lifecycle_group_id(task_key) if task_key else "")
+    status = _normalize_lifecycle_status(rec.get("status")) or "inactive"
+    history_count = len(rec.get("history") or []) if isinstance(rec.get("history"), list) else 0
+    path = lifecycle_state_path(root, group_key) if root and group_key else ""
+    return {
+        "groupId": group_key,
+        "taskId": str(rec.get("taskId") or task_key).strip(),
+        "status": status,
+        "path": path,
+        "historyCount": max(0, int(history_count)),
+        "updatedAt": str(rec.get("updatedAt") or "").strip(),
+    }
+
+
+def transition_lifecycle_state(
+    root: str,
+    task_id: str,
+    target_status: str,
+    reasons: Optional[List[str]] = None,
+    templates: Optional[List[Dict[str, Any]]] = None,
+    consensus: Optional[Dict[str, Any]] = None,
+    group_id: str = "",
+    event: str = "status_transition",
+) -> Dict[str, Any]:
+    task_key = str(task_id or "").strip()
+    status_target = _normalize_lifecycle_status(target_status) or LIFECYCLE_STATUS_CREATED
+    group_key = str(group_id or "").strip() or (build_lifecycle_group_id(task_key) if task_key else "")
+    if not group_key:
+        return {}
+    path = lifecycle_state_path(root, group_key)
+    if not path:
+        return {}
+
+    existing = load_lifecycle_state(root, task_id=task_key, group_id=group_key)
+    now_iso = _utc_now_iso()
+    previous_status = _normalize_lifecycle_status(existing.get("status"))
+    history = _normalize_history(existing.get("history"))
+    if previous_status != status_target:
+        history.append(
+            {
+                "at": now_iso,
+                "from": previous_status,
+                "to": status_target,
+                "event": str(event or "status_transition").strip() or "status_transition",
+            }
+        )
+
+    owner_fallback = str((existing.get("consensus") or {}).get("owner") or "orchestrator")
+    record: Dict[str, Any] = {
+        "groupId": group_key,
+        "taskId": task_key or str(existing.get("taskId") or "").strip(),
+        "status": status_target,
+        "createdAt": str(existing.get("createdAt") or now_iso).strip() or now_iso,
+        "updatedAt": now_iso,
+        "history": history,
+        "reasons": _normalize_reason_codes(reasons, existing.get("reasons") if reasons is None else []),
+        "templates": _compact_templates(templates if templates is not None else existing.get("templates")),
+        "consensus": _normalize_consensus(
+            consensus if consensus is not None else existing.get("consensus"),
+            fallback_owner=owner_fallback,
+        ),
+    }
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(record, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    return record
+
+
+def neutral_consensus(fallback_owner: str = "orchestrator") -> Dict[str, Any]:
+    owner_fallback = _canonical_role(fallback_owner) or str(fallback_owner or "").strip() or "orchestrator"
+    return {
+        "consensusPlan": "",
+        "owner": owner_fallback,
+        "executionChecklist": [],
+        "acceptanceGate": [],
+        "inactive": True,
+    }
 
 
 def normalize_expert_group_policy(raw: Dict[str, Any], fallback: Dict[str, Any]) -> Dict[str, Any]:
@@ -312,14 +579,19 @@ def converge_expert_conclusions(
     expert_outputs: List[Dict[str, Any]],
     reasons: List[str] = None,
     fallback_owner: str = "orchestrator",
+    active: bool = True,
 ) -> Dict[str, Any]:
-    owner_fallback = str(fallback_owner or "").strip() or "orchestrator"
+    owner_fallback = _canonical_role(fallback_owner) or str(fallback_owner or "").strip() or "orchestrator"
+    if not active:
+        return neutral_consensus(owner_fallback)
+
     base_plan = _default_consensus_plan(reasons or [])
     out: Dict[str, Any] = {
         "consensusPlan": base_plan,
         "owner": owner_fallback,
         "executionChecklist": _default_checklist(reasons or []),
         "acceptanceGate": _default_acceptance_gate(),
+        "inactive": False,
     }
 
     if not isinstance(expert_outputs, list) or not expert_outputs:
@@ -358,7 +630,7 @@ def converge_expert_conclusions(
     if not best_entry:
         return out
 
-    best_owner = str(best_entry.get("role") or best_entry.get("owner") or "").strip()
+    best_owner = _canonical_role(best_entry.get("role")) or _canonical_role(best_entry.get("owner")) or str(best_entry.get("owner") or "").strip()
     best_hypothesis = str(best_entry.get("hypothesis") or "").strip()
     best_fix = str(best_entry.get("proposedFix") or "").strip()
     best_evidence = str(best_entry.get("evidence") or "").strip()
