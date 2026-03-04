@@ -1,4 +1,5 @@
 import json
+import multiprocessing
 import subprocess
 import tempfile
 import time
@@ -32,6 +33,27 @@ def load_recovery_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _decide_recovery_worker(root: str, worker_index: int, rounds: int, start_event, result_queue) -> None:
+    try:
+        recovery_mod = load_recovery_module()
+        if not start_event.wait(timeout=10):
+            raise TimeoutError("start_event timed out")
+        for round_index in range(rounds):
+            task_id = f"T-MP-{worker_index:02d}-{round_index:02d}"
+            result = recovery_mod.decide_recovery(
+                root,
+                task_id,
+                "coder",
+                "spawn_failed",
+                now_ts=1_700_000_000 + round_index,
+            )
+            if int(result.get("attempt") or 0) != 1:
+                raise AssertionError(f"unexpected attempt in worker={worker_index}: {result}")
+        result_queue.put({"ok": True, "worker": worker_index})
+    except Exception as err:
+        result_queue.put({"ok": False, "worker": worker_index, "error": repr(err)})
 
 
 class RecoveryLoopTests(unittest.TestCase):
@@ -305,6 +327,42 @@ class RecoveryLoopTests(unittest.TestCase):
         after_second = self.recovery_mod.get_active_cooldown(self.root.as_posix(), "T-151", now_ts=now_ts)
         self.assertEqual(after_first, {}, after_first)
         self.assertTrue(after_second, after_second)
+
+    def test_decide_recovery_multi_process_keeps_state_json_intact(self):
+        workers = 8
+        rounds = 6
+        expected_keys = {
+            f"T-MP-{worker_index:02d}-{round_index:02d}|spawn_failed"
+            for worker_index in range(workers)
+            for round_index in range(rounds)
+        }
+
+        ctx = multiprocessing.get_context("spawn")
+        start_event = ctx.Event()
+        result_queue = ctx.Queue()
+        processes = []
+        for worker_index in range(workers):
+            process = ctx.Process(
+                target=_decide_recovery_worker,
+                args=(self.root.as_posix(), worker_index, rounds, start_event, result_queue),
+            )
+            process.start()
+            processes.append(process)
+
+        start_event.set()
+        for process in processes:
+            process.join(timeout=60)
+            self.assertFalse(process.is_alive(), f"worker did not finish: pid={process.pid}")
+            self.assertEqual(process.exitcode, 0, f"worker exit code mismatch: pid={process.pid}")
+
+        worker_results = [result_queue.get(timeout=5) for _ in range(workers)]
+        failures = [item for item in worker_results if not item.get("ok")]
+        self.assertEqual(failures, [], worker_results)
+
+        state_path = self.root / "state" / "recovery.state.json"
+        loaded = json.loads(state_path.read_text(encoding="utf-8"))
+        entries = loaded.get("entries") if isinstance(loaded.get("entries"), dict) else {}
+        self.assertEqual(set(entries.keys()), expected_keys, loaded)
 
 
 if __name__ == "__main__":

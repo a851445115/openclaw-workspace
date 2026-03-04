@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
+from contextlib import contextmanager
 import json
+import logging
 import os
+import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List
+
+try:
+    import fcntl
+except Exception:  # pragma: no cover
+    fcntl = None
 
 
 RECOVERY_POLICY_CONFIG_CANDIDATES = (
@@ -11,6 +20,7 @@ RECOVERY_POLICY_CONFIG_CANDIDATES = (
     os.path.join("state", "recovery-policy.json"),
 )
 RECOVERY_STATE_FILE = os.path.join("state", "recovery.state.json")
+RECOVERY_STATE_LOCK_FILE = os.path.join("state", "recovery.state.lock")
 RECOVERY_REASON_CODES = {"spawn_failed", "incomplete_output", "blocked_signal", "no_completion_signal"}
 DEFAULT_RECOVERY_POLICY: Dict[str, Any] = {
     "recoveryChain": ["coder", "debugger", "invest-analyst", "human"],
@@ -22,6 +32,8 @@ DEFAULT_RECOVERY_POLICY: Dict[str, Any] = {
         "no_completion_signal": {"maxAttempts": 2, "cooldownSec": 120},
     },
 }
+LOGGER = logging.getLogger(__name__)
+_RECOVERY_STATE_LOCK = threading.RLock()
 
 
 def now_iso() -> str:
@@ -134,29 +146,105 @@ def recovery_state_path(root: str) -> str:
     return os.path.join(root, RECOVERY_STATE_FILE)
 
 
-def load_recovery_state(root: str) -> Dict[str, Any]:
+def recovery_state_lock_path(root: str) -> str:
+    return os.path.join(root, RECOVERY_STATE_LOCK_FILE)
+
+
+def _empty_recovery_state() -> Dict[str, Any]:
+    return {"entries": {}, "updatedAt": ""}
+
+
+def _normalize_state_payload(state: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "entries": state.get("entries") if isinstance(state.get("entries"), dict) else {},
+        "updatedAt": now_iso(),
+    }
+
+
+def _write_json_atomic(path: str, payload: Dict[str, Any]) -> None:
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=True, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        LOGGER.exception("failed to persist recovery state atomically: path=%s", path)
+        raise
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                LOGGER.warning("failed to remove recovery state tmp file: path=%s", tmp_path, exc_info=True)
+
+
+@contextmanager
+def _recovery_state_guard(root: str):
+    lock_path = recovery_state_lock_path(root)
+    lock_fp = None
+    with _RECOVERY_STATE_LOCK:
+        if fcntl is not None:
+            try:
+                os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+                lock_fp = open(lock_path, "a+", encoding="utf-8")
+                fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX)
+            except Exception:
+                LOGGER.warning("failed to acquire recovery state lock: root=%s lock=%s", root, lock_path, exc_info=True)
+                if lock_fp is not None:
+                    try:
+                        lock_fp.close()
+                    except Exception:
+                        LOGGER.warning("failed to close lock file after acquire error: lock=%s", lock_path, exc_info=True)
+                    lock_fp = None
+        try:
+            yield
+        finally:
+            if lock_fp is not None:
+                try:
+                    fcntl.flock(lock_fp.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    LOGGER.warning("failed to release recovery state lock: root=%s lock=%s", root, lock_path, exc_info=True)
+                try:
+                    lock_fp.close()
+                except Exception:
+                    LOGGER.warning("failed to close recovery lock file: lock=%s", lock_path, exc_info=True)
+
+
+def _load_recovery_state_unlocked(root: str) -> Dict[str, Any]:
     path = recovery_state_path(root)
     if not os.path.exists(path):
-        return {"entries": {}, "updatedAt": ""}
+        return _empty_recovery_state()
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
-        return {"entries": {}, "updatedAt": ""}
+        LOGGER.warning("failed to load recovery state: path=%s", path, exc_info=True)
+        return _empty_recovery_state()
+    if not isinstance(data, dict):
+        LOGGER.warning("invalid recovery state payload type: path=%s type=%s", path, type(data).__name__)
+        return _empty_recovery_state()
     entries = data.get("entries") if isinstance(data.get("entries"), dict) else {}
     return {"entries": entries, "updatedAt": str(data.get("updatedAt") or "")}
 
 
-def save_recovery_state(root: str, state: Dict[str, Any]) -> None:
+def load_recovery_state(root: str) -> Dict[str, Any]:
+    return _load_recovery_state_unlocked(root)
+
+
+def _save_recovery_state_unlocked(root: str, state: Dict[str, Any]) -> None:
     path = recovery_state_path(root)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    payload = {
-        "entries": state.get("entries") if isinstance(state.get("entries"), dict) else {},
-        "updatedAt": now_iso(),
-    }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=True, indent=2)
-        f.write("\n")
+    payload = _normalize_state_payload(state)
+    _write_json_atomic(path, payload)
+
+
+def save_recovery_state(root: str, state: Dict[str, Any]) -> None:
+    with _recovery_state_guard(root):
+        _save_recovery_state_unlocked(root, state)
 
 
 def normalize_reason(reason_code: str) -> str:
@@ -255,86 +343,87 @@ def decide_recovery(root: str, task_id: str, current_assignee: str, reason_code:
     max_attempts = max(1, safe_int(reason_conf.get("maxAttempts"), 2))
     cooldown_sec = max(0, safe_int(reason_conf.get("cooldownSec"), 180))
 
-    state = load_recovery_state(root)
-    entries = state.setdefault("entries", {})
-    key = f"{task_id}|{reason}"
-    prev = entries.get(key) if isinstance(entries.get(key), dict) else {}
+    with _recovery_state_guard(root):
+        state = _load_recovery_state_unlocked(root)
+        entries = state.setdefault("entries", {})
+        key = f"{task_id}|{reason}"
+        prev = entries.get(key) if isinstance(entries.get(key), dict) else {}
 
-    prev_attempt = max(0, safe_int(prev.get("attempt"), 0))
-    prev_next = str(prev.get("nextAssignee") or "").strip().lower()
-    prev_action = str(prev.get("action") or "").strip().lower()
-    prev_state = str(prev.get("recoveryState") or "").strip()
-    prev_cooldown_ts = max(0, safe_int(prev.get("cooldownUntilTs"), 0))
+        prev_attempt = max(0, safe_int(prev.get("attempt"), 0))
+        prev_next = str(prev.get("nextAssignee") or "").strip().lower()
+        prev_action = str(prev.get("action") or "").strip().lower()
+        prev_state = str(prev.get("recoveryState") or "").strip()
+        prev_cooldown_ts = max(0, safe_int(prev.get("cooldownUntilTs"), 0))
 
-    if prev_cooldown_ts and now_unix < prev_cooldown_ts:
-        chosen_next = prev_next or next_assignee_for(chain, current_assignee)
-        chosen_action = prev_action if prev_action in {"retry", "escalate", "human"} else (
-            "human" if chosen_next == "human" else "retry"
-        )
-        chosen_state = prev_state or (
-            "human_handoff" if chosen_action == "human" else "recovery_scheduled"
-        )
+        if prev_cooldown_ts and now_unix < prev_cooldown_ts:
+            chosen_next = prev_next or next_assignee_for(chain, current_assignee)
+            chosen_action = prev_action if prev_action in {"retry", "escalate", "human"} else (
+                "human" if chosen_next == "human" else "retry"
+            )
+            chosen_state = prev_state or (
+                "human_handoff" if chosen_action == "human" else "recovery_scheduled"
+            )
+            return {
+                "reasonCode": reason,
+                "attempt": prev_attempt,
+                "nextAssignee": chosen_next,
+                "action": chosen_action,
+                "recoveryState": chosen_state,
+                "cooldownActive": True,
+                "cooldownUntilTs": prev_cooldown_ts,
+                "cooldownUntil": ts_to_iso(prev_cooldown_ts),
+                "recoverable": chosen_action in {"retry", "human"},
+                "maxAttempts": max_attempts,
+            }
+
+        attempt = prev_attempt + 1
+        next_assignee = next_assignee_for(chain, current_assignee)
+
+        # For formatting/evidence incompleteness, avoid immediate human handoff when
+        # the current assignee sits at the tail of the chain (e.g. invest-analyst).
+        # Rotate back to the chain head and keep retry automated.
+        if reason == "incomplete_output" and next_assignee == "human" and attempt <= max_attempts:
+            non_human_chain = [role for role in chain if role != "human"]
+            if non_human_chain:
+                next_assignee = non_human_chain[0]
+
+        if attempt > max_attempts:
+            action = "escalate"
+            next_assignee = "human"
+            recovery_state = "escalated_to_human"
+        elif next_assignee == "human":
+            action = "human"
+            recovery_state = "human_handoff"
+        else:
+            action = "retry"
+            recovery_state = "recovery_scheduled"
+
+        cooldown_until_ts = now_unix + cooldown_sec if cooldown_sec > 0 else 0
+        entries[key] = {
+            "taskId": task_id,
+            "reasonCode": reason,
+            "attempt": attempt,
+            "nextAssignee": next_assignee,
+            "action": action,
+            "recoveryState": recovery_state,
+            "cooldownUntilTs": cooldown_until_ts,
+            "cooldownUntil": ts_to_iso(cooldown_until_ts),
+            "updatedAt": now_iso(),
+        }
+        _save_recovery_state_unlocked(root, state)
+
         return {
             "reasonCode": reason,
-            "attempt": prev_attempt,
-            "nextAssignee": chosen_next,
-            "action": chosen_action,
-            "recoveryState": chosen_state,
-            "cooldownActive": True,
-            "cooldownUntilTs": prev_cooldown_ts,
-            "cooldownUntil": ts_to_iso(prev_cooldown_ts),
-            "recoverable": chosen_action in {"retry", "human"},
+            "attempt": attempt,
+            "nextAssignee": next_assignee,
+            "action": action,
+            "recoveryState": recovery_state,
+            "cooldownActive": False,
+            "cooldownUntilTs": cooldown_until_ts,
+            "cooldownUntil": ts_to_iso(cooldown_until_ts),
+            "recoverable": action in {"retry", "human"},
             "maxAttempts": max_attempts,
         }
-
-    attempt = prev_attempt + 1
-    next_assignee = next_assignee_for(chain, current_assignee)
-
-    # For formatting/evidence incompleteness, avoid immediate human handoff when
-    # the current assignee sits at the tail of the chain (e.g. invest-analyst).
-    # Rotate back to the chain head and keep retry automated.
-    if reason == "incomplete_output" and next_assignee == "human" and attempt <= max_attempts:
-        non_human_chain = [role for role in chain if role != "human"]
-        if non_human_chain:
-            next_assignee = non_human_chain[0]
-
-    if attempt > max_attempts:
-        action = "escalate"
-        next_assignee = "human"
-        recovery_state = "escalated_to_human"
-    elif next_assignee == "human":
-        action = "human"
-        recovery_state = "human_handoff"
-    else:
-        action = "retry"
-        recovery_state = "recovery_scheduled"
-
-    cooldown_until_ts = now_unix + cooldown_sec if cooldown_sec > 0 else 0
-    entries[key] = {
-        "taskId": task_id,
-        "reasonCode": reason,
-        "attempt": attempt,
-        "nextAssignee": next_assignee,
-        "action": action,
-        "recoveryState": recovery_state,
-        "cooldownUntilTs": cooldown_until_ts,
-        "cooldownUntil": ts_to_iso(cooldown_until_ts),
-        "updatedAt": now_iso(),
-    }
-    save_recovery_state(root, state)
-
-    return {
-        "reasonCode": reason,
-        "attempt": attempt,
-        "nextAssignee": next_assignee,
-        "action": action,
-        "recoveryState": recovery_state,
-        "cooldownActive": False,
-        "cooldownUntilTs": cooldown_until_ts,
-        "cooldownUntil": ts_to_iso(cooldown_until_ts),
-        "recoverable": action in {"retry", "human"},
-        "maxAttempts": max_attempts,
-    }
 
 
 def clear_task(root: str, task_id: str) -> Dict[str, Any]:
@@ -342,17 +431,18 @@ def clear_task(root: str, task_id: str) -> Dict[str, Any]:
     if not task_key:
         return {"taskId": "", "cleared": False, "removedKeys": []}
 
-    state = load_recovery_state(root)
-    entries = state.setdefault("entries", {})
-    removed_keys: List[str] = []
+    with _recovery_state_guard(root):
+        state = _load_recovery_state_unlocked(root)
+        entries = state.setdefault("entries", {})
+        removed_keys: List[str] = []
 
-    for key, raw in list(entries.items()):
-        row_task = str((raw or {}).get("taskId") or "").strip() if isinstance(raw, dict) else ""
-        if row_task == task_key or str(key).startswith(f"{task_key}|"):
-            entries.pop(key, None)
-            removed_keys.append(str(key))
+        for key, raw in list(entries.items()):
+            row_task = str((raw or {}).get("taskId") or "").strip() if isinstance(raw, dict) else ""
+            if row_task == task_key or str(key).startswith(f"{task_key}|"):
+                entries.pop(key, None)
+                removed_keys.append(str(key))
 
-    if removed_keys:
-        save_recovery_state(root, state)
+        if removed_keys:
+            _save_recovery_state_unlocked(root, state)
 
     return {"taskId": task_key, "cleared": bool(removed_keys), "removedKeys": removed_keys}

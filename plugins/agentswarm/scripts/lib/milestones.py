@@ -2237,7 +2237,13 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                         )
                         session_meta = session_registry.build_session_metadata(session_record)
                     except Exception:
-                        pass
+                        LOGGER.warning(
+                            "session record_attempt failed: taskId=%s agent=%s reasonCode=%s",
+                            args.task_id,
+                            args.agent,
+                            str(spawn.get("reasonCode") or ""),
+                            exc_info=True,
+                        )
                 metrics = spawn.get("metrics") if isinstance(spawn.get("metrics"), dict) else {}
                 aggregate_elapsed_ms += nonneg_int(metrics.get("elapsedMs"), 0)
                 aggregate_token_usage += nonneg_int(metrics.get("tokenUsage"), 0)
@@ -2296,7 +2302,13 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                             )
                             session_meta = session_registry.build_session_metadata(session_record)
                         except Exception:
-                            pass
+                            LOGGER.warning(
+                                "session retry record_attempt failed: taskId=%s agent=%s reasonCode=%s",
+                                args.task_id,
+                                args.agent,
+                                str(retry_spawn.get("reasonCode") or ""),
+                                exc_info=True,
+                            )
                     retry_metrics = retry_spawn.get("metrics") if isinstance(retry_spawn.get("metrics"), dict) else {}
                     aggregate_elapsed_ms += nonneg_int(retry_metrics.get("elapsedMs"), 0)
                     aggregate_token_usage += nonneg_int(retry_metrics.get("tokenUsage"), 0)
@@ -2426,7 +2438,13 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                     )
                     session_meta = session_registry.build_session_metadata(session_record)
                 except Exception:
-                    pass
+                    LOGGER.warning(
+                        "session mark_failed failed: taskId=%s agent=%s reasonCode=%s",
+                        args.task_id,
+                        args.agent,
+                        reason_code,
+                        exc_info=True,
+                    )
 
             if decision == "done" and visibility_mode in {"handoff_visible", "full_visible"}:
                 handoff_line = f"{orchestrator_mention} {args.task_id} 已完成，结果: {detail}"
