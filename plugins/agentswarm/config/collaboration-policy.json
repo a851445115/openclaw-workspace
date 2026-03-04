@@ -2,6 +2,7 @@
   "enabled": true,
   "maxRoundsPerThread": 3,
   "questionDedupeEnabled": true,
+  "questionDedupeScope": "task",
   "timeoutMinutes": 30,
   "visibilityMode": "handoff_visible"
 }

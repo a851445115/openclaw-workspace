@@ -5,15 +5,25 @@ import logging
 import os
 import tempfile
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-posix fallback
+    fcntl = None
 
 
 LOGGER = logging.getLogger(__name__)
 
 COLLAB_MESSAGES_FILE = os.path.join("state", "collab.messages.jsonl")
 COLLAB_THREADS_FILE = os.path.join("state", "collab.threads.json")
+COLLAB_LOCK_FILE = os.path.join("state", "collab.state.lock")
+COLLAB_APPEND_TRANSACTION_FILE = os.path.join("state", "collab.append.transaction.json")
 COLLAB_POLICY_FILE = os.path.join("plugins", "agentswarm", "config", "collaboration-policy.json")
+DEDUPE_SCOPE_VALUES = {"task", "task_thread", "task_thread_agent"}
+APPEND_TRANSACTION_VERSION = 1
 
 MESSAGE_TYPES = {"handoff", "consult", "question", "answer", "decision"}
 REQUIRED_FIELDS = [
@@ -34,11 +44,16 @@ DEFAULT_POLICY = {
     "enabled": True,
     "maxRoundsPerThread": 3,
     "questionDedupeEnabled": True,
+    "questionDedupeScope": "task",
     "timeoutMinutes": 30,
     "visibilityMode": "handoff_visible",
 }
 
 _STATE_LOCK = threading.RLock()
+
+
+class CollaborationStateError(RuntimeError):
+    pass
 
 
 def now_iso() -> str:
@@ -100,11 +115,23 @@ def normalized_question_hash(message: Dict[str, Any]) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
 
-def dedupe_key(task_id: str, message: Dict[str, Any]) -> str:
+def dedupe_key(task_id: str, message: Dict[str, Any], scope: str = "task") -> str:
     digest = normalized_question_hash(message)
     if not digest:
         return ""
-    return f"{str(task_id or '').strip()}|{digest}"
+
+    normalized_scope = str(scope or "").strip().lower()
+    if normalized_scope not in DEDUPE_SCOPE_VALUES:
+        normalized_scope = "task"
+
+    segments = [str(task_id or "").strip()]
+    if normalized_scope in {"task_thread", "task_thread_agent"}:
+        segments.append(_normalize_text(message.get("threadId")))
+    if normalized_scope == "task_thread_agent":
+        segments.append(_normalize_text(message.get("fromAgent")))
+        segments.append(_normalize_text(message.get("toAgent")))
+    segments.append(digest)
+    return "|".join(segments)
 
 
 def messages_path(root: str) -> str:
@@ -113,6 +140,14 @@ def messages_path(root: str) -> str:
 
 def threads_path(root: str) -> str:
     return os.path.join(root, COLLAB_THREADS_FILE)
+
+
+def lock_path(root: str) -> str:
+    return os.path.join(root, COLLAB_LOCK_FILE)
+
+
+def append_transaction_path(root: str) -> str:
+    return os.path.join(root, COLLAB_APPEND_TRANSACTION_FILE)
 
 
 def policy_path(root: str) -> str:
@@ -187,6 +222,9 @@ def load_policy(root: str, override: Optional[Dict[str, Any]] = None) -> Dict[st
             loaded.get("questionDedupeEnabled"),
             policy["questionDedupeEnabled"],
         )
+        dedupe_scope = str(loaded.get("questionDedupeScope") or "").strip().lower()
+        if dedupe_scope in DEDUPE_SCOPE_VALUES:
+            policy["questionDedupeScope"] = dedupe_scope
         policy["timeoutMinutes"] = max(0, _safe_int(loaded.get("timeoutMinutes"), policy["timeoutMinutes"]))
         visibility = str(loaded.get("visibilityMode") or "").strip()
         if visibility:
@@ -261,26 +299,37 @@ def _default_threads_state() -> Dict[str, Any]:
     return {"threads": {}, "dedupeIndex": {}, "updatedAt": ""}
 
 
-def _load_threads_state(root: str) -> Dict[str, Any]:
+def _threads_state_unreadable(path: str, fail_closed: bool, reason: str, exc: Optional[Exception] = None):
+    if fail_closed:
+        if exc is not None:
+            raise CollaborationStateError(f"threads_state_unreadable:{reason}") from exc
+        raise CollaborationStateError(f"threads_state_unreadable:{reason}")
+    if exc is not None:
+        LOGGER.warning("failed to load collaboration thread state: path=%s", path, exc_info=True)
+    return _default_threads_state()
+
+
+def _load_threads_state(root: str, fail_closed: bool = False) -> Dict[str, Any]:
     path = threads_path(root)
     if not os.path.exists(path):
         return _default_threads_state()
     try:
         with open(path, "r", encoding="utf-8") as f:
             loaded = json.load(f)
-    except Exception:
-        LOGGER.warning("failed to load collaboration thread state: path=%s", path, exc_info=True)
-        return _default_threads_state()
+    except Exception as exc:
+        return _threads_state_unreadable(path, fail_closed, "parse_failed", exc)
 
     if not isinstance(loaded, dict):
-        return _default_threads_state()
+        return _threads_state_unreadable(path, fail_closed, "non_object")
 
-    threads = loaded.get("threads") if isinstance(loaded.get("threads"), dict) else {}
-    dedupe_index = loaded.get("dedupeIndex") if isinstance(loaded.get("dedupeIndex"), dict) else {}
+    raw_threads = loaded.get("threads")
+    raw_dedupe = loaded.get("dedupeIndex")
+    if not isinstance(raw_threads, dict) or not isinstance(raw_dedupe, dict):
+        return _threads_state_unreadable(path, fail_closed, "invalid_shape")
 
     return {
-        "threads": threads,
-        "dedupeIndex": dedupe_index,
+        "threads": raw_threads,
+        "dedupeIndex": raw_dedupe,
         "updatedAt": str(loaded.get("updatedAt") or ""),
     }
 
@@ -326,6 +375,133 @@ def _save_messages(root: str, rows: List[Dict[str, Any]]) -> None:
     _write_jsonl_atomic(messages_path(root), rows)
 
 
+def _remove_file(path: str) -> None:
+    if not os.path.exists(path):
+        return
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        return
+
+
+@contextmanager
+def _cross_process_state_lock(root: str):
+    if fcntl is None:
+        raise CollaborationStateError("cross_process_lock_unavailable")
+    path = lock_path(root)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "a+", encoding="utf-8") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        except OSError as exc:  # pragma: no cover - OS-level failure
+            raise CollaborationStateError("cross_process_lock_failed") from exc
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                LOGGER.warning("failed to release collaboration state lock: path=%s", path, exc_info=True)
+
+
+def _message_fingerprint(message: Dict[str, Any]) -> str:
+    return json.dumps(message, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+
+
+def _append_unique_message(rows: List[Dict[str, Any]], message: Dict[str, Any]) -> bool:
+    fingerprint = _message_fingerprint(message)
+    for row in rows:
+        if isinstance(row, dict) and _message_fingerprint(row) == fingerprint:
+            return False
+    rows.append(message)
+    return True
+
+
+def _rebuild_threads_state(rows: List[Dict[str, Any]], dedupe_scope: str) -> Dict[str, Any]:
+    normalized_scope = str(dedupe_scope or "").strip().lower()
+    if normalized_scope not in DEDUPE_SCOPE_VALUES:
+        normalized_scope = "task"
+
+    state = _default_threads_state()
+    threads = state["threads"]
+    dedupe_index = state["dedupeIndex"]
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        thread_id = _normalize_text(row.get("threadId"))
+        if not thread_id:
+            continue
+        existing = threads.get(thread_id) if isinstance(threads.get(thread_id), dict) else {}
+        normalized_row = _normalize_message(row)
+        threads[thread_id] = _normalize_thread_entry(existing, normalized_row)
+        if normalized_row.get("messageType") in ROUND_COUNTING_TYPES:
+            token = dedupe_key(str(normalized_row.get("taskId") or ""), normalized_row, scope=normalized_scope)
+            if token:
+                dedupe_index[token] = thread_id
+
+    state["updatedAt"] = now_iso()
+    return state
+
+
+def _write_append_transaction(root: str, message: Dict[str, Any], dedupe_scope: str) -> None:
+    payload = {
+        "version": APPEND_TRANSACTION_VERSION,
+        "type": "append_message",
+        "status": "prepared",
+        "createdAt": now_iso(),
+        "dedupeScope": dedupe_scope if dedupe_scope in DEDUPE_SCOPE_VALUES else "task",
+        "message": message,
+    }
+    _write_json_atomic(append_transaction_path(root), payload)
+
+
+def _load_append_transaction(root: str) -> Optional[Dict[str, Any]]:
+    path = append_transaction_path(root)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception as exc:
+        raise CollaborationStateError("append_transaction_unreadable") from exc
+
+    if not isinstance(payload, dict):
+        raise CollaborationStateError("append_transaction_unreadable")
+
+    if payload.get("type") != "append_message" or payload.get("status") != "prepared":
+        raise CollaborationStateError("append_transaction_invalid")
+
+    message = payload.get("message")
+    if not isinstance(message, dict):
+        raise CollaborationStateError("append_transaction_invalid")
+
+    dedupe_scope = str(payload.get("dedupeScope") or "").strip().lower()
+    if dedupe_scope not in DEDUPE_SCOPE_VALUES:
+        dedupe_scope = "task"
+
+    return {
+        "message": _normalize_message(message),
+        "dedupeScope": dedupe_scope,
+    }
+
+
+def _recover_append_transaction_if_needed(root: str) -> bool:
+    transaction = _load_append_transaction(root)
+    if transaction is None:
+        return False
+
+    message = transaction["message"]
+    dedupe_scope = transaction["dedupeScope"]
+    rows = _load_messages(root)
+    if _append_unique_message(rows, message):
+        _save_messages(root, rows)
+    rebuilt_state = _rebuild_threads_state(rows, dedupe_scope)
+    _save_threads_state(root, rebuilt_state)
+    _remove_file(append_transaction_path(root))
+    return True
+
+
 def _normalize_thread_entry(raw: Dict[str, Any], message: Dict[str, Any]) -> Dict[str, Any]:
     participants_raw = raw.get("participants") if isinstance(raw.get("participants"), list) else []
     participants: List[str] = []
@@ -369,51 +545,78 @@ def append_message(root: str, payload: Dict[str, Any], policy: Optional[Dict[str
         return {"ok": False, "errors": validation.get("errors") or []}
 
     with _STATE_LOCK:
-        effective_policy = load_policy(root, override=policy)
-        if not effective_policy.get("enabled", True):
-            return {"ok": False, "reason": "collaboration_disabled", "policy": effective_policy}
+        with _cross_process_state_lock(root):
+            recovery_applied = False
+            try:
+                recovery_applied = _recover_append_transaction_if_needed(root)
+            except Exception as exc:
+                LOGGER.warning("failed to recover pending collaboration append transaction", exc_info=True)
+                return {"ok": False, "reason": "state_recovery_failed", "error": str(exc)}
 
-        message = _normalize_message(payload)
-        threads_state = _load_threads_state(root)
-        dedupe_index = threads_state.setdefault("dedupeIndex", {})
+            effective_policy = load_policy(root, override=policy)
+            if not effective_policy.get("enabled", True):
+                response = {"ok": False, "reason": "collaboration_disabled", "policy": effective_policy}
+                if recovery_applied:
+                    response["recovery"] = "applied_pending_transaction"
+                return response
 
-        dedupe_token = ""
-        if (
-            effective_policy.get("questionDedupeEnabled", True)
-            and message.get("messageType") in ROUND_COUNTING_TYPES
-        ):
-            dedupe_token = dedupe_key(str(message.get("taskId") or ""), message)
+            message = _normalize_message(payload)
+            dedupe_scope = str(effective_policy.get("questionDedupeScope") or "").strip().lower()
+            if dedupe_scope not in DEDUPE_SCOPE_VALUES:
+                dedupe_scope = "task"
+
+            try:
+                threads_state = _load_threads_state(root, fail_closed=True)
+            except CollaborationStateError as exc:
+                LOGGER.warning("collaboration append blocked by unreadable threads state", exc_info=True)
+                return {"ok": False, "reason": "threads_state_unreadable", "error": str(exc)}
+
+            dedupe_index = threads_state.setdefault("dedupeIndex", {})
+            dedupe_token = ""
+            if (
+                effective_policy.get("questionDedupeEnabled", True)
+                and message.get("messageType") in ROUND_COUNTING_TYPES
+            ):
+                dedupe_token = dedupe_key(str(message.get("taskId") or ""), message, scope=dedupe_scope)
+                if dedupe_token:
+                    owner_thread_id = str(dedupe_index.get(dedupe_token) or "")
+                    if owner_thread_id:
+                        response = {
+                            "ok": False,
+                            "reason": "duplicate_question",
+                            "dedupeKey": dedupe_token,
+                            "threadId": owner_thread_id,
+                        }
+                        if recovery_applied:
+                            response["recovery"] = "applied_pending_transaction"
+                        return response
+
+            rows = _load_messages(root)
+            rows.append(message)
+            _write_append_transaction(root, message, dedupe_scope)
+            _save_messages(root, rows)
+
+            threads = threads_state.setdefault("threads", {})
+            thread_id = str(message.get("threadId") or "")
+            existing = threads.get(thread_id) if isinstance(threads.get(thread_id), dict) else {}
+            thread = _normalize_thread_entry(existing, message)
+            threads[thread_id] = thread
             if dedupe_token:
-                owner_thread_id = str(dedupe_index.get(dedupe_token) or "")
-                if owner_thread_id:
-                    return {
-                        "ok": False,
-                        "reason": "duplicate_question",
-                        "dedupeKey": dedupe_token,
-                        "threadId": owner_thread_id,
-                    }
+                dedupe_index[dedupe_token] = thread_id
 
-        rows = _load_messages(root)
-        rows.append(message)
-        _save_messages(root, rows)
+            _save_threads_state(root, threads_state)
+            _remove_file(append_transaction_path(root))
 
-        threads = threads_state.setdefault("threads", {})
-        thread_id = str(message.get("threadId") or "")
-        existing = threads.get(thread_id) if isinstance(threads.get(thread_id), dict) else {}
-        thread = _normalize_thread_entry(existing, message)
-        threads[thread_id] = thread
-
-        if dedupe_token:
-            dedupe_index[dedupe_token] = thread_id
-
-        _save_threads_state(root, threads_state)
-        return {
-            "ok": True,
-            "message": message,
-            "thread": dict(thread),
-            "dedupeKey": dedupe_token,
-            "policy": effective_policy,
-        }
+            response = {
+                "ok": True,
+                "message": message,
+                "thread": dict(thread),
+                "dedupeKey": dedupe_token,
+                "policy": effective_policy,
+            }
+            if recovery_applied:
+                response["recovery"] = "applied_pending_transaction"
+            return response
 
 
 def get_thread(root: str, thread_id: str) -> Dict[str, Any]:
@@ -421,10 +624,15 @@ def get_thread(root: str, thread_id: str) -> Dict[str, Any]:
     if not thread_key:
         return {}
     with _STATE_LOCK:
-        state = _load_threads_state(root)
-        threads = state.get("threads") if isinstance(state.get("threads"), dict) else {}
-        row = threads.get(thread_key)
-        return dict(row) if isinstance(row, dict) else {}
+        with _cross_process_state_lock(root):
+            try:
+                _recover_append_transaction_if_needed(root)
+            except Exception:
+                LOGGER.warning("failed to recover state before reading thread", exc_info=True)
+            state = _load_threads_state(root)
+            threads = state.get("threads") if isinstance(state.get("threads"), dict) else {}
+            row = threads.get(thread_key)
+            return dict(row) if isinstance(row, dict) else {}
 
 
 def list_thread_messages(root: str, thread_id: str, limit: int = 0) -> List[Dict[str, Any]]:
@@ -432,7 +640,12 @@ def list_thread_messages(root: str, thread_id: str, limit: int = 0) -> List[Dict
     if not thread_key:
         return []
     with _STATE_LOCK:
-        rows = [row for row in _load_messages(root) if str(row.get("threadId") or "") == thread_key]
+        with _cross_process_state_lock(root):
+            try:
+                _recover_append_transaction_if_needed(root)
+            except Exception:
+                LOGGER.warning("failed to recover state before listing thread messages", exc_info=True)
+            rows = [row for row in _load_messages(root) if str(row.get("threadId") or "") == thread_key]
     if limit > 0:
         return rows[-limit:]
     return rows
