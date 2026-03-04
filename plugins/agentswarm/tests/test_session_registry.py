@@ -1,7 +1,10 @@
 import importlib.util
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -68,6 +71,50 @@ class SessionRegistryTests(unittest.TestCase):
         self.assertEqual((done.get("session") or {}).get("status"), "done", done)
         self.assertEqual(metadata.get("sessionId"), session_id, metadata)
         self.assertEqual(metadata.get("retryCount"), 1, metadata)
+
+    def test_save_registry_uses_atomic_replace_in_same_directory(self):
+        target_path = self.root / "state" / "worker-sessions.json"
+
+        with mock.patch.object(self.mod.os, "replace", wraps=self.mod.os.replace) as mocked_replace:
+            self.mod.ensure_session(self.root.as_posix(), "T-S003", "coder", "claude_cli")
+
+        self.assertGreaterEqual(mocked_replace.call_count, 1, mocked_replace.call_args_list)
+        for call in mocked_replace.call_args_list:
+            src, dst = call.args[:2]
+            self.assertEqual(Path(dst), target_path, call.args)
+            self.assertEqual(Path(src).parent, Path(dst).parent, call.args)
+
+    def test_record_attempt_is_thread_safe(self):
+        workers = 12
+        attempts_per_worker = 8
+        barrier = threading.Barrier(workers)
+        errors = []
+
+        self.mod.ensure_session(self.root.as_posix(), "T-S004", "coder", "claude_cli")
+
+        def _worker(_idx: int) -> None:
+            try:
+                barrier.wait(timeout=3)
+                for _ in range(attempts_per_worker):
+                    self.mod.record_attempt(
+                        self.root.as_posix(),
+                        "T-S004",
+                        "coder",
+                        "claude_cli",
+                        reason_code="spawn_failed",
+                        detail="parallel-run",
+                    )
+            except Exception as err:  # pragma: no cover - assertion handles this
+                errors.append(err)
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(_worker, range(workers)))
+
+        self.assertFalse(errors, errors)
+        state = self.mod.load_registry(self.root.as_posix())
+        key = self.mod.session_key("T-S004", "coder", "claude_cli")
+        entry = ((state.get("sessions") or {}).get(key) or {})
+        self.assertEqual(entry.get("retryCount"), workers * attempts_per_worker, state)
 
 
 if __name__ == "__main__":

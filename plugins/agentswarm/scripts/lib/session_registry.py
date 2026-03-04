@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import json
+import logging
 import os
 import re
+import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict
@@ -11,6 +14,8 @@ SESSION_STATE_FILE = os.path.join("state", "worker-sessions.json")
 SESSION_STATUS_ACTIVE = "active"
 SESSION_STATUS_FAILED = "failed"
 SESSION_STATUS_DONE = "done"
+LOGGER = logging.getLogger(__name__)
+_REGISTRY_LOCK = threading.RLock()
 
 
 def now_iso() -> str:
@@ -34,6 +39,28 @@ def session_state_path(root: str) -> str:
     return os.path.join(root, SESSION_STATE_FILE)
 
 
+def _write_json_atomic(path: str, payload: Dict[str, Any]) -> None:
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=True, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        LOGGER.exception("failed to persist session registry atomically: path=%s", path)
+        raise
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
 def load_registry(root: str) -> Dict[str, Any]:
     path = session_state_path(root)
     if not os.path.exists(path):
@@ -42,21 +69,20 @@ def load_registry(root: str) -> Dict[str, Any]:
         with open(path, "r", encoding="utf-8") as f:
             loaded = json.load(f)
     except Exception:
+        LOGGER.warning("failed to load session registry: path=%s", path, exc_info=True)
         return {"sessions": {}, "updatedAt": ""}
     sessions = loaded.get("sessions") if isinstance(loaded.get("sessions"), dict) else {}
     return {"sessions": sessions, "updatedAt": str(loaded.get("updatedAt") or "")}
 
 
 def save_registry(root: str, state: Dict[str, Any]) -> None:
-    path = session_state_path(root)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    payload = {
-        "sessions": state.get("sessions") if isinstance(state.get("sessions"), dict) else {},
-        "updatedAt": now_iso(),
-    }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=True, indent=2)
-        f.write("\n")
+    with _REGISTRY_LOCK:
+        path = session_state_path(root)
+        payload = {
+            "sessions": state.get("sessions") if isinstance(state.get("sessions"), dict) else {},
+            "updatedAt": now_iso(),
+        }
+        _write_json_atomic(path, payload)
 
 
 def session_key(task_id: str, agent: str, executor: str) -> str:
@@ -94,17 +120,18 @@ def _normalize_session_entry(entry: Dict[str, Any], task_id: str, agent: str, ex
 
 
 def ensure_session(root: str, task_id: str, agent: str, executor: str) -> Dict[str, Any]:
-    key = session_key(task_id, agent, executor)
-    state = load_registry(root)
-    sessions = state.setdefault("sessions", {})
-    existing = sessions.get(key) if isinstance(sessions.get(key), dict) else {}
-    created = not bool(existing)
-    entry = _normalize_session_entry(existing, task_id, agent, executor)
-    entry["lastActiveAt"] = now_iso()
-    entry["status"] = SESSION_STATUS_ACTIVE
-    sessions[key] = entry
-    save_registry(root, state)
-    return {"created": created, "key": key, "session": dict(entry)}
+    with _REGISTRY_LOCK:
+        key = session_key(task_id, agent, executor)
+        state = load_registry(root)
+        sessions = state.setdefault("sessions", {})
+        existing = sessions.get(key) if isinstance(sessions.get(key), dict) else {}
+        created = not bool(existing)
+        entry = _normalize_session_entry(existing, task_id, agent, executor)
+        entry["lastActiveAt"] = now_iso()
+        entry["status"] = SESSION_STATUS_ACTIVE
+        sessions[key] = entry
+        save_registry(root, state)
+        return {"created": created, "key": key, "session": dict(entry)}
 
 
 def record_attempt(
@@ -115,26 +142,27 @@ def record_attempt(
     reason_code: str = "",
     detail: str = "",
 ) -> Dict[str, Any]:
-    ensured = ensure_session(root, task_id, agent, executor)
-    key = str(ensured.get("key") or session_key(task_id, agent, executor))
-    state = load_registry(root)
-    sessions = state.setdefault("sessions", {})
-    entry = _normalize_session_entry(
-        sessions.get(key) if isinstance(sessions.get(key), dict) else {},
-        task_id,
-        agent,
-        executor,
-    )
-    entry["retryCount"] = safe_int(entry.get("retryCount"), 0) + 1
-    entry["status"] = SESSION_STATUS_ACTIVE
-    entry["lastActiveAt"] = now_iso()
-    if reason_code:
-        entry["lastReasonCode"] = str(reason_code)
-    if detail:
-        entry["lastDetail"] = str(detail)
-    sessions[key] = entry
-    save_registry(root, state)
-    return {"created": bool(ensured.get("created")), "key": key, "session": dict(entry)}
+    with _REGISTRY_LOCK:
+        ensured = ensure_session(root, task_id, agent, executor)
+        key = str(ensured.get("key") or session_key(task_id, agent, executor))
+        state = load_registry(root)
+        sessions = state.setdefault("sessions", {})
+        entry = _normalize_session_entry(
+            sessions.get(key) if isinstance(sessions.get(key), dict) else {},
+            task_id,
+            agent,
+            executor,
+        )
+        entry["retryCount"] = safe_int(entry.get("retryCount"), 0) + 1
+        entry["status"] = SESSION_STATUS_ACTIVE
+        entry["lastActiveAt"] = now_iso()
+        if reason_code:
+            entry["lastReasonCode"] = str(reason_code)
+        if detail:
+            entry["lastDetail"] = str(detail)
+        sessions[key] = entry
+        save_registry(root, state)
+        return {"created": bool(ensured.get("created")), "key": key, "session": dict(entry)}
 
 
 def mark_failed(
@@ -145,44 +173,79 @@ def mark_failed(
     reason_code: str = "",
     detail: str = "",
 ) -> Dict[str, Any]:
-    ensured = ensure_session(root, task_id, agent, executor)
-    key = str(ensured.get("key") or session_key(task_id, agent, executor))
-    state = load_registry(root)
-    sessions = state.setdefault("sessions", {})
-    entry = _normalize_session_entry(
-        sessions.get(key) if isinstance(sessions.get(key), dict) else {},
-        task_id,
-        agent,
-        executor,
-    )
-    entry["status"] = SESSION_STATUS_FAILED
-    entry["lastActiveAt"] = now_iso()
-    if reason_code:
-        entry["lastReasonCode"] = str(reason_code)
-    if detail:
-        entry["lastDetail"] = str(detail)
-    sessions[key] = entry
-    save_registry(root, state)
-    return {"created": bool(ensured.get("created")), "key": key, "session": dict(entry)}
+    with _REGISTRY_LOCK:
+        ensured = ensure_session(root, task_id, agent, executor)
+        key = str(ensured.get("key") or session_key(task_id, agent, executor))
+        state = load_registry(root)
+        sessions = state.setdefault("sessions", {})
+        entry = _normalize_session_entry(
+            sessions.get(key) if isinstance(sessions.get(key), dict) else {},
+            task_id,
+            agent,
+            executor,
+        )
+        entry["status"] = SESSION_STATUS_FAILED
+        entry["lastActiveAt"] = now_iso()
+        if reason_code:
+            entry["lastReasonCode"] = str(reason_code)
+        if detail:
+            entry["lastDetail"] = str(detail)
+        sessions[key] = entry
+        save_registry(root, state)
+        return {"created": bool(ensured.get("created")), "key": key, "session": dict(entry)}
 
 
 def mark_done(root: str, task_id: str, agent: str, executor: str) -> Dict[str, Any]:
-    ensured = ensure_session(root, task_id, agent, executor)
-    key = str(ensured.get("key") or session_key(task_id, agent, executor))
-    state = load_registry(root)
-    sessions = state.setdefault("sessions", {})
-    entry = _normalize_session_entry(
-        sessions.get(key) if isinstance(sessions.get(key), dict) else {},
-        task_id,
-        agent,
-        executor,
-    )
-    entry["status"] = SESSION_STATUS_DONE
-    entry["lastActiveAt"] = now_iso()
-    entry["lastReasonCode"] = "done"
-    sessions[key] = entry
-    save_registry(root, state)
-    return {"created": bool(ensured.get("created")), "key": key, "session": dict(entry)}
+    with _REGISTRY_LOCK:
+        ensured = ensure_session(root, task_id, agent, executor)
+        key = str(ensured.get("key") or session_key(task_id, agent, executor))
+        state = load_registry(root)
+        sessions = state.setdefault("sessions", {})
+        entry = _normalize_session_entry(
+            sessions.get(key) if isinstance(sessions.get(key), dict) else {},
+            task_id,
+            agent,
+            executor,
+        )
+        entry["status"] = SESSION_STATUS_DONE
+        entry["lastActiveAt"] = now_iso()
+        entry["lastReasonCode"] = "done"
+        sessions[key] = entry
+        save_registry(root, state)
+        return {"created": bool(ensured.get("created")), "key": key, "session": dict(entry)}
+
+
+def mark_task_done(root: str, task_id: str) -> Dict[str, Any]:
+    task_key = str(task_id or "").strip()
+    if not task_key:
+        return {"taskId": "", "updated": 0, "keys": []}
+
+    updated_keys = []
+    with _REGISTRY_LOCK:
+        state = load_registry(root)
+        sessions = state.setdefault("sessions", {})
+        now = now_iso()
+        for key, raw in list(sessions.items()):
+            if not isinstance(raw, dict):
+                continue
+            row_task_id = str(raw.get("taskId") or "").strip()
+            if row_task_id != task_key:
+                continue
+            entry = _normalize_session_entry(
+                raw,
+                row_task_id,
+                str(raw.get("agent") or ""),
+                str(raw.get("executor") or ""),
+            )
+            entry["status"] = SESSION_STATUS_DONE
+            entry["lastActiveAt"] = now
+            entry["lastReasonCode"] = "done"
+            sessions[key] = entry
+            updated_keys.append(str(key))
+        if updated_keys:
+            save_registry(root, state)
+
+    return {"taskId": task_key, "updated": len(updated_keys), "keys": updated_keys}
 
 
 def build_session_metadata(payload: Dict[str, Any]) -> Dict[str, Any]:

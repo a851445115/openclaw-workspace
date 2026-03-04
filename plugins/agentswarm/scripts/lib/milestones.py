@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import logging
 import math
 import os
 import re
@@ -34,6 +35,8 @@ import strategy_library
 import knowledge_adapter
 import session_registry
 import context_pack
+
+LOGGER = logging.getLogger(__name__)
 
 DEFAULT_GROUP_ID = "oc_041146c92a9ccb403a7f4f48fb59701d"
 DEFAULT_ACCOUNT_ID = "orchestrator"
@@ -1528,6 +1531,47 @@ def ensure_claimed(root: str, task_id: str, agent: str) -> Optional[Dict[str, An
     return {"ok": True, "intent": "claim_task", "taskId": task_id, "status": status, "skipped": True}
 
 
+def cleanup_done_state(root: str, task_id: str, session_agent: str = "", session_executor: str = "") -> Dict[str, Any]:
+    task_key = str(task_id or "").strip()
+    out: Dict[str, Any] = {
+        "taskId": task_key,
+        "contextCleared": False,
+        "recoveryCleared": False,
+        "sessionUpdated": False,
+        "session": {},
+    }
+    if not task_key:
+        return out
+
+    try:
+        cleared = context_pack.clear_task(root, task_key)
+        out["contextCleared"] = bool(cleared.get("cleared"))
+    except Exception:
+        LOGGER.warning("done cleanup failed for retry context: taskId=%s", task_key, exc_info=True)
+
+    try:
+        cleared = recovery_loop.clear_task(root, task_key)
+        out["recoveryCleared"] = bool(cleared.get("cleared"))
+    except Exception:
+        LOGGER.warning("done cleanup failed for recovery state: taskId=%s", task_key, exc_info=True)
+
+    try:
+        if session_agent and session_executor:
+            session_record = session_registry.mark_done(root, task_key, session_agent, session_executor)
+            session_meta = session_registry.build_session_metadata(session_record)
+            if session_meta:
+                out["session"] = session_meta
+                out["sessionUpdated"] = True
+
+        bulk_done = session_registry.mark_task_done(root, task_key)
+        if int(bulk_done.get("updated") or 0) > 0:
+            out["sessionUpdated"] = True
+    except Exception:
+        LOGGER.warning("done cleanup failed for session registry: taskId=%s", task_key, exc_info=True)
+
+    return out
+
+
 def extract_text_for_judgement(obj: Any) -> str:
     chunks: List[str] = []
 
@@ -2203,21 +2247,33 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                     and spawn.get("decision") == "blocked"
                     and str(spawn.get("reasonCode") or "") in {"incomplete_output", "missing_evidence", "stage_only", "role_policy_missing_keyword"}
                 ):
-                    failure_pack = context_pack.record_failure(
-                        args.root,
-                        task_id=args.task_id,
-                        agent=args.agent,
-                        executor=str(spawn.get("executor") or session_executor or "unknown"),
-                        prompt_text=agent_prompt,
-                        output_text=str(spawn.get("stdout") or spawn.get("detail") or ""),
-                        blocked_reason=str(spawn.get("reasonCode") or "blocked"),
-                        artifact_index=collect_spawn_artifact_index(spawn),
-                        unfinished_checklist=collect_spawn_unfinished_checklist(spawn),
-                        decision=str(spawn.get("decision") or "blocked"),
-                        reason_code=str(spawn.get("reasonCode") or ""),
-                    )
+                    first_attempt_spawn = dict(spawn)
+                    failure_pack: Dict[str, Any] = {}
+                    try:
+                        failure_pack = context_pack.record_failure(
+                            args.root,
+                            task_id=args.task_id,
+                            agent=args.agent,
+                            executor=str(spawn.get("executor") or session_executor or "unknown"),
+                            prompt_text=agent_prompt,
+                            output_text=str(spawn.get("stdout") or spawn.get("detail") or ""),
+                            blocked_reason=str(spawn.get("reasonCode") or "blocked"),
+                            artifact_index=collect_spawn_artifact_index(spawn),
+                            unfinished_checklist=collect_spawn_unfinished_checklist(spawn),
+                            decision=str(spawn.get("decision") or "blocked"),
+                            reason_code=str(spawn.get("reasonCode") or ""),
+                        )
+                    except Exception:
+                        LOGGER.warning(
+                            "inline retry record_failure failed: taskId=%s reasonCode=%s",
+                            args.task_id,
+                            str(spawn.get("reasonCode") or ""),
+                            exc_info=True,
+                        )
                     retry_prompt_pack = (
-                        dict(failure_pack) if isinstance(failure_pack, dict) else context_pack.build_retry_context(args.root, args.task_id)
+                        dict(failure_pack)
+                        if isinstance(failure_pack, dict) and failure_pack
+                        else context_pack.build_retry_context(args.root, args.task_id)
                     )
                     retry_prompt = (
                         agent_prompt
@@ -2244,10 +2300,11 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                     retry_metrics = retry_spawn.get("metrics") if isinstance(retry_spawn.get("metrics"), dict) else {}
                     aggregate_elapsed_ms += nonneg_int(retry_metrics.get("elapsedMs"), 0)
                     aggregate_token_usage += nonneg_int(retry_metrics.get("tokenUsage"), 0)
+                    final_spawn = retry_spawn if isinstance(retry_spawn, dict) and not retry_spawn.get("skipped") else first_attempt_spawn
+                    spawn = dict(final_spawn) if isinstance(final_spawn, dict) else first_attempt_spawn
                     spawn["retried"] = True
                     spawn["retry"] = retry_spawn
-                    if retry_spawn.get("decision") == "done":
-                        spawn = retry_spawn
+                    spawn["firstAttempt"] = first_attempt_spawn
                 spawn["metrics"] = {
                     "elapsedMs": aggregate_elapsed_ms,
                     "tokenUsage": aggregate_token_usage,
@@ -2327,22 +2384,17 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
             )
 
             if decision == "done":
-                try:
-                    context_pack.clear_task(args.root, args.task_id)
-                    retry_context_pack = {}
-                except Exception:
-                    pass
-                try:
-                    final_executor = str(spawn.get("executor") or session_executor or "unknown")
-                    session_record = session_registry.mark_done(
-                        args.root,
-                        args.task_id,
-                        args.agent,
-                        final_executor,
-                    )
-                    session_meta = session_registry.build_session_metadata(session_record)
-                except Exception:
-                    pass
+                final_executor = str(spawn.get("executor") or session_executor or "unknown")
+                cleanup = cleanup_done_state(
+                    args.root,
+                    args.task_id,
+                    session_agent=args.agent,
+                    session_executor=final_executor,
+                )
+                retry_context_pack = {}
+                cleaned_session = cleanup.get("session")
+                if isinstance(cleaned_session, dict) and cleaned_session:
+                    session_meta = cleaned_session
             else:
                 try:
                     final_executor = str(spawn.get("executor") or session_executor or "unknown")
@@ -5623,6 +5675,7 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
     normalized = maybe_normalize_board_command(cmd_body)
     if normalized:
         acceptance: Optional[Dict[str, Any]] = None
+        done_task_id = ""
         m_done = re.match(r"^mark done\s+([A-Za-z0-9_-]+)(?:\s*:\s*(.*))?$", normalized, flags=re.IGNORECASE)
         if m_done:
             done_task_id = str(m_done.group(1))
@@ -5656,6 +5709,9 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             args.mode,
             allow_broadcaster=False,
         )
+        done_cleanup: Dict[str, Any] = {"skipped": True, "reason": "not_mark_done"}
+        if bool(apply_obj.get("ok")) and str(apply_obj.get("intent") or "") == "mark_done" and done_task_id:
+            done_cleanup = cleanup_done_state(args.root, done_task_id)
         ok = bool(apply_obj.get("ok")) and bool(publish.get("ok"))
         print(
             json.dumps(
@@ -5666,6 +5722,7 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
                     "acceptance": acceptance,
                     "apply": apply_obj,
                     "publish": publish,
+                    "doneCleanup": done_cleanup,
                 }
             )
         )
@@ -5712,6 +5769,9 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
                 args.mode,
                 allow_broadcaster=False,
             )
+            done_cleanup: Dict[str, Any] = {"skipped": True, "reason": "not_mark_done"}
+            if bool(apply_obj.get("ok")) and str(apply_obj.get("intent") or "") == "mark_done":
+                done_cleanup = cleanup_done_state(args.root, task_id)
             ok = bool(apply_obj.get("ok")) and bool(publish.get("ok"))
             print(
                 json.dumps(
@@ -5724,6 +5784,7 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
                         "acceptance": accepted,
                         "apply": apply_obj,
                         "publish": publish,
+                        "doneCleanup": done_cleanup,
                     }
                 )
             )

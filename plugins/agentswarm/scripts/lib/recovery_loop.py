@@ -335,3 +335,24 @@ def decide_recovery(root: str, task_id: str, current_assignee: str, reason_code:
         "recoverable": action in {"retry", "human"},
         "maxAttempts": max_attempts,
     }
+
+
+def clear_task(root: str, task_id: str) -> Dict[str, Any]:
+    task_key = str(task_id or "").strip()
+    if not task_key:
+        return {"taskId": "", "cleared": False, "removedKeys": []}
+
+    state = load_recovery_state(root)
+    entries = state.setdefault("entries", {})
+    removed_keys: List[str] = []
+
+    for key, raw in list(entries.items()):
+        row_task = str((raw or {}).get("taskId") or "").strip() if isinstance(raw, dict) else ""
+        if row_task == task_key or str(key).startswith(f"{task_key}|"):
+            entries.pop(key, None)
+            removed_keys.append(str(key))
+
+    if removed_keys:
+        save_recovery_state(root, state)
+
+    return {"taskId": task_key, "cleared": bool(removed_keys), "removedKeys": removed_keys}

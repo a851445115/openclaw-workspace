@@ -224,6 +224,184 @@ class RuntimeTests(unittest.TestCase):
         ])
         self.assertEqual(status["task"]["status"], "done", status)
 
+    def test_feishu_router_done_wakeup_cleans_retry_context_and_session_state(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-202: done wakeup clean",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-203: should stay active",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "coder",
+            "--text",
+            "@coder claim task T-202",
+        ])
+
+        module = load_milestone_module()
+        module.context_pack.record_failure(
+            self.root.as_posix(),
+            task_id="T-202",
+            agent="coder",
+            executor="codex_cli",
+            prompt_text="first prompt",
+            output_text="first blocked",
+            blocked_reason="spawn_failed",
+        )
+        module.context_pack.record_failure(
+            self.root.as_posix(),
+            task_id="T-203",
+            agent="coder",
+            executor="codex_cli",
+            prompt_text="keep prompt",
+            output_text="keep blocked",
+            blocked_reason="spawn_failed",
+        )
+        now_ts = int(time.time())
+        module.recovery_loop.decide_recovery(self.root.as_posix(), "T-202", "coder", "spawn_failed", now_ts=now_ts)
+        module.recovery_loop.decide_recovery(self.root.as_posix(), "T-203", "coder", "spawn_failed", now_ts=now_ts)
+        module.session_registry.ensure_session(self.root.as_posix(), "T-202", "coder", "codex_cli")
+        module.session_registry.ensure_session(self.root.as_posix(), "T-203", "coder", "codex_cli")
+
+        done = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "coder",
+            "--text",
+            "@orchestrator T-202 已完成，测试通过，证据: logs/t202.log",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(done["ok"], done)
+        self.assertEqual(done.get("intent"), "wakeup", done)
+
+        self.assertEqual(module.context_pack.build_retry_context(self.root.as_posix(), "T-202"), {})
+        self.assertTrue(module.context_pack.build_retry_context(self.root.as_posix(), "T-203"))
+
+        self.assertEqual(module.recovery_loop.get_active_cooldown(self.root.as_posix(), "T-202", now_ts=now_ts), {})
+        self.assertTrue(module.recovery_loop.get_active_cooldown(self.root.as_posix(), "T-203", now_ts=now_ts))
+
+        state = module.session_registry.load_registry(self.root.as_posix())
+        sessions = state.get("sessions") or {}
+        key_done = module.session_registry.session_key("T-202", "coder", "codex_cli")
+        key_keep = module.session_registry.session_key("T-203", "coder", "codex_cli")
+        self.assertEqual((sessions.get(key_done) or {}).get("status"), "done", sessions)
+        self.assertEqual((sessions.get(key_keep) or {}).get("status"), "active", sessions)
+
+    def test_feishu_router_board_mark_done_cleans_only_target_task_state(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-002B: board done clean",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-002B-KEEP: board keep active",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "coder",
+            "--text",
+            "@coder claim task T-002B",
+        ])
+
+        module = load_milestone_module()
+        module.context_pack.record_failure(
+            self.root.as_posix(),
+            task_id="T-002B",
+            agent="coder",
+            executor="codex_cli",
+            prompt_text="board prompt",
+            output_text="board blocked",
+            blocked_reason="spawn_failed",
+        )
+        module.context_pack.record_failure(
+            self.root.as_posix(),
+            task_id="T-002B-KEEP",
+            agent="coder",
+            executor="codex_cli",
+            prompt_text="keep prompt",
+            output_text="keep blocked",
+            blocked_reason="spawn_failed",
+        )
+        now_ts = int(time.time())
+        module.recovery_loop.decide_recovery(self.root.as_posix(), "T-002B", "coder", "spawn_failed", now_ts=now_ts)
+        module.recovery_loop.decide_recovery(self.root.as_posix(), "T-002B-KEEP", "coder", "spawn_failed", now_ts=now_ts)
+        module.session_registry.ensure_session(self.root.as_posix(), "T-002B", "coder", "codex_cli")
+        module.session_registry.ensure_session(self.root.as_posix(), "T-002B-KEEP", "coder", "codex_cli")
+
+        done = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@orchestrator mark done T-002B: 已完成，测试通过，证据: logs/t002b.log",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(done["ok"], done)
+        self.assertEqual(done.get("intent"), "board_cmd", done)
+        self.assertEqual((done.get("apply") or {}).get("intent"), "mark_done", done)
+
+        self.assertEqual(module.context_pack.build_retry_context(self.root.as_posix(), "T-002B"), {})
+        self.assertTrue(module.context_pack.build_retry_context(self.root.as_posix(), "T-002B-KEEP"))
+        self.assertEqual(module.recovery_loop.get_active_cooldown(self.root.as_posix(), "T-002B", now_ts=now_ts), {})
+        self.assertTrue(module.recovery_loop.get_active_cooldown(self.root.as_posix(), "T-002B-KEEP", now_ts=now_ts))
+
+        state = module.session_registry.load_registry(self.root.as_posix())
+        sessions = state.get("sessions") or {}
+        key_done = module.session_registry.session_key("T-002B", "coder", "codex_cli")
+        key_keep = module.session_registry.session_key("T-002B-KEEP", "coder", "codex_cli")
+        self.assertEqual((sessions.get(key_done) or {}).get("status"), "done", sessions)
+        self.assertEqual((sessions.get(key_keep) or {}).get("status"), "active", sessions)
+
     def test_clarify_global_throttle(self):
         state_file = self.root / "state" / "clarify.cooldown.json"
         now_ts = int(time.time())
@@ -635,6 +813,169 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("blockedReason", prompt, second)
         retry_context = second.get("retryContext") or {}
         self.assertEqual(retry_context.get("blockedReason"), "blocked_signal", second)
+
+    def test_inline_retry_uses_final_blocked_snapshot(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-040R2: 二次阻塞快照覆盖",
+        ])
+
+        module = load_milestone_module()
+        real_run_dispatch_spawn = module.run_dispatch_spawn
+        call_state = {"count": 0}
+
+        first_spawn = {
+            "ok": True,
+            "skipped": False,
+            "decision": "blocked",
+            "reasonCode": "incomplete_output",
+            "detail": "first blocked missing evidence",
+            "stdout": '{"status":"done","summary":"阶段进度"}',
+            "stderr": "",
+            "command": ["mock-first"],
+            "executor": "codex_cli",
+            "metrics": {"elapsedMs": 11, "tokenUsage": 5},
+        }
+        second_spawn = {
+            "ok": True,
+            "skipped": False,
+            "decision": "blocked",
+            "reasonCode": "spawn_failed",
+            "detail": "second blocked by runtime error",
+            "stdout": "Traceback runtime error on retry",
+            "stderr": "",
+            "command": ["mock-second"],
+            "executor": "codex_cli",
+            "metrics": {"elapsedMs": 13, "tokenUsage": 7},
+        }
+
+        def fake_run_dispatch_spawn(_args, _prompt):
+            call_state["count"] += 1
+            return dict(first_spawn if call_state["count"] == 1 else second_spawn)
+
+        args = argparse.Namespace(
+            root=self.root.as_posix(),
+            task_id="T-040R2",
+            agent="coder",
+            task="T-040R2: 二次阻塞快照覆盖",
+            actor="orchestrator",
+            session_id="",
+            group_id="oc_041146c92a9ccb403a7f4f48fb59701d",
+            account_id="orchestrator",
+            mode="dry-run",
+            timeout_sec=120,
+            spawn=True,
+            spawn_cmd="",
+            spawn_output="",
+            visibility_mode="handoff_visible",
+        )
+
+        try:
+            module.run_dispatch_spawn = fake_run_dispatch_spawn
+            out = module.dispatch_once(args)
+        finally:
+            module.run_dispatch_spawn = real_run_dispatch_spawn
+
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(call_state["count"], 2, out)
+        self.assertTrue((out.get("spawn") or {}).get("retried"), out)
+        self.assertEqual((out.get("spawn") or {}).get("reasonCode"), "spawn_failed", out)
+        self.assertEqual((out.get("spawn") or {}).get("detail"), "second blocked by runtime error", out)
+
+        retry_context = (out.get("spawn") or {}).get("retryContext") or {}
+        self.assertEqual(retry_context.get("blockedReason"), "spawn_failed", out)
+        self.assertTrue(retry_context.get("lastOutputDigest"), out)
+        recent = retry_context.get("recentDecisions") or []
+        self.assertTrue(recent, out)
+        self.assertEqual((recent[-1] or {}).get("reasonCode"), "spawn_failed", out)
+
+    def test_inline_retry_record_failure_exception_does_not_break_main_path(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-040R3: inline retry 记录失败容错",
+        ])
+
+        module = load_milestone_module()
+        real_run_dispatch_spawn = module.run_dispatch_spawn
+        real_record_failure = module.context_pack.record_failure
+        call_state = {"count": 0}
+
+        first_spawn = {
+            "ok": True,
+            "skipped": False,
+            "decision": "blocked",
+            "reasonCode": "incomplete_output",
+            "detail": "need stronger evidence",
+            "stdout": '{"status":"done","summary":"阶段进度"}',
+            "stderr": "",
+            "command": ["mock-first"],
+            "executor": "claude_cli",
+            "metrics": {"elapsedMs": 9, "tokenUsage": 4},
+        }
+        second_spawn = {
+            "ok": True,
+            "skipped": False,
+            "decision": "done",
+            "reasonCode": "done_with_evidence",
+            "detail": "retry success with logs",
+            "stdout": '{"status":"done","summary":"done","evidence":["logs/t040r3.log"]}',
+            "stderr": "",
+            "command": ["mock-second"],
+            "executor": "claude_cli",
+            "metrics": {"elapsedMs": 12, "tokenUsage": 6},
+        }
+
+        def fake_run_dispatch_spawn(_args, _prompt):
+            call_state["count"] += 1
+            return dict(first_spawn if call_state["count"] == 1 else second_spawn)
+
+        def fake_record_failure(*_args, **_kwargs):
+            raise RuntimeError("forced inline record failure")
+
+        args = argparse.Namespace(
+            root=self.root.as_posix(),
+            task_id="T-040R3",
+            agent="coder",
+            task="T-040R3: inline retry 容错",
+            actor="orchestrator",
+            session_id="",
+            group_id="oc_041146c92a9ccb403a7f4f48fb59701d",
+            account_id="orchestrator",
+            mode="dry-run",
+            timeout_sec=120,
+            spawn=True,
+            spawn_cmd="",
+            spawn_output="",
+            visibility_mode="handoff_visible",
+        )
+
+        try:
+            module.run_dispatch_spawn = fake_run_dispatch_spawn
+            module.context_pack.record_failure = fake_record_failure
+            with self.assertLogs(module.__name__, level="WARNING") as logs:
+                out = module.dispatch_once(args)
+        finally:
+            module.run_dispatch_spawn = real_run_dispatch_spawn
+            module.context_pack.record_failure = real_record_failure
+
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(call_state["count"], 2, out)
+        self.assertEqual((out.get("spawn") or {}).get("decision"), "done", out)
+        self.assertTrue(any("inline retry" in line.lower() for line in logs.output), logs.output)
 
     def test_dispatch_prompt_keeps_long_objective_without_tail_truncation(self):
         run_json([

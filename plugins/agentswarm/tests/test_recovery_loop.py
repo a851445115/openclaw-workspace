@@ -1,7 +1,9 @@
 import json
 import subprocess
 import tempfile
+import time
 import unittest
+import importlib.util
 from pathlib import Path
 
 
@@ -9,6 +11,7 @@ REPO = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO / "scripts"
 BOARD = SCRIPTS / "lib" / "task_board.py"
 MILE = SCRIPTS / "lib" / "milestones.py"
+RECOVERY = SCRIPTS / "lib" / "recovery_loop.py"
 INIT = SCRIPTS / "init-task-board"
 
 
@@ -22,11 +25,21 @@ def run_json(cmd, cwd=REPO):
         raise AssertionError(f"invalid json output: {err}\nstdout={proc.stdout}\nstderr={proc.stderr}")
 
 
+def load_recovery_module():
+    spec = importlib.util.spec_from_file_location("recovery_loop_module_for_test", str(RECOVERY))
+    if spec is None or spec.loader is None:
+        raise AssertionError("failed to load recovery_loop module for tests")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class RecoveryLoopTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         subprocess.run([str(INIT), "--root", str(self.root)], cwd=REPO, check=True)
+        self.recovery_mod = load_recovery_module()
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -273,6 +286,25 @@ class RecoveryLoopTests(unittest.TestCase):
         self.assertEqual(out["spawn"]["reasonCode"], "incomplete_output", out)
         self.assertEqual(out["spawn"]["action"], "retry", out)
         self.assertEqual(out["spawn"]["nextAssignee"], "coder", out)
+
+    def test_clear_task_removes_only_target_entries(self):
+        now_ts = int(time.time())
+        self.recovery_mod.decide_recovery(self.root.as_posix(), "T-150", "coder", "spawn_failed", now_ts=now_ts)
+        self.recovery_mod.decide_recovery(self.root.as_posix(), "T-151", "coder", "spawn_failed", now_ts=now_ts)
+
+        before_first = self.recovery_mod.get_active_cooldown(self.root.as_posix(), "T-150", now_ts=now_ts)
+        before_second = self.recovery_mod.get_active_cooldown(self.root.as_posix(), "T-151", now_ts=now_ts)
+        self.assertTrue(before_first, before_first)
+        self.assertTrue(before_second, before_second)
+
+        cleared = self.recovery_mod.clear_task(self.root.as_posix(), "T-150")
+        self.assertTrue(cleared.get("cleared"), cleared)
+        self.assertEqual(cleared.get("taskId"), "T-150", cleared)
+
+        after_first = self.recovery_mod.get_active_cooldown(self.root.as_posix(), "T-150", now_ts=now_ts)
+        after_second = self.recovery_mod.get_active_cooldown(self.root.as_posix(), "T-151", now_ts=now_ts)
+        self.assertEqual(after_first, {}, after_first)
+        self.assertTrue(after_second, after_second)
 
 
 if __name__ == "__main__":
