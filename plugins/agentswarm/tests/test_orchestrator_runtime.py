@@ -408,6 +408,235 @@ class RuntimeTests(unittest.TestCase):
         collab_messages = self.root / "state" / "collab.messages.jsonl"
         self.assertFalse(collab_messages.exists(), out)
 
+    def test_feishu_router_done_wakeup_send_relay_persists_decision_payload(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-223: done relay success",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "coder",
+            "--text",
+            "@coder claim task T-223",
+        ])
+
+        module = load_milestone_module()
+        real_send_group_message = module.send_group_message
+        real_append_message = module.collaboration_hub.append_message
+        observed = {}
+        out_buffer = io.StringIO()
+        args = argparse.Namespace(
+            root=str(self.root),
+            actor="coder",
+            text="@orchestrator T-223 已完成，测试通过，证据: logs/t223.log",
+            group_id="oc_041146c92a9ccb403a7f4f48fb59701d",
+            account_id="orchestrator",
+            mode="send",
+            session_id="",
+            timeout_sec=0,
+            dispatch_spawn=False,
+            dispatch_manual=False,
+            visibility_mode=module.DEFAULT_VISIBILITY_MODE,
+            autopilot_max_steps=3,
+            spawn_cmd="",
+            spawn_output="",
+            clarify_cooldown_sec=300,
+            clarify_state_file="",
+        )
+
+        def append_with_status(root, payload, *extra_args, **extra_kwargs):
+            task = module.get_task(root, "T-223") or {}
+            observed["statusBeforeRelay"] = str(task.get("status") or "")
+            return real_append_message(root, payload, *extra_args, **extra_kwargs)
+
+        try:
+            module.send_group_message = lambda *_args, **_kwargs: {"ok": True, "dryRun": False}
+            module.collaboration_hub.append_message = append_with_status
+            with contextlib.redirect_stdout(out_buffer):
+                rc = module.cmd_feishu_router(args)
+        finally:
+            module.send_group_message = real_send_group_message
+            module.collaboration_hub.append_message = real_append_message
+
+        self.assertEqual(rc, 0)
+        payload = json.loads(out_buffer.getvalue().strip())
+        self.assertTrue(payload.get("ok"), payload)
+        self.assertEqual(observed.get("statusBeforeRelay"), "done", payload)
+
+        relay = payload.get("collabRelay") if isinstance(payload.get("collabRelay"), dict) else {}
+        self.assertTrue(relay.get("ok"), payload)
+        self.assertEqual(relay.get("threadId"), "T-223:coder", payload)
+        self.assertEqual(relay.get("messageType"), "decision", payload)
+
+        rows = self._read_collab_messages()
+        self.assertTrue(rows, payload)
+        row = rows[-1]
+        self.assertEqual(row.get("threadId"), "T-223:coder", row)
+        self.assertEqual(row.get("fromAgent"), "coder", row)
+        self.assertEqual(row.get("toAgent"), "orchestrator", row)
+        self.assertEqual(row.get("messageType"), "decision", row)
+
+    def test_feishu_router_progress_wakeup_send_relay_persists_answer_payload(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-224: progress relay success",
+        ])
+
+        module = load_milestone_module()
+        real_send_group_message = module.send_group_message
+        real_dispatch_once = module.dispatch_once
+        real_append_message = module.collaboration_hub.append_message
+        dispatch_called = {"seen": False}
+        observed = {}
+        out_buffer = io.StringIO()
+        args = argparse.Namespace(
+            root=str(self.root),
+            actor="coder",
+            text="@orchestrator T-224 进展同步：主因已定位，正在补充验证数据",
+            group_id="oc_041146c92a9ccb403a7f4f48fb59701d",
+            account_id="orchestrator",
+            mode="send",
+            session_id="",
+            timeout_sec=0,
+            dispatch_spawn=False,
+            dispatch_manual=False,
+            visibility_mode=module.DEFAULT_VISIBILITY_MODE,
+            autopilot_max_steps=3,
+            spawn_cmd="",
+            spawn_output="",
+            clarify_cooldown_sec=300,
+            clarify_state_file="",
+        )
+
+        def dispatch_once_with_marker(d_args):
+            dispatch_called["seen"] = True
+            return real_dispatch_once(d_args)
+
+        def append_after_dispatch(root, payload, *extra_args, **extra_kwargs):
+            observed["dispatchBeforeRelay"] = dispatch_called["seen"]
+            return real_append_message(root, payload, *extra_args, **extra_kwargs)
+
+        try:
+            module.send_group_message = lambda *_args, **_kwargs: {"ok": True, "dryRun": False}
+            module.dispatch_once = dispatch_once_with_marker
+            module.collaboration_hub.append_message = append_after_dispatch
+            with contextlib.redirect_stdout(out_buffer):
+                rc = module.cmd_feishu_router(args)
+        finally:
+            module.send_group_message = real_send_group_message
+            module.dispatch_once = real_dispatch_once
+            module.collaboration_hub.append_message = real_append_message
+
+        self.assertEqual(rc, 0)
+        payload = json.loads(out_buffer.getvalue().strip())
+        self.assertTrue(payload.get("ok"), payload)
+        self.assertTrue(observed.get("dispatchBeforeRelay"), payload)
+
+        relay = payload.get("collabRelay") if isinstance(payload.get("collabRelay"), dict) else {}
+        self.assertTrue(relay.get("ok"), payload)
+        self.assertEqual(relay.get("threadId"), "T-224:coder", payload)
+        self.assertEqual(relay.get("messageType"), "answer", payload)
+
+        rows = self._read_collab_messages()
+        self.assertTrue(rows, payload)
+        row = rows[-1]
+        self.assertEqual(row.get("threadId"), "T-224:coder", row)
+        self.assertEqual(row.get("fromAgent"), "coder", row)
+        self.assertEqual(row.get("toAgent"), "orchestrator", row)
+        self.assertEqual(row.get("messageType"), "answer", row)
+
+    def test_feishu_router_blocked_wakeup_relay_failure_in_send_mode_keeps_main_flow_success(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-225: blocked relay failure non-blocking",
+        ])
+
+        module = load_milestone_module()
+        real_send_group_message = module.send_group_message
+        real_append_message = module.collaboration_hub.append_message
+        out_buffer = io.StringIO()
+        args = argparse.Namespace(
+            root=str(self.root),
+            actor="coder",
+            text="@orchestrator T-225 阻塞：依赖服务异常，无法继续",
+            group_id="oc_041146c92a9ccb403a7f4f48fb59701d",
+            account_id="orchestrator",
+            mode="send",
+            session_id="",
+            timeout_sec=0,
+            dispatch_spawn=False,
+            dispatch_manual=False,
+            visibility_mode=module.DEFAULT_VISIBILITY_MODE,
+            autopilot_max_steps=3,
+            spawn_cmd="",
+            spawn_output="",
+            clarify_cooldown_sec=300,
+            clarify_state_file="",
+        )
+
+        def boom_after_main(root, _payload, *_args, **_kwargs):
+            task = module.get_task(root, "T-225") or {}
+            status = str(task.get("status") or "missing")
+            raise RuntimeError(f"forced wakeup relay failure status={status}")
+
+        try:
+            module.send_group_message = lambda *_args, **_kwargs: {"ok": True, "dryRun": False}
+            module.collaboration_hub.append_message = boom_after_main
+            with contextlib.redirect_stdout(out_buffer):
+                rc = module.cmd_feishu_router(args)
+        finally:
+            module.send_group_message = real_send_group_message
+            module.collaboration_hub.append_message = real_append_message
+
+        self.assertEqual(rc, 0)
+        payload = json.loads(out_buffer.getvalue().strip())
+        self.assertTrue(payload.get("ok"), payload)
+        relay = payload.get("collabRelay") if isinstance(payload.get("collabRelay"), dict) else {}
+        self.assertIn("collabRelay", payload, payload)
+        self.assertFalse(relay.get("ok", True), payload)
+        self.assertEqual(relay.get("reason"), "append_exception", payload)
+        self.assertEqual(relay.get("messageType"), "decision", payload)
+        self.assertIn("status=blocked", str(relay.get("error") or ""), payload)
+
+        status = run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "status T-225",
+        ])
+        self.assertEqual(status["task"]["status"], "blocked", status)
+
     def test_feishu_router_done_wakeup_relay_failure_in_send_mode_does_not_break_success(self):
         run_json([
             "python3",

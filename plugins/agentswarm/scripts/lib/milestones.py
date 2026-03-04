@@ -491,6 +491,38 @@ def maybe_relay_wakeup_collaboration_event(
     return relay_wakeup_collaboration_event(root, task_id, actor, kind, text)
 
 
+def best_effort_wakeup_collaboration_relay(
+    root: str,
+    task_id: str,
+    actor: str,
+    kind: str,
+    text: str,
+    mode: str,
+) -> Dict[str, Any]:
+    actor_key = governance.canonical_agent(actor) or str(actor or "").strip().lower()
+    thread_id = collaboration_thread_id(task_id, actor_key) if task_id and actor_key else ""
+    message_type = "decision" if str(kind or "").strip().lower() in {"done", "blocked"} else "answer"
+    try:
+        return maybe_relay_wakeup_collaboration_event(root, task_id, actor, kind, text, mode)
+    except Exception as err:
+        LOGGER.warning(
+            "unexpected wakeup collaboration relay failure: taskId=%s actor=%s kind=%s",
+            task_id,
+            actor_key,
+            kind,
+            exc_info=True,
+        )
+        relay: Dict[str, Any] = {
+            "ok": False,
+            "reason": "relay_exception",
+            "messageType": message_type,
+            "error": clip(str(err), 200),
+        }
+        if thread_id:
+            relay["threadId"] = thread_id
+        return relay
+
+
 def normalize_timeout_sec(value: Any, default: int = 0) -> int:
     try:
         parsed = int(value)
@@ -6078,14 +6110,6 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             return 0 if sent.get("ok") else 1
 
         kind = parse_wakeup_kind(norm)
-        collab_relay = maybe_relay_wakeup_collaboration_event(
-            args.root,
-            task_id,
-            args.actor,
-            kind,
-            norm,
-            args.mode,
-        )
         if kind == "blocked":
             apply_obj = board_apply(args.root, "orchestrator", f"block task {task_id}: {clip(norm, 120)}")
             publish = publish_apply_result(
@@ -6098,6 +6122,14 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
                 allow_broadcaster=False,
             )
             ok = bool(apply_obj.get("ok")) and bool(publish.get("ok"))
+            collab_relay = best_effort_wakeup_collaboration_relay(
+                args.root,
+                task_id,
+                args.actor,
+                kind,
+                norm,
+                args.mode,
+            )
             print(
                 json.dumps(
                     {
@@ -6133,6 +6165,14 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             if bool(apply_obj.get("ok")) and str(apply_obj.get("intent") or "") == "mark_done":
                 done_cleanup = cleanup_done_state(args.root, task_id)
             ok = bool(apply_obj.get("ok")) and bool(publish.get("ok"))
+            collab_relay = best_effort_wakeup_collaboration_relay(
+                args.root,
+                task_id,
+                args.actor,
+                kind,
+                norm,
+                args.mode,
+            )
             print(
                 json.dumps(
                     {
@@ -6171,6 +6211,14 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
         dispatch_result = dispatch_once(d_args)
         if not isinstance(dispatch_result, dict):
             dispatch_result = {"ok": False, "error": "dispatch_result_invalid"}
+        collab_relay = best_effort_wakeup_collaboration_relay(
+            args.root,
+            task_id,
+            args.actor,
+            kind,
+            norm,
+            args.mode,
+        )
         dispatch_result["collabRelay"] = collab_relay
         print(json.dumps(dispatch_result, ensure_ascii=True))
         return 0 if dispatch_result.get("ok") else 1
