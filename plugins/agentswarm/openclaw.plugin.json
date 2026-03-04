@@ -1,6 +1,6 @@
 {
-  "id": "multi-agent-orchestrator",
-  "name": "Multi Agent Orchestrator",
+  "id": "agentswarm",
+  "name": "Agentswarm",
   "description": "Minimal scaffold for file-backed team orchestration.",
   "skills": ["."],
   "configSchema": {

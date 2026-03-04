@@ -1,0 +1,26 @@
+{
+  "global": {
+    "maxTaskTokens": 300000,
+    "maxTaskWallTimeSec": 0,
+    "maxTaskRetries": 8,
+    "degradePolicy": [
+      "reduced_context",
+      "manual_handoff",
+      "stop_run"
+    ],
+    "onExceeded": "manual_handoff"
+  },
+  "agents": {
+    "coder": {
+      "maxTaskTokens": 300000,
+      "maxTaskWallTimeSec": 0,
+      "maxTaskRetries": 8,
+      "degradePolicy": [
+        "reduced_context",
+        "manual_handoff",
+        "stop_run"
+      ],
+      "onExceeded": "manual_handoff"
+    }
+  }
+}

@@ -1,9 +1,9 @@
 ---
-name: multi-agent-orchestrator
+name: agentswarm
 description: File-backed multi-agent orchestration for Feishu-visible milestones and silent subagent execution. Use when operating the shared task board, routing orchestration commands, and synthesizing board output.
 ---
 
-# Multi Agent Orchestrator
+# Agentswarm
 
 Use local scripts as stable interfaces for task board operations.
 

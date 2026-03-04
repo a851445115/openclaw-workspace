@@ -1,4 +1,4 @@
-# Multi Agent Orchestrator Plugin (Milestone A MVP)
+# Agentswarm Plugin (Milestone A MVP)
 
 This plugin provides a file-backed orchestrator for Feishu group collaboration.
 
@@ -68,7 +68,7 @@ Implemented in this MVP:
 ## Quick Start
 
 ```bash
-cd ~/.openclaw/workspace/plugins/multi-agent-orchestrator
+cd ~/.openclaw/workspace/plugins/agentswarm
 ./scripts/init-task-board --root .
 ./scripts/orchestrator-router --root . --actor orchestrator --text "@orchestrator 帮助"
 ./scripts/orchestrator-router --root . --actor orchestrator --text "@orchestrator 开始项目 /absolute/path/to/project"
@@ -100,9 +100,9 @@ cat inbound.txt | ./scripts/feishu-inbound-router --root .
 
 ## Enable in OpenClaw
 
-1. Ensure plugin folder exists at `~/.openclaw/workspace/plugins/multi-agent-orchestrator`.
+1. Ensure plugin folder exists at `~/.openclaw/workspace/plugins/agentswarm`.
 2. Ensure `openclaw.plugin.json` contains:
-   - `"id": "multi-agent-orchestrator"`
+   - `"id": "agentswarm"`
    - `"skills": ["."]`
 3. Load/reload OpenClaw plugin discovery (restart gateway if needed):
    - `openclaw gateway restart`
@@ -277,7 +277,7 @@ For live Feishu validation, run the same `@orchestrator run T-1007` in the allow
 推荐升级步骤：
 
 ```bash
-cd ~/.openclaw/workspace/plugins/multi-agent-orchestrator
+cd ~/.openclaw/workspace/plugins/agentswarm
 ./scripts/migrate-config-v2 --root . --dry-run
 ./scripts/migrate-config-v2 --root . --apply
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_config_migration.py -v
