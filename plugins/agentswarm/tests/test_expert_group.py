@@ -100,6 +100,73 @@ class ExpertGroupTests(unittest.TestCase):
         self.assertIn("timeout", policy["highRiskReasonCodes"], policy)
         self.assertIn("spawn_failed", policy["highRiskReasonCodes"], policy)
 
+    def test_build_expert_templates_includes_roles_and_required_fields(self):
+        templates = self.mod.build_expert_templates(
+            reasons=["retry_limit", "blocked_duration"],
+            task_snapshot={"taskId": "T-006"},
+            runtime_snapshot={"reasonCode": "blocked_signal"},
+        )
+        self.assertIsInstance(templates, list, templates)
+        self.assertGreaterEqual(len(templates), 3, templates)
+        roles = {str(item.get("role") or "") for item in templates if isinstance(item, dict)}
+        self.assertTrue({"coder", "debugger", "analyst"}.issubset(roles), templates)
+        for item in templates:
+            self.assertIn("task", item, item)
+            self.assertIsInstance(item.get("task"), str, item)
+            required_fields = item.get("requiredFields")
+            self.assertIsInstance(required_fields, list, item)
+            for field in ("hypothesis", "evidence", "confidence", "proposedFix", "risk"):
+                self.assertIn(field, required_fields, item)
+
+    def test_build_expert_templates_handles_unknown_reasons_with_generic_task(self):
+        templates = self.mod.build_expert_templates(
+            reasons=["not_in_policy_reason"],
+            task_snapshot={"taskId": "T-099"},
+            runtime_snapshot={},
+        )
+        self.assertTrue(templates, templates)
+        first = templates[0]
+        self.assertIn("task", first, first)
+        self.assertIn("not_in_policy_reason", first.get("task") or "", first)
+
+    def test_converge_expert_conclusions_empty_input_returns_stable_defaults(self):
+        out = self.mod.converge_expert_conclusions([])
+        self.assertIsInstance(out, dict, out)
+        self.assertIn("consensusPlan", out, out)
+        self.assertIn("owner", out, out)
+        self.assertIn("executionChecklist", out, out)
+        self.assertIn("acceptanceGate", out, out)
+        self.assertIsInstance(out.get("executionChecklist"), list, out)
+        self.assertIsInstance(out.get("acceptanceGate"), list, out)
+
+    def test_converge_expert_conclusions_prefers_high_confidence_fix(self):
+        out = self.mod.converge_expert_conclusions(
+            [
+                {
+                    "role": "coder",
+                    "confidence": 0.4,
+                    "hypothesis": "guard condition missing",
+                    "proposedFix": "add a null-check in parser",
+                    "evidence": "stack trace from parser.py",
+                },
+                {
+                    "role": "debugger",
+                    "confidence": 0.92,
+                    "hypothesis": "race condition in retry cache",
+                    "proposedFix": "serialize cache writes with lock",
+                    "risk": "may slightly increase latency",
+                },
+                {
+                    "role": "analyst",
+                    "hypothesis": "downstream dependency mismatch",
+                },
+            ]
+        )
+        self.assertEqual(out.get("owner"), "debugger", out)
+        self.assertIn("serialize cache writes with lock", out.get("consensusPlan") or "", out)
+        self.assertGreater(len(out.get("executionChecklist") or []), 0, out)
+        self.assertGreater(len(out.get("acceptanceGate") or []), 0, out)
+
 
 if __name__ == "__main__":
     unittest.main()

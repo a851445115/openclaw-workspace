@@ -222,6 +222,23 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(expert_group.get("triggered"), dispatch)
         self.assertIn("high_risk_reason", expert_group.get("reasons") or [], dispatch)
         self.assertGreaterEqual(int(expert_group.get("score") or 0), 1, dispatch)
+        templates = expert_group.get("templates") or []
+        self.assertIsInstance(templates, list, dispatch)
+        self.assertGreaterEqual(len(templates), 3, dispatch)
+        role_map = {str(item.get("role") or "") for item in templates if isinstance(item, dict)}
+        self.assertTrue({"coder", "debugger", "analyst"}.issubset(role_map), dispatch)
+        for item in templates:
+            self.assertIsInstance(item.get("requiredFields"), list, dispatch)
+            self.assertIn("hypothesis", item.get("requiredFields") or [], dispatch)
+            self.assertIn("evidence", item.get("requiredFields") or [], dispatch)
+            self.assertIn("confidence", item.get("requiredFields") or [], dispatch)
+            self.assertIn("proposedFix", item.get("requiredFields") or [], dispatch)
+            self.assertIn("risk", item.get("requiredFields") or [], dispatch)
+        consensus = expert_group.get("consensus") or {}
+        self.assertIn("consensusPlan", consensus, dispatch)
+        self.assertIn("owner", consensus, dispatch)
+        self.assertIn("executionChecklist", consensus, dispatch)
+        self.assertIn("acceptanceGate", consensus, dispatch)
 
     def test_dispatch_blocked_non_high_risk_under_threshold_not_triggered(self):
         run_json([
@@ -497,8 +514,17 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("reasons", expert_group, dispatch)
         self.assertIn("score", expert_group, dispatch)
         self.assertIn("policyDigest", expert_group, dispatch)
+        self.assertIn("templates", expert_group, dispatch)
+        self.assertIn("consensus", expert_group, dispatch)
         self.assertIsInstance(expert_group.get("reasons"), list, dispatch)
         self.assertIsInstance(expert_group.get("score"), int, dispatch)
+        self.assertIsInstance(expert_group.get("templates"), list, dispatch)
+        consensus = expert_group.get("consensus") or {}
+        self.assertIsInstance(consensus, dict, dispatch)
+        self.assertIn("consensusPlan", consensus, dispatch)
+        self.assertIn("owner", consensus, dispatch)
+        self.assertIn("executionChecklist", consensus, dispatch)
+        self.assertIn("acceptanceGate", consensus, dispatch)
 
     def test_feishu_router_handles_claim_done_commands(self):
         run_json([

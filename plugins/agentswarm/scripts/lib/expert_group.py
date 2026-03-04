@@ -4,7 +4,7 @@ import hashlib
 import json
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 
 EXPERT_GROUP_POLICY_CONFIG_CANDIDATES = (
@@ -19,6 +19,26 @@ DEFAULT_EXPERT_GROUP_POLICY: Dict[str, Any] = {
     "highRiskReasonCodes": ["spawn_failed", "budget_exceeded", "invalid_spawn_output"],
 }
 LOGGER = logging.getLogger(__name__)
+EXPERT_OUTPUT_FIELDS: Tuple[str, ...] = ("hypothesis", "evidence", "confidence", "proposedFix", "risk")
+DEFAULT_EXPERT_ROLES: Tuple[str, ...] = ("coder", "debugger", "analyst")
+ROLE_TASK_PREFIX: Dict[str, str] = {
+    "coder": "Produce a code-level remediation plan with concrete implementation steps.",
+    "debugger": "Trace the blocker path and isolate the most probable failure mechanism.",
+    "analyst": "Evaluate system impact, sequencing, and validation strategy across tasks.",
+}
+REASON_GUIDANCE: Dict[str, str] = {
+    "retry_limit": "repeated retries indicate current fix attempts are not converging",
+    "blocked_duration": "the blocker has stayed unresolved for too long",
+    "downstream_impact": "multiple downstream tasks are now impacted",
+    "high_risk_reason": "runtime reason code is classified as high risk by policy",
+}
+FIELD_GUIDANCE: Dict[str, str] = {
+    "hypothesis": "Root-cause hypothesis in one sentence.",
+    "evidence": "Logs, traces, metrics, or reproducible observations supporting the hypothesis.",
+    "confidence": "Confidence score in range [0, 1].",
+    "proposedFix": "Actionable fix plan, including owner-facing execution detail.",
+    "risk": "Primary risk if proposedFix is applied and how to mitigate it.",
+}
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -53,6 +73,44 @@ def _normalize_reason_codes(raw: Any, fallback: List[str]) -> List[str]:
         seen.add(code)
         out.append(code)
     return out
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    if value is None:
+        return float(default)
+    if isinstance(value, str) and value.strip().endswith("%"):
+        stripped = value.strip().rstrip("%")
+        try:
+            return max(0.0, min(1.0, float(stripped) / 100.0))
+        except Exception:
+            return float(default)
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _normalize_roles(raw_roles: Any) -> List[str]:
+    values = raw_roles if isinstance(raw_roles, list) else list(DEFAULT_EXPERT_ROLES)
+    out: List[str] = []
+    seen = set()
+    for item in values:
+        role = str(item or "").strip().lower()
+        if not role or role in seen:
+            continue
+        seen.add(role)
+        out.append(role)
+    if not out:
+        return list(DEFAULT_EXPERT_ROLES)
+    return out
+
+
+def _reason_context_lines(reasons: List[str]) -> List[str]:
+    lines: List[str] = []
+    for reason in _normalize_reason_codes(reasons, []):
+        guidance = REASON_GUIDANCE.get(reason, "unclassified trigger reason; assess impact and mitigations")
+        lines.append(f"{reason}: {guidance}")
+    return lines
 
 
 def normalize_expert_group_policy(raw: Dict[str, Any], fallback: Dict[str, Any]) -> Dict[str, Any]:
@@ -172,3 +230,172 @@ def evaluate_trigger(task_snapshot: Dict[str, Any], runtime_snapshot: Dict[str, 
 
     score = len(reasons)
     return {"triggered": bool(score > 0), "reasons": reasons, "score": score}
+
+
+def build_expert_templates(
+    reasons: List[str],
+    task_snapshot: Dict[str, Any] = None,
+    runtime_snapshot: Dict[str, Any] = None,
+    roles: List[str] = None,
+) -> List[Dict[str, Any]]:
+    task = task_snapshot if isinstance(task_snapshot, dict) else {}
+    runtime = runtime_snapshot if isinstance(runtime_snapshot, dict) else {}
+    normalized_roles = _normalize_roles(roles)
+    normalized_reasons = _normalize_reason_codes(reasons, [])
+
+    reason_lines = _reason_context_lines(normalized_reasons)
+    if not reason_lines:
+        reason_lines = ["generic_blocker: no explicit trigger reason, perform broad blocker triage"]
+    reason_text = "; ".join(reason_lines)
+    task_id = str(task.get("taskId") or "").strip() or "unknown-task"
+    status = str(task.get("status") or "").strip().lower() or "blocked"
+    runtime_reason_code = str(runtime.get("reasonCode") or "").strip().lower()
+
+    templates: List[Dict[str, Any]] = []
+    for role in normalized_roles:
+        role_focus = ROLE_TASK_PREFIX.get(role, "Perform role-specific blocker analysis and propose an actionable plan.")
+        runtime_hint = f" Runtime reasonCode={runtime_reason_code}." if runtime_reason_code else ""
+        task_description = (
+            f"[{role}] Task {task_id} is currently {status}. {role_focus} "
+            f"Trigger reasons: {reason_text}.{runtime_hint}"
+        ).strip()
+        templates.append(
+            {
+                "role": role,
+                "task": task_description,
+                "requiredFields": list(EXPERT_OUTPUT_FIELDS),
+                "fieldGuidance": dict(FIELD_GUIDANCE),
+            }
+        )
+    return templates
+
+
+def _default_consensus_plan(reasons: List[str]) -> str:
+    normalized_reasons = _normalize_reason_codes(reasons, [])
+    if normalized_reasons:
+        return f"Run expert triage and execute the highest-confidence fix for reasons: {', '.join(normalized_reasons)}."
+    return "Run expert triage, gather evidence, and execute the highest-confidence fix."
+
+
+def _default_checklist(reasons: List[str]) -> List[str]:
+    normalized_reasons = _normalize_reason_codes(reasons, [])
+    if normalized_reasons:
+        return [
+            f"Validate trigger reasons: {', '.join(normalized_reasons)}.",
+            "Collect hypothesis, evidence, confidence, proposedFix, and risk from each expert.",
+            "Select the highest-confidence proposedFix and schedule execution ownership.",
+        ]
+    return [
+        "Collect hypothesis, evidence, confidence, proposedFix, and risk from each expert.",
+        "Select the highest-confidence proposedFix and schedule execution ownership.",
+        "Track risk mitigation and confirm blocker resolution evidence.",
+    ]
+
+
+def _default_acceptance_gate() -> List[str]:
+    return [
+        "Consensus plan references verifiable evidence.",
+        "Owner is explicitly assigned for execution.",
+        "Risks are documented with mitigation actions.",
+    ]
+
+
+def _extract_confidence(entry: Dict[str, Any]) -> float:
+    raw = entry.get("confidence")
+    confidence = _safe_float(raw, 0.0)
+    if confidence > 1.0:
+        confidence = confidence / 100.0
+    return max(0.0, min(1.0, confidence))
+
+
+def converge_expert_conclusions(
+    expert_outputs: List[Dict[str, Any]],
+    reasons: List[str] = None,
+    fallback_owner: str = "orchestrator",
+) -> Dict[str, Any]:
+    owner_fallback = str(fallback_owner or "").strip() or "orchestrator"
+    base_plan = _default_consensus_plan(reasons or [])
+    out: Dict[str, Any] = {
+        "consensusPlan": base_plan,
+        "owner": owner_fallback,
+        "executionChecklist": _default_checklist(reasons or []),
+        "acceptanceGate": _default_acceptance_gate(),
+    }
+
+    if not isinstance(expert_outputs, list) or not expert_outputs:
+        return out
+
+    best_entry: Dict[str, Any] = {}
+    best_score = -1.0
+    extra_checklist: List[str] = []
+    extra_gates: List[str] = []
+
+    for raw in expert_outputs:
+        entry = raw if isinstance(raw, dict) else {}
+        hypothesis = str(entry.get("hypothesis") or "").strip()
+        evidence = str(entry.get("evidence") or "").strip()
+        proposed_fix = str(entry.get("proposedFix") or "").strip()
+        risk = str(entry.get("risk") or "").strip()
+        confidence = _extract_confidence(entry)
+
+        score = confidence
+        if proposed_fix:
+            score += 1.0
+        if evidence:
+            score += 0.5
+        if hypothesis:
+            score += 0.25
+        if score > best_score:
+            best_score = score
+            best_entry = entry
+
+        if risk:
+            extra_checklist.append(f"Mitigate stated risk: {risk}")
+            extra_gates.append(f"Risk mitigated: {risk}")
+        if evidence:
+            extra_gates.append(f"Evidence verified: {evidence}")
+
+    if not best_entry:
+        return out
+
+    best_owner = str(best_entry.get("role") or best_entry.get("owner") or "").strip()
+    best_hypothesis = str(best_entry.get("hypothesis") or "").strip()
+    best_fix = str(best_entry.get("proposedFix") or "").strip()
+    best_evidence = str(best_entry.get("evidence") or "").strip()
+
+    if best_fix:
+        out["consensusPlan"] = best_fix
+    elif best_hypothesis:
+        out["consensusPlan"] = best_hypothesis
+
+    if best_owner:
+        out["owner"] = best_owner
+
+    checklist: List[str] = []
+    if best_fix:
+        checklist.append(f"Execute fix: {best_fix}")
+    if best_hypothesis:
+        checklist.append(f"Validate hypothesis: {best_hypothesis}")
+    if best_evidence:
+        checklist.append(f"Confirm evidence: {best_evidence}")
+    checklist.extend(extra_checklist)
+    if checklist:
+        out["executionChecklist"] = checklist
+
+    gates: List[str] = []
+    if best_evidence:
+        gates.append(f"Primary evidence reviewed: {best_evidence}")
+    gates.extend(extra_gates)
+    if gates:
+        deduped: List[str] = []
+        seen = set()
+        for item in gates:
+            normalized = str(item).strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(normalized)
+        if deduped:
+            out["acceptanceGate"] = deduped
+
+    return out

@@ -2152,11 +2152,23 @@ def default_expert_group_out(policy: Dict[str, Any]) -> Dict[str, Any]:
         digest = expert_group.policy_digest(policy)
     except Exception:
         digest = ""
+    consensus: Dict[str, Any]
+    try:
+        consensus = expert_group.converge_expert_conclusions([], reasons=[], fallback_owner="orchestrator")
+    except Exception:
+        consensus = {
+            "consensusPlan": "",
+            "owner": "orchestrator",
+            "executionChecklist": [],
+            "acceptanceGate": [],
+        }
     return {
         "triggered": False,
         "reasons": [],
         "score": 0,
         "policyDigest": digest,
+        "templates": [],
+        "consensus": consensus,
     }
 
 
@@ -2211,11 +2223,53 @@ def evaluate_dispatch_expert_group(
 
     reasons = [str(item).strip() for item in (judgement.get("reasons") or []) if str(item).strip()]
     score = nonneg_int(judgement.get("score"), len(reasons))
+    triggered = bool(judgement.get("triggered"))
+
+    templates: List[Dict[str, Any]] = []
+    if triggered:
+        try:
+            templates = expert_group.build_expert_templates(
+                reasons=reasons,
+                task_snapshot=task_snapshot,
+                runtime_snapshot=runtime_snapshot,
+            )
+        except Exception:
+            templates = []
+
+    raw_expert_outputs: Any = None
+    if isinstance(spawn.get("expertOutputs"), list):
+        raw_expert_outputs = spawn.get("expertOutputs")
+    spawn_result = spawn.get("spawnResult") if isinstance(spawn.get("spawnResult"), dict) else {}
+    if raw_expert_outputs is None and isinstance(spawn_result.get("expertOutputs"), list):
+        raw_expert_outputs = spawn_result.get("expertOutputs")
+    expert_outputs = raw_expert_outputs if isinstance(raw_expert_outputs, list) else []
+
+    fallback_owner = (
+        str(spawn.get("nextAssignee") or "").strip()
+        or str(task_for_snapshot.get("owner") or "").strip()
+        or str(task.get("owner") or "").strip()
+        or "orchestrator"
+    )
+    try:
+        consensus = expert_group.converge_expert_conclusions(
+            expert_outputs=expert_outputs,
+            reasons=reasons,
+            fallback_owner=fallback_owner,
+        )
+    except Exception:
+        consensus = base_out.get("consensus") if isinstance(base_out.get("consensus"), dict) else {
+            "consensusPlan": "",
+            "owner": fallback_owner,
+            "executionChecklist": [],
+            "acceptanceGate": [],
+        }
     return {
-        "triggered": bool(judgement.get("triggered")),
+        "triggered": triggered,
         "reasons": reasons,
         "score": score,
         "policyDigest": base_out.get("policyDigest", ""),
+        "templates": templates,
+        "consensus": consensus,
     }
 
 
