@@ -97,6 +97,15 @@ class RecoveryLoopTests(unittest.TestCase):
         self.assertEqual(out3["spawn"]["attempt"], 1, out3)
         self.assertEqual(out3["spawn"]["nextAssignee"], "human", out3)
 
+    def test_no_completion_signal_enters_recovery_chain(self):
+        self._create_task("T-104", "coder", "no completion signal branch")
+        out = self._dispatch("T-104", "coder", '{"status":"progress","summary":"still running"}')
+
+        self.assertEqual(out["spawn"]["reasonCode"], "no_completion_signal", out)
+        self.assertEqual(out["spawn"]["action"], "retry", out)
+        self.assertEqual(out["spawn"]["attempt"], 1, out)
+        self.assertEqual(out["spawn"]["nextAssignee"], "debugger", out)
+
     def test_cooldown_prevents_attempt_increment(self):
         self._create_task("T-110", "coder", "cooldown branch")
         first = self._dispatch("T-110", "coder", '{"status":"failed","message":"first fail"}')
@@ -204,6 +213,7 @@ class RecoveryLoopTests(unittest.TestCase):
                         "spawn_failed": {"maxAttempts": 1, "cooldownSec": 0},
                         "incomplete_output": {"maxAttempts": 1, "cooldownSec": 0},
                         "blocked_signal": {"maxAttempts": 1, "cooldownSec": 0},
+                        "no_completion_signal": {"maxAttempts": 1, "cooldownSec": 0},
                     },
                 },
                 ensure_ascii=True,

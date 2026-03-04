@@ -11,7 +11,7 @@ RECOVERY_POLICY_CONFIG_CANDIDATES = (
     os.path.join("state", "recovery-policy.json"),
 )
 RECOVERY_STATE_FILE = os.path.join("state", "recovery.state.json")
-RECOVERY_REASON_CODES = {"spawn_failed", "incomplete_output", "blocked_signal"}
+RECOVERY_REASON_CODES = {"spawn_failed", "incomplete_output", "blocked_signal", "no_completion_signal"}
 DEFAULT_RECOVERY_POLICY: Dict[str, Any] = {
     "recoveryChain": ["coder", "debugger", "invest-analyst", "human"],
     "default": {"maxAttempts": 2, "cooldownSec": 180},
@@ -19,6 +19,7 @@ DEFAULT_RECOVERY_POLICY: Dict[str, Any] = {
         "spawn_failed": {"maxAttempts": 2, "cooldownSec": 180},
         "incomplete_output": {"maxAttempts": 2, "cooldownSec": 120},
         "blocked_signal": {"maxAttempts": 2, "cooldownSec": 180},
+        "no_completion_signal": {"maxAttempts": 2, "cooldownSec": 120},
     },
 }
 

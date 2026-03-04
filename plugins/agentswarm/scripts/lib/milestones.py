@@ -32,6 +32,8 @@ import task_decomposer
 import ops_metrics
 import strategy_library
 import knowledge_adapter
+import session_registry
+import context_pack
 
 DEFAULT_GROUP_ID = "oc_041146c92a9ccb403a7f4f48fb59701d"
 DEFAULT_ACCOUNT_ID = "orchestrator"
@@ -619,6 +621,39 @@ def normalize_string_list(value: Any, limit: int = 6, item_limit: int = 180) -> 
     return out[:limit]
 
 
+def merge_unique_strings(items: List[str], limit: int = 8, item_limit: int = 220) -> List[str]:
+    out: List[str] = []
+    for raw in items:
+        text = clip(raw, item_limit)
+        if not text or text in out:
+            continue
+        out.append(text)
+        if len(out) >= limit:
+            break
+    return out[:limit]
+
+
+def collect_spawn_artifact_index(spawn: Dict[str, Any]) -> List[str]:
+    report = spawn.get("normalizedReport") if isinstance(spawn.get("normalizedReport"), dict) else {}
+    candidates: List[str] = []
+    candidates.extend(normalize_string_list(report.get("hardEvidence"), limit=8, item_limit=220))
+    candidates.extend(normalize_string_list(report.get("evidence"), limit=8, item_limit=220))
+    candidates.extend(normalize_string_list(report.get("changes"), limit=6, item_limit=220))
+    candidates.extend(normalize_string_list(spawn.get("stdout"), limit=2, item_limit=220))
+    return merge_unique_strings(candidates, limit=10, item_limit=220)
+
+
+def collect_spawn_unfinished_checklist(spawn: Dict[str, Any]) -> List[str]:
+    report = spawn.get("normalizedReport") if isinstance(spawn.get("normalizedReport"), dict) else {}
+    items = normalize_string_list(report.get("nextActions"), limit=6, item_limit=220)
+    if items:
+        return items
+    detail = clip(spawn.get("detail"), 220)
+    if detail:
+        return [detail]
+    return []
+
+
 def compact_event_payload(payload: Any) -> Any:
     if not isinstance(payload, dict):
         return clip(str(payload), 120)
@@ -837,6 +872,7 @@ def build_agent_prompt(
     dispatch_task: str,
     strategy: Optional[Dict[str, Any]] = None,
     knowledge_hints: Optional[List[str]] = None,
+    retry_context: Optional[Dict[str, Any]] = None,
 ) -> str:
     task_id = str(task.get("taskId") or "")
     title = str(task.get("title") or "")
@@ -853,6 +889,7 @@ def build_agent_prompt(
     history = read_recent_task_events(root, task_id, limit=8)
     selected_strategy = strategy if isinstance(strategy, dict) else resolve_prompt_strategy(root, task, agent, dispatch_task)
     hints = normalize_knowledge_hints(knowledge_hints)
+    retry_pack = retry_context if isinstance(retry_context, dict) else {}
 
     task_context = {
         "taskId": task_id,
@@ -876,6 +913,13 @@ def build_agent_prompt(
         "TASK_RECENT_HISTORY:",
         json.dumps(history, ensure_ascii=False, indent=2),
     ]
+    if retry_pack:
+        lines.extend(
+            [
+                "RETRY_CONTEXT_PACK:",
+                json.dumps(retry_pack, ensure_ascii=False, indent=2),
+            ]
+        )
     if hints:
         lines.append("KNOWLEDGE_HINTS:")
         for idx, hint in enumerate(hints, start=1):
@@ -1977,6 +2021,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     dispatch_task_message = clip(dispatch_task, 300)
     knowledge_meta, knowledge_hints = resolve_dispatch_knowledge(args.root, task, args.agent, dispatch_task)
     selected_strategy = resolve_prompt_strategy(args.root, task, args.agent, dispatch_task)
+    retry_context_pack = context_pack.build_retry_context(args.root, args.task_id)
     agent_prompt = build_agent_prompt(
         args.root,
         task,
@@ -1984,6 +2029,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         dispatch_task,
         strategy=selected_strategy,
         knowledge_hints=knowledge_hints,
+        retry_context=retry_context_pack,
     )
 
     dispatch_mode_line = "派发模式: 手动协作（等待回报）" if not args.spawn else "派发模式: 自动执行闭环（spawn并回写看板）"
@@ -2009,6 +2055,8 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     )
     claim_send: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "not_sent"}
     task_send: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "not_sent"}
+    session_meta: Dict[str, Any] = {}
+    session_executor = ""
 
     spawn = {
         "ok": True,
@@ -2029,6 +2077,22 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     aggregate_token_usage = 0
 
     if args.spawn:
+        try:
+            session_plan = resolve_spawn_plan(args, agent_prompt)
+            session_executor = str(session_plan.get("executor") or "")
+        except Exception:
+            session_executor = ""
+        try:
+            session_record = session_registry.ensure_session(
+                args.root,
+                args.task_id,
+                args.agent,
+                session_executor or "unknown",
+            )
+            session_meta = session_registry.build_session_metadata(session_record)
+        except Exception:
+            session_meta = {}
+
         reason_code_hint = ""
         if args.spawn_output:
             try:
@@ -2116,6 +2180,20 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                 task_send = send_group_message(args.group_id, args.account_id, task_text, args.mode)
                 spawn = run_dispatch_spawn(args, agent_prompt)
                 spawn_attempt_count = 0 if spawn.get("skipped") else 1
+                if not spawn.get("skipped"):
+                    try:
+                        session_executor = str(spawn.get("executor") or session_executor or "unknown")
+                        session_record = session_registry.record_attempt(
+                            args.root,
+                            args.task_id,
+                            args.agent,
+                            session_executor,
+                            reason_code=str(spawn.get("reasonCode") or ""),
+                            detail=str(spawn.get("detail") or ""),
+                        )
+                        session_meta = session_registry.build_session_metadata(session_record)
+                    except Exception:
+                        pass
                 metrics = spawn.get("metrics") if isinstance(spawn.get("metrics"), dict) else {}
                 aggregate_elapsed_ms += nonneg_int(metrics.get("elapsedMs"), 0)
                 aggregate_token_usage += nonneg_int(metrics.get("tokenUsage"), 0)
@@ -2125,12 +2203,44 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                     and spawn.get("decision") == "blocked"
                     and str(spawn.get("reasonCode") or "") in {"incomplete_output", "missing_evidence", "stage_only", "role_policy_missing_keyword"}
                 ):
+                    failure_pack = context_pack.record_failure(
+                        args.root,
+                        task_id=args.task_id,
+                        agent=args.agent,
+                        executor=str(spawn.get("executor") or session_executor or "unknown"),
+                        prompt_text=agent_prompt,
+                        output_text=str(spawn.get("stdout") or spawn.get("detail") or ""),
+                        blocked_reason=str(spawn.get("reasonCode") or "blocked"),
+                        artifact_index=collect_spawn_artifact_index(spawn),
+                        unfinished_checklist=collect_spawn_unfinished_checklist(spawn),
+                        decision=str(spawn.get("decision") or "blocked"),
+                        reason_code=str(spawn.get("reasonCode") or ""),
+                    )
+                    retry_prompt_pack = (
+                        dict(failure_pack) if isinstance(failure_pack, dict) else context_pack.build_retry_context(args.root, args.task_id)
+                    )
                     retry_prompt = (
                         agent_prompt
+                        + "\nRETRY_CONTEXT_PACK:\n"
+                        + json.dumps(retry_prompt_pack, ensure_ascii=False, indent=2)
                         + "\n\n交付硬性要求：请直接给出最终可验证结果（改动文件/命令输出/commit哈希/验证结论），不要只给阶段性进度。"
                     )
                     retry_spawn = run_dispatch_spawn(args, retry_prompt)
                     spawn_attempt_count += 1
+                    if not retry_spawn.get("skipped"):
+                        try:
+                            session_executor = str(retry_spawn.get("executor") or session_executor or "unknown")
+                            session_record = session_registry.record_attempt(
+                                args.root,
+                                args.task_id,
+                                args.agent,
+                                session_executor,
+                                reason_code=str(retry_spawn.get("reasonCode") or ""),
+                                detail=str(retry_spawn.get("detail") or ""),
+                            )
+                            session_meta = session_registry.build_session_metadata(session_record)
+                        except Exception:
+                            pass
                     retry_metrics = retry_spawn.get("metrics") if isinstance(retry_spawn.get("metrics"), dict) else {}
                     aggregate_elapsed_ms += nonneg_int(retry_metrics.get("elapsedMs"), 0)
                     aggregate_token_usage += nonneg_int(retry_metrics.get("tokenUsage"), 0)
@@ -2216,6 +2326,56 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                 allow_broadcaster=False,
             )
 
+            if decision == "done":
+                try:
+                    context_pack.clear_task(args.root, args.task_id)
+                    retry_context_pack = {}
+                except Exception:
+                    pass
+                try:
+                    final_executor = str(spawn.get("executor") or session_executor or "unknown")
+                    session_record = session_registry.mark_done(
+                        args.root,
+                        args.task_id,
+                        args.agent,
+                        final_executor,
+                    )
+                    session_meta = session_registry.build_session_metadata(session_record)
+                except Exception:
+                    pass
+            else:
+                try:
+                    final_executor = str(spawn.get("executor") or session_executor or "unknown")
+                    recorded = context_pack.record_failure(
+                        args.root,
+                        task_id=args.task_id,
+                        agent=args.agent,
+                        executor=final_executor,
+                        prompt_text=agent_prompt,
+                        output_text=str(spawn.get("stdout") or detail),
+                        blocked_reason=reason_code or "blocked",
+                        artifact_index=collect_spawn_artifact_index(spawn),
+                        unfinished_checklist=collect_spawn_unfinished_checklist(spawn),
+                        decision=str(decision or "blocked"),
+                        reason_code=reason_code,
+                    )
+                    retry_context_pack = dict(recorded) if isinstance(recorded, dict) else context_pack.build_retry_context(args.root, args.task_id)
+                except Exception:
+                    retry_context_pack = context_pack.build_retry_context(args.root, args.task_id)
+                try:
+                    final_executor = str(spawn.get("executor") or session_executor or "unknown")
+                    session_record = session_registry.mark_failed(
+                        args.root,
+                        args.task_id,
+                        args.agent,
+                        final_executor,
+                        reason_code=reason_code or "blocked",
+                        detail=detail,
+                    )
+                    session_meta = session_registry.build_session_metadata(session_record)
+                except Exception:
+                    pass
+
             if decision == "done" and visibility_mode in {"handoff_visible", "full_visible"}:
                 handoff_line = f"{orchestrator_mention} {args.task_id} 已完成，结果: {detail}"
                 worker_text = "\n".join(
@@ -2250,6 +2410,11 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                 backfill_result = {"ok": False, "skipped": True, "error": clip(str(err), 200)}
     knowledge_meta["backfill"] = backfill_result
 
+    if isinstance(session_meta, dict) and session_meta:
+        spawn["session"] = session_meta
+    if isinstance(retry_context_pack, dict) and retry_context_pack:
+        spawn["retryContext"] = retry_context_pack
+
     auto_close = bool(args.spawn and not spawn.get("skipped"))
     selection = getattr(args, "selection", None)
     ok = (
@@ -2283,6 +2448,8 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         "agentPrompt": agent_prompt,
         "objectiveSource": objective_source,
         "knowledge": knowledge_meta,
+        "session": session_meta,
+        "retryContext": retry_context_pack,
     }
     if isinstance(selection, dict):
         result["selection"] = selection

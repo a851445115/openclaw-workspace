@@ -582,6 +582,60 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("DONE_GATE_HINTS", prompt, out)
         self.assertIn("pytest", prompt, out)
 
+    def test_dispatch_prompt_injects_retry_context_pack(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-040R: 重试上下文注入测试",
+        ])
+
+        first = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-040R",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"message":"[BLOCKED] waiting upstream data"}',
+        ])
+        self.assertEqual((first.get("spawn") or {}).get("reasonCode"), "blocked_signal", first)
+
+        second = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-040R",
+            "--agent",
+            "debugger",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"done with evidence","evidence":["logs/t040r.log"]}',
+        ])
+        self.assertTrue(second["ok"], second)
+        prompt = second.get("agentPrompt", "")
+        self.assertIn("RETRY_CONTEXT_PACK", prompt, second)
+        self.assertIn("blockedReason", prompt, second)
+        retry_context = second.get("retryContext") or {}
+        self.assertEqual(retry_context.get("blockedReason"), "blocked_signal", second)
+
     def test_dispatch_prompt_keeps_long_objective_without_tail_truncation(self):
         run_json([
             "python3",

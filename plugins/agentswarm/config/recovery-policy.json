@@ -21,6 +21,10 @@
     "blocked_signal": {
       "maxAttempts": 2,
       "cooldownSec": 180
+    },
+    "no_completion_signal": {
+      "maxAttempts": 2,
+      "cooldownSec": 120
     }
   }
 }
