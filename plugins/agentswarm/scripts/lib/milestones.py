@@ -841,6 +841,360 @@ def format_status_summary_message(tasks: Dict[str, Any], full: bool = False) -> 
     return msg, counts
 
 
+def collect_board_progress(tasks: Dict[str, Any]) -> Dict[str, int]:
+    done = 0
+    blocked = 0
+    pending_like = 0
+    for raw in tasks.values():
+        if not isinstance(raw, dict):
+            continue
+        status = str(raw.get("status") or "pending").strip().lower()
+        if status == "done":
+            done += 1
+        elif status == "blocked":
+            blocked += 1
+        else:
+            pending_like += 1
+    total = done + blocked + pending_like
+    return {
+        "done": done,
+        "pendingLike": pending_like,
+        "blocked": blocked,
+        "total": total,
+    }
+
+
+def safe_ratio(numerator: Any, denominator: Any) -> float:
+    n = nonneg_int(numerator, 0)
+    d = nonneg_int(denominator, 0)
+    if d <= 0:
+        return 0.0
+    return float(n) / float(d)
+
+
+def median_value(values: List[float]) -> float:
+    normalized = [float(v) for v in values if isinstance(v, (int, float)) and math.isfinite(float(v)) and float(v) >= 0.0]
+    if not normalized:
+        return 0.0
+    normalized.sort()
+    size = len(normalized)
+    mid = size // 2
+    if size % 2 == 1:
+        return float(normalized[mid])
+    return float(normalized[mid - 1] + normalized[mid]) / 2.0
+
+
+def load_expert_group_records(root: str) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    directory = os.path.join(root, expert_group.EXPERT_GROUP_LIFECYCLE_DIR)
+    if not os.path.isdir(directory):
+        return out
+    try:
+        names = sorted(os.listdir(directory))
+    except Exception:
+        return out
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(directory, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+        except Exception:
+            continue
+        if isinstance(loaded, dict):
+            out.append(loaded)
+    return out
+
+
+def summarize_expert_group_status(root: str) -> Dict[str, Any]:
+    counts: Dict[str, int] = {
+        expert_group.LIFECYCLE_STATUS_CREATED: 0,
+        expert_group.LIFECYCLE_STATUS_EXECUTING: 0,
+        expert_group.LIFECYCLE_STATUS_CONVERGED: 0,
+        expert_group.LIFECYCLE_STATUS_ARCHIVED: 0,
+        "inactive": 0,
+    }
+    latest_updated_at = ""
+    latest_ts = 0
+    records = load_expert_group_records(root)
+    for record in records:
+        status = str(record.get("status") or "").strip().lower()
+        if status not in counts:
+            status = "inactive"
+        counts[status] = counts.get(status, 0) + 1
+        updated_at = str(record.get("updatedAt") or "").strip()
+        updated_ts = parse_iso_to_ts(updated_at)
+        if updated_ts > latest_ts:
+            latest_ts = updated_ts
+            latest_updated_at = updated_at
+    active = (
+        counts.get(expert_group.LIFECYCLE_STATUS_CREATED, 0)
+        + counts.get(expert_group.LIFECYCLE_STATUS_EXECUTING, 0)
+        + counts.get(expert_group.LIFECYCLE_STATUS_CONVERGED, 0)
+    )
+    return {
+        "totalGroups": len(records),
+        "activeGroups": active,
+        "statusCounts": counts,
+        "lastUpdatedAt": latest_updated_at,
+    }
+
+
+def summarize_collaboration_threads(root: str) -> Dict[str, Any]:
+    path = os.path.join(root, collaboration_hub.COLLAB_THREADS_FILE)
+    if not os.path.exists(path):
+        return {
+            "totalThreads": 0,
+            "activeThreads": 0,
+            "totalRounds": 0,
+            "lastMessageAt": "",
+        }
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+    except Exception:
+        return {
+            "totalThreads": 0,
+            "activeThreads": 0,
+            "totalRounds": 0,
+            "lastMessageAt": "",
+        }
+
+    threads = loaded.get("threads") if isinstance(loaded, dict) and isinstance(loaded.get("threads"), dict) else {}
+    total_threads = 0
+    active_threads = 0
+    total_rounds = 0
+    latest_last_message = ""
+    latest_ts = 0
+    for row in threads.values():
+        if not isinstance(row, dict):
+            continue
+        total_threads += 1
+        status = str(row.get("status") or "active").strip().lower()
+        if status not in {"closed", "resolved", "archived", "inactive", "missing"}:
+            active_threads += 1
+        total_rounds += nonneg_int(row.get("rounds"), 0)
+        last_message_at = str(row.get("lastMessageAt") or "").strip()
+        message_ts = parse_iso_to_ts(last_message_at)
+        if message_ts > latest_ts:
+            latest_ts = message_ts
+            latest_last_message = last_message_at
+
+    return {
+        "totalThreads": total_threads,
+        "activeThreads": active_threads,
+        "totalRounds": total_rounds,
+        "lastMessageAt": latest_last_message,
+    }
+
+
+def _history_transition_ts(record: Dict[str, Any], to_status: str, pick: str = "first") -> int:
+    history = record.get("history") if isinstance(record.get("history"), list) else []
+    candidates: List[int] = []
+    status_target = str(to_status or "").strip().lower()
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("to") or "").strip().lower() != status_target:
+            continue
+        ts = parse_iso_to_ts(item.get("at"))
+        if ts > 0:
+            candidates.append(ts)
+    if not candidates:
+        return 0
+    if str(pick or "").strip().lower() == "last":
+        return max(candidates)
+    return min(candidates)
+
+
+def collect_expert_group_closure_minutes(root: str, days: int = 7, now_ts: Optional[int] = None) -> List[float]:
+    current_ts = int(time.time()) if now_ts is None else max(0, int(now_ts))
+    safe_days = max(0, int(days))
+    cutoff_ts = current_ts - (safe_days * 86400) if safe_days > 0 else 0
+    durations: List[float] = []
+
+    for record in load_expert_group_records(root):
+        status = str(record.get("status") or "").strip().lower()
+        if status != expert_group.LIFECYCLE_STATUS_ARCHIVED:
+            continue
+        created_ts = parse_iso_to_ts(record.get("createdAt")) or _history_transition_ts(record, expert_group.LIFECYCLE_STATUS_CREATED, "first")
+        archived_ts = _history_transition_ts(record, expert_group.LIFECYCLE_STATUS_ARCHIVED, "last") or parse_iso_to_ts(record.get("updatedAt"))
+        if created_ts <= 0 or archived_ts <= 0 or archived_ts < created_ts:
+            continue
+        if cutoff_ts > 0 and archived_ts < cutoff_ts:
+            continue
+        durations.append(float(archived_ts - created_ts) / 60.0)
+    return durations
+
+
+def build_manager_kpis(
+    root: str,
+    tasks: Optional[Dict[str, Any]] = None,
+    ops_summary: Optional[Dict[str, Any]] = None,
+    days: int = 7,
+) -> Dict[str, float]:
+    current_tasks: Dict[str, Any]
+    if isinstance(tasks, dict):
+        current_tasks = tasks
+    else:
+        snapshot = load_snapshot(root)
+        current_tasks = snapshot.get("tasks") if isinstance(snapshot.get("tasks"), dict) else {}
+
+    summary = ops_summary if isinstance(ops_summary, dict) else {}
+    if not summary:
+        try:
+            summary = ops_metrics.aggregate_metrics(root, days=days)
+        except Exception:
+            summary = {}
+
+    progress = collect_board_progress(current_tasks)
+    completion_rate = safe_ratio(progress.get("done"), progress.get("total"))
+    blocked_recovery_rate = float(summary.get("recoveryRate") or 0.0)
+    if blocked_recovery_rate < 0:
+        blocked_recovery_rate = 0.0
+    closure_minutes = collect_expert_group_closure_minutes(root, days=days)
+    expert_group_median = median_value(closure_minutes)
+
+    return {
+        "taskCompletionRate": round(completion_rate, 4),
+        "blockedRecoveryRate": round(blocked_recovery_rate, 4),
+        "expertGroupMedianClosureMinutes": round(expert_group_median, 2),
+    }
+
+
+def build_manager_kpi_summary_text(manager_kpis: Dict[str, Any]) -> str:
+    completion_pct = float(manager_kpis.get("taskCompletionRate") or 0.0) * 100.0
+    recovery_pct = float(manager_kpis.get("blockedRecoveryRate") or 0.0) * 100.0
+    expert_minutes = float(manager_kpis.get("expertGroupMedianClosureMinutes") or 0.0)
+    return (
+        f"[KPI] 完工率={completion_pct:.1f}% | 恢复率={recovery_pct:.1f}% | "
+        f"专家组闭环中位时长={expert_minutes:.1f}m"
+    )
+
+
+def build_manager_report(root: str, period: str = "daily") -> Dict[str, Any]:
+    period_key = str(period or "daily").strip().lower()
+    if period_key not in {"daily", "weekly"}:
+        period_key = "daily"
+    days = 7 if period_key == "weekly" else 1
+
+    snapshot = load_snapshot(root)
+    tasks = snapshot.get("tasks") if isinstance(snapshot.get("tasks"), dict) else {}
+    progress = collect_board_progress(tasks)
+
+    try:
+        ops_summary = ops_metrics.aggregate_metrics(root, days=days)
+    except Exception:
+        ops_summary = {}
+    manager_kpis = build_manager_kpis(root, tasks=tasks, ops_summary=ops_summary, days=days)
+
+    blocked_distribution = (
+        ops_summary.get("blockedReasonDistribution")
+        if isinstance(ops_summary, dict) and isinstance(ops_summary.get("blockedReasonDistribution"), dict)
+        else {}
+    )
+    risk_items = sorted(
+        [(str(key), nonneg_int(value, 0)) for key, value in blocked_distribution.items() if str(key).strip()],
+        key=lambda row: (-row[1], row[0]),
+    )
+    risk_top = [{"reason": key, "count": count} for key, count in risk_items[:5]]
+
+    expert_summary = summarize_expert_group_status(root)
+    collab_summary = summarize_collaboration_threads(root)
+
+    generated_at = now_iso()
+    date_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    reports_dir = os.path.join(root, "state", "reports")
+    os.makedirs(reports_dir, exist_ok=True)
+    report_path = os.path.join(reports_dir, f"{date_key}-{period_key}.md")
+
+    risk_lines = [f"- {item['reason']}: {int(item['count'])}" for item in risk_top] or ["- 无阻塞样本"]
+    expert_counts = expert_summary.get("statusCounts") if isinstance(expert_summary.get("statusCounts"), dict) else {}
+    completion_pct = float(manager_kpis.get("taskCompletionRate") or 0.0) * 100.0
+    recovery_pct = float(manager_kpis.get("blockedRecoveryRate") or 0.0) * 100.0
+    expert_minutes = float(manager_kpis.get("expertGroupMedianClosureMinutes") or 0.0)
+    markdown = "\n".join(
+        [
+            f"# Orchestrator {period_key.title()} Report",
+            "",
+            f"- generatedAt: {generated_at}",
+            f"- period: {period_key}",
+            "",
+            "## 看板进度（done/pending-like/blocked）",
+            f"- done: {int(progress.get('done') or 0)}",
+            f"- pending-like: {int(progress.get('pendingLike') or 0)}",
+            f"- blocked: {int(progress.get('blocked') or 0)}",
+            "",
+            "## 核心 KPI",
+            f"- taskCompletionRate: {completion_pct:.2f}%",
+            f"- blockedRecoveryRate: {recovery_pct:.2f}%",
+            f"- expertGroupMedianClosureMinutes: {expert_minutes:.2f}",
+            "",
+            "## 风险TOP（阻塞原因分布）",
+            *risk_lines,
+            "",
+            "## 专家组状态摘要",
+            f"- activeGroups: {int(expert_summary.get('activeGroups') or 0)} / totalGroups: {int(expert_summary.get('totalGroups') or 0)}",
+            (
+                f"- status(created/executing/converged/archived/inactive): "
+                f"{int(expert_counts.get(expert_group.LIFECYCLE_STATUS_CREATED, 0))}/"
+                f"{int(expert_counts.get(expert_group.LIFECYCLE_STATUS_EXECUTING, 0))}/"
+                f"{int(expert_counts.get(expert_group.LIFECYCLE_STATUS_CONVERGED, 0))}/"
+                f"{int(expert_counts.get(expert_group.LIFECYCLE_STATUS_ARCHIVED, 0))}/"
+                f"{int(expert_counts.get('inactive', 0))}"
+            ),
+            "",
+            "## 下一步建议",
+            "- 优先处理风险TOP中的首要阻塞原因，指定明确 owner 与 ETA。",
+            "- 对 pending-like 任务按依赖顺序推进，避免新的下游阻塞。",
+            "- 对执行中专家组设置收敛截止时间，超时即触发仲裁。",
+        ]
+    )
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(markdown + "\n")
+
+    return {
+        "ok": True,
+        "period": period_key,
+        "days": days,
+        "generatedAt": generated_at,
+        "path": report_path,
+        "boardProgress": progress,
+        "kpis": manager_kpis,
+        "riskTop": risk_top,
+        "expertGroupSummary": expert_summary,
+        "collaborationSummary": collab_summary,
+    }
+
+
+def build_manager_report_summary_text(report_meta: Dict[str, Any]) -> str:
+    period = str(report_meta.get("period") or "daily")
+    progress = report_meta.get("boardProgress") if isinstance(report_meta.get("boardProgress"), dict) else {}
+    kpis = report_meta.get("kpis") if isinstance(report_meta.get("kpis"), dict) else {}
+    risk_top = report_meta.get("riskTop") if isinstance(report_meta.get("riskTop"), list) else []
+    risk_label = "-"
+    if risk_top:
+        first = risk_top[0] if isinstance(risk_top[0], dict) else {}
+        reason = str(first.get("reason") or "unknown")
+        count = int(first.get("count") or 0)
+        risk_label = f"{reason}:{count}"
+
+    completion_pct = float(kpis.get("taskCompletionRate") or 0.0) * 100.0
+    recovery_pct = float(kpis.get("blockedRecoveryRate") or 0.0) * 100.0
+    expert_minutes = float(kpis.get("expertGroupMedianClosureMinutes") or 0.0)
+    return (
+        f"[REPORT] {period} | done={int(progress.get('done') or 0)} | "
+        f"pending-like={int(progress.get('pendingLike') or 0)} | blocked={int(progress.get('blocked') or 0)} | "
+        f"taskCompletionRate={completion_pct:.1f}% | blockedRecoveryRate={recovery_pct:.1f}% | "
+        f"expertGroupMedianClosureMinutes={expert_minutes:.1f} | 风险TOP={risk_label} | "
+        f"path={report_meta.get('path') or '-'}"
+    )
+
+
 def build_three_line(prefix: str, task_id: str, status: str, owner_or_hint: str, key_line: str) -> str:
     line1 = f"{prefix} {task_id} | 状态={status_zh(status)} | {owner_or_hint}"
     return f"{line1}\n{key_line.strip()}"
@@ -4551,10 +4905,12 @@ def build_control_panel_card(root: str, state: Dict[str, Any]) -> Dict[str, Any]
     status_text = "已开启" if enabled else "已关闭"
     snapshot = load_snapshot(root)
     tasks = snapshot.get("tasks", {}) if isinstance(snapshot, dict) else {}
-    blocked = len([1 for t in tasks.values() if isinstance(t, dict) and str(t.get("status") or "") == "blocked"])
-    pending_like = len(
-        [1 for t in tasks.values() if isinstance(t, dict) and str(t.get("status") or "") in {"pending", "claimed", "in_progress", "review"}]
-    )
+    progress = collect_board_progress(tasks)
+    blocked = int(progress.get("blocked") or 0)
+    pending_like = int(progress.get("pendingLike") or 0)
+    collab_summary = summarize_collaboration_threads(root)
+    expert_summary = summarize_expert_group_status(root)
+    expert_counts = expert_summary.get("statusCounts") if isinstance(expert_summary.get("statusCounts"), dict) else {}
     return {
         "type": "AdaptiveCard",
         "version": "1.4",
@@ -4562,6 +4918,26 @@ def build_control_panel_card(root: str, state: Dict[str, Any]) -> Dict[str, Any]
             {"type": "TextBlock", "weight": "Bolder", "size": "Medium", "text": "Orchestrator 控制台"},
             {"type": "TextBlock", "wrap": True, "text": f"自动推进: {status_text}（maxSteps={max_steps}）"},
             {"type": "TextBlock", "wrap": True, "text": f"看板: 进行中={pending_like} | 阻塞={blocked}"},
+            {
+                "type": "TextBlock",
+                "wrap": True,
+                "text": (
+                    f"协作线程摘要: 活跃={int(collab_summary.get('activeThreads') or 0)}"
+                    f" / 总计={int(collab_summary.get('totalThreads') or 0)}"
+                    f" / 轮次={int(collab_summary.get('totalRounds') or 0)}"
+                ),
+            },
+            {
+                "type": "TextBlock",
+                "wrap": True,
+                "text": (
+                    "专家组状态: "
+                    f"created={int(expert_counts.get(expert_group.LIFECYCLE_STATUS_CREATED, 0))}, "
+                    f"executing={int(expert_counts.get(expert_group.LIFECYCLE_STATUS_EXECUTING, 0))}, "
+                    f"converged={int(expert_counts.get(expert_group.LIFECYCLE_STATUS_CONVERGED, 0))}, "
+                    f"archived={int(expert_counts.get(expert_group.LIFECYCLE_STATUS_ARCHIVED, 0))}"
+                ),
+            },
             {"type": "TextBlock", "wrap": True, "text": "常用命令："},
             {"type": "TextBlock", "wrap": True, "text": "• 开始项目请替换绝对路径"},
             {"type": "TextBlock", "wrap": True, "text": "• @orchestrator 项目状态"},
@@ -5776,6 +6152,44 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
         )
         return 0 if out.get("ok") else 1
 
+    # Command: @orchestrator report [daily|weekly]
+    m = re.match(
+        r"^(?:report|汇报|日报|周报)(?:\s+(daily|weekly|日报|周报))?$",
+        cmd_body,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        command_head = str(cmd_body or "").strip().lower()
+        period_hint = str(m.group(1) or "").strip().lower()
+        period = "daily"
+        if "周报" in command_head or period_hint in {"weekly", "周报"}:
+            period = "weekly"
+        elif "日报" in command_head or period_hint in {"daily", "日报", ""}:
+            period = "daily"
+
+        report_meta = build_manager_report(args.root, period=period)
+        summary_text = build_manager_report_summary_text(report_meta)
+        out = send_group_message(args.group_id, args.account_id, summary_text, args.mode)
+        ok = bool(report_meta.get("ok")) and bool(out.get("ok"))
+        print(
+            json.dumps(
+                {
+                    "ok": ok,
+                    "handled": True,
+                    "intent": "report",
+                    "period": str(report_meta.get("period") or period),
+                    "path": str(report_meta.get("path") or ""),
+                    "kpis": report_meta.get("kpis") if isinstance(report_meta.get("kpis"), dict) else {},
+                    "boardProgress": report_meta.get("boardProgress") if isinstance(report_meta.get("boardProgress"), dict) else {},
+                    "riskTop": report_meta.get("riskTop") if isinstance(report_meta.get("riskTop"), list) else [],
+                    "expertGroupSummary": report_meta.get("expertGroupSummary") if isinstance(report_meta.get("expertGroupSummary"), dict) else {},
+                    "send": out,
+                },
+                ensure_ascii=True,
+            )
+        )
+        return 0 if ok else 1
+
     # Command: @orchestrator 推进一次
     if re.match(r"^(?:推进一次|advance(?:\s+once)?|tick)$", cmd_body, flags=re.IGNORECASE):
         spawn_enabled = True
@@ -6381,7 +6795,9 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
 
         msg, counts = format_status_summary_message(tasks, full=full_mode)
         ops_summary: Dict[str, Any] = {}
+        manager_kpis: Dict[str, Any] = {}
         ops_metrics_error = ""
+        manager_kpis_error = ""
         if full_mode:
             try:
                 ops_summary = ops_metrics.aggregate_metrics(args.root, days=7)
@@ -6389,6 +6805,12 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             except Exception as exc:
                 ops_summary = {}
                 ops_metrics_error = f"{type(exc).__name__}: {exc}"
+            try:
+                manager_kpis = build_manager_kpis(args.root, tasks=tasks, ops_summary=ops_summary, days=7)
+                msg = msg + "\n" + build_manager_kpi_summary_text(manager_kpis)
+            except Exception as exc:
+                manager_kpis = {}
+                manager_kpis_error = f"{type(exc).__name__}: {exc}"
         out = send_group_message(args.group_id, args.account_id, msg, args.mode)
         result = {
             "ok": bool(out.get("ok")),
@@ -6397,10 +6819,13 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             "full": full_mode,
             "counts": counts,
             "opsMetrics": ops_summary if full_mode else {},
+            "managerKpis": manager_kpis if full_mode else {},
             "send": out,
         }
         if full_mode and ops_metrics_error:
             result["opsMetricsError"] = ops_metrics_error
+        if full_mode and manager_kpis_error:
+            result["managerKpisError"] = manager_kpis_error
         print(json.dumps(result))
         return 0 if out.get("ok") else 1
 

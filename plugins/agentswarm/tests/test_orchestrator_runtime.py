@@ -3774,6 +3774,62 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(any("推进一次" in t for t in titles), out)
         self.assertTrue(any("查看阻塞" in t for t in titles), out)
         self.assertTrue(any("验收摘要" in t for t in titles), out)
+        body = card.get("body") if isinstance(card, dict) else []
+        texts = "\n".join(str((item or {}).get("text") or "") for item in body if isinstance(item, dict))
+        self.assertIn("协作线程摘要", texts, out)
+        self.assertIn("专家组状态", texts, out)
+
+    def test_feishu_router_report_daily_generates_markdown_with_kpi_metadata(self):
+        now_ts = int(time.time())
+        metrics_path = self.root / "state" / "ops.metrics.jsonl"
+        metrics_path.write_text(
+            json.dumps(
+                {
+                    "event": "dispatch_done",
+                    "at": "2026-03-01T00:00:00Z",
+                    "ts": now_ts,
+                    "taskId": "T-RPT-1",
+                    "cycleMs": 1500,
+                },
+                ensure_ascii=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        out = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@orchestrator report daily",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out.get("intent"), "report", out)
+        self.assertEqual(out.get("period"), "daily", out)
+        report_path = Path(str(out.get("path") or ""))
+        self.assertTrue(report_path.exists(), out)
+        self.assertIn("state/reports", report_path.as_posix(), out)
+        self.assertIn("daily", report_path.name, out)
+
+        kpis = out.get("kpis") or {}
+        self.assertIsInstance(kpis, dict, out)
+        self.assertIn("taskCompletionRate", kpis, out)
+        self.assertIn("blockedRecoveryRate", kpis, out)
+        self.assertIn("expertGroupMedianClosureMinutes", kpis, out)
+
+        report_text = report_path.read_text(encoding="utf-8")
+        self.assertIn("看板进度", report_text, out)
+        self.assertIn("核心 KPI", report_text, out)
+        self.assertIn("风险TOP", report_text, out)
+        self.assertIn("专家组状态摘要", report_text, out)
+        self.assertIn("下一步建议", report_text, out)
 
     def test_status_full_includes_ops_metrics(self):
         now_ts = int(time.time())
@@ -3811,6 +3867,11 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("opsMetrics", out, out)
         self.assertEqual((out.get("opsMetrics") or {}).get("windowDays"), 7, out)
         self.assertEqual((out.get("opsMetrics") or {}).get("throughputCompleted"), 1, out)
+        manager_kpis = out.get("managerKpis") or {}
+        self.assertIsInstance(manager_kpis, dict, out)
+        self.assertIn("taskCompletionRate", manager_kpis, out)
+        self.assertIn("blockedRecoveryRate", manager_kpis, out)
+        self.assertIn("expertGroupMedianClosureMinutes", manager_kpis, out)
 
     def test_status_full_surfaces_ops_metrics_error(self):
         module = load_milestone_module()
