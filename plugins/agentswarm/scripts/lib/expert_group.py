@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import logging
 import os
 from typing import Any, Dict, List
 
@@ -17,6 +18,7 @@ DEFAULT_EXPERT_GROUP_POLICY: Dict[str, Any] = {
     "downstreamImpactThreshold": 2,
     "highRiskReasonCodes": ["spawn_failed", "budget_exceeded", "invalid_spawn_output"],
 }
+LOGGER = logging.getLogger(__name__)
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -102,7 +104,12 @@ def load_expert_group_policy(root: str, override: Dict[str, Any] = None) -> Dict
                     loaded = json.load(f)
                 if isinstance(loaded, dict):
                     merged = merge_expert_group_policy(merged, loaded)
-            except Exception:
+            except Exception as err:
+                LOGGER.warning(
+                    "failed to load expert-group policy: path=%s error=%s",
+                    path,
+                    str(err),
+                )
                 continue
 
     if isinstance(override, dict):

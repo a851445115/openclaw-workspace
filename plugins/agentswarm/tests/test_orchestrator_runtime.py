@@ -86,6 +86,12 @@ class RuntimeTests(unittest.TestCase):
             rows.append(json.loads(line))
         return rows
 
+    def _write_json_file(self, rel_path: str, payload):
+        path = self.root / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return path
+
     def test_dispatch_spawn_closes_task_done(self):
         run_json([
             "python3",
@@ -252,6 +258,208 @@ class RuntimeTests(unittest.TestCase):
         expert_group = dispatch.get("expertGroup") or {}
         self.assertFalse(expert_group.get("triggered"), dispatch)
         self.assertEqual(expert_group.get("score"), 0, dispatch)
+        self.assertEqual(expert_group.get("reasons"), [], dispatch)
+
+    def test_dispatch_blocked_retry_limit_triggers_expert_group_with_non_high_risk_reason(self):
+        self._write_json_file(
+            "config/recovery-policy.json",
+            {
+                "default": {"maxAttempts": 5, "cooldownSec": 0},
+                "reasonPolicies": {
+                    "blocked_signal": {"maxAttempts": 5, "cooldownSec": 0},
+                },
+            },
+        )
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-007A: retry_limit 非高危触发",
+        ])
+
+        first = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-007A",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"message":"[BLOCKED] waiting for upstream data"}',
+        ])
+        self.assertEqual(first["spawn"]["reasonCode"], "blocked_signal", first)
+
+        second = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-007A",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"message":"[BLOCKED] waiting for upstream data"}',
+        ])
+        self.assertEqual(second["spawn"]["reasonCode"], "blocked_signal", second)
+        expert_group = second.get("expertGroup") or {}
+        self.assertTrue(expert_group.get("triggered"), second)
+        self.assertIn("retry_limit", expert_group.get("reasons") or [], second)
+        self.assertNotIn("high_risk_reason", expert_group.get("reasons") or [], second)
+
+    def test_dispatch_blocked_duration_triggers_expert_group_from_latest_snapshot(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@invest-analyst create task T-007B: blocked_duration 触发",
+        ])
+        module = load_milestone_module()
+        real_time = module.time.time
+        future_ts = time.time() + 3600
+        args = argparse.Namespace(
+            root=self.root.as_posix(),
+            task_id="T-007B",
+            agent="invest-analyst",
+            task="T-007B: blocked_duration 触发",
+            actor="orchestrator",
+            session_id="",
+            group_id="oc_041146c92a9ccb403a7f4f48fb59701d",
+            account_id="orchestrator",
+            mode="dry-run",
+            timeout_sec=120,
+            spawn=True,
+            spawn_cmd="",
+            spawn_output='{"message":"[BLOCKED] waiting for upstream data"}',
+            visibility_mode="handoff_visible",
+        )
+        try:
+            module.time.time = lambda: future_ts
+            out = module.dispatch_once(args)
+        finally:
+            module.time.time = real_time
+
+        self.assertTrue(out["ok"], out)
+        self.assertEqual((out.get("closeApply") or {}).get("intent"), "block_task", out)
+        self.assertEqual((out.get("spawn") or {}).get("reasonCode"), "blocked_signal", out)
+        expert_group = out.get("expertGroup") or {}
+        self.assertTrue(expert_group.get("triggered"), out)
+        self.assertIn("blocked_duration", expert_group.get("reasons") or [], out)
+
+    def test_dispatch_blocked_downstream_impact_triggers_expert_group(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-007C: downstream_impact 上游任务",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-107: downstream-1",
+        ])
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-108: downstream-2",
+        ])
+        snapshot_path = self.root / "state" / "tasks.snapshot.json"
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        snapshot["tasks"]["T-107"]["dependsOn"] = ["T-007C"]
+        snapshot["tasks"]["T-108"]["blockedBy"] = ["T-007C"]
+        snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        dispatch = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-007C",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"message":"[BLOCKED] waiting for upstream data"}',
+        ])
+        self.assertEqual(dispatch["spawn"]["reasonCode"], "blocked_signal", dispatch)
+        expert_group = dispatch.get("expertGroup") or {}
+        self.assertTrue(expert_group.get("triggered"), dispatch)
+        self.assertIn("downstream_impact", expert_group.get("reasons") or [], dispatch)
+
+    def test_dispatch_expert_group_disabled_keeps_blocked_result_untriggered(self):
+        self._write_json_file("config/expert-group-policy.json", {"enabled": False})
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-007D: expert group disabled",
+        ])
+
+        dispatch = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-007D",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"failed","message":"worker runtime crashed"}',
+        ])
+        self.assertEqual(dispatch["spawn"]["reasonCode"], "spawn_failed", dispatch)
+        expert_group = dispatch.get("expertGroup") or {}
+        self.assertFalse(expert_group.get("triggered"), dispatch)
         self.assertEqual(expert_group.get("reasons"), [], dispatch)
 
     def test_dispatch_expert_group_output_shape_is_stable(self):

@@ -2180,6 +2180,8 @@ def evaluate_dispatch_expert_group(
     except Exception:
         snapshot = {"tasks": {}}
     tasks = snapshot.get("tasks") if isinstance(snapshot.get("tasks"), dict) else {}
+    latest_task = tasks.get(task_id) if isinstance(tasks.get(task_id), dict) else None
+    task_for_snapshot = latest_task if isinstance(latest_task, dict) else (task if isinstance(task, dict) else {})
     downstream_impact = count_downstream_impact(task_id, tasks)
     retry_count = nonneg_int(spawn.get("attempt"), -1)
     if retry_count < 0:
@@ -2190,8 +2192,8 @@ def evaluate_dispatch_expert_group(
 
     task_snapshot = {
         "taskId": str(task_id or "").strip(),
-        "status": str((task or {}).get("status") or "").strip(),
-        "blockedDurationMinutes": estimate_blocked_duration_minutes(task),
+        "status": str(task_for_snapshot.get("status") or "").strip(),
+        "blockedDurationMinutes": estimate_blocked_duration_minutes(task_for_snapshot),
         "downstreamImpact": downstream_impact,
         "retryCount": max(0, retry_count),
     }
