@@ -343,11 +343,24 @@ def _save_threads_state(root: str, state: Dict[str, Any]) -> None:
     _write_json_atomic(threads_path(root), payload)
 
 
-def _load_messages(root: str) -> List[Dict[str, Any]]:
+def _messages_state_unreadable(path: str, fail_closed: bool, reason: str, exc: Optional[Exception] = None):
+    if fail_closed:
+        if exc is not None:
+            raise CollaborationStateError(f"messages_state_unreadable:{reason}") from exc
+        raise CollaborationStateError(f"messages_state_unreadable:{reason}")
+    if exc is not None:
+        LOGGER.warning("failed to load collaboration messages: path=%s", path, exc_info=True)
+    else:
+        LOGGER.warning("failed to load collaboration messages: path=%s reason=%s", path, reason)
+    return []
+
+
+def _load_messages(root: str, fail_closed: bool = False, strict: bool = False) -> List[Dict[str, Any]]:
     path = messages_path(root)
     if not os.path.exists(path):
         return []
     out: List[Dict[str, Any]] = []
+    strict_mode = strict or fail_closed
     try:
         with open(path, "r", encoding="utf-8") as f:
             for idx, line in enumerate(f, start=1):
@@ -356,18 +369,29 @@ def _load_messages(root: str) -> List[Dict[str, Any]]:
                     continue
                 try:
                     row = json.loads(token)
-                except Exception:
+                except Exception as exc:
+                    if strict_mode:
+                        return _messages_state_unreadable(path, fail_closed, f"line_{idx}_parse_failed", exc)
                     LOGGER.warning(
                         "skip malformed collaboration message row: path=%s line=%s",
                         path,
                         idx,
                     )
                     continue
-                if isinstance(row, dict):
-                    out.append(row)
-    except Exception:
-        LOGGER.warning("failed to load collaboration messages: path=%s", path, exc_info=True)
-        return []
+                if not isinstance(row, dict):
+                    if strict_mode:
+                        return _messages_state_unreadable(path, fail_closed, f"line_{idx}_non_object")
+                    LOGGER.warning(
+                        "skip non-object collaboration message row: path=%s line=%s",
+                        path,
+                        idx,
+                    )
+                    continue
+                out.append(row)
+    except CollaborationStateError:
+        raise
+    except Exception as exc:
+        return _messages_state_unreadable(path, fail_closed, "read_failed", exc)
     return out
 
 
@@ -493,13 +517,21 @@ def _recover_append_transaction_if_needed(root: str) -> bool:
 
     message = transaction["message"]
     dedupe_scope = transaction["dedupeScope"]
-    rows = _load_messages(root)
+    rows = _load_messages(root, fail_closed=True, strict=True)
     if _append_unique_message(rows, message):
         _save_messages(root, rows)
     rebuilt_state = _rebuild_threads_state(rows, dedupe_scope)
     _save_threads_state(root, rebuilt_state)
     _remove_file(append_transaction_path(root))
     return True
+
+
+def _state_error_reason(exc: Exception, fallback: str) -> str:
+    if isinstance(exc, CollaborationStateError):
+        reason = str(exc).split(":", 1)[0].strip()
+        if reason:
+            return reason
+    return fallback
 
 
 def _normalize_thread_entry(raw: Dict[str, Any], message: Dict[str, Any]) -> Dict[str, Any]:
@@ -551,7 +583,7 @@ def append_message(root: str, payload: Dict[str, Any], policy: Optional[Dict[str
                 recovery_applied = _recover_append_transaction_if_needed(root)
             except Exception as exc:
                 LOGGER.warning("failed to recover pending collaboration append transaction", exc_info=True)
-                return {"ok": False, "reason": "state_recovery_failed", "error": str(exc)}
+                return {"ok": False, "reason": _state_error_reason(exc, "state_recovery_failed"), "error": str(exc)}
 
             effective_policy = load_policy(root, override=policy)
             if not effective_policy.get("enabled", True):
@@ -569,7 +601,7 @@ def append_message(root: str, payload: Dict[str, Any], policy: Optional[Dict[str
                 threads_state = _load_threads_state(root, fail_closed=True)
             except CollaborationStateError as exc:
                 LOGGER.warning("collaboration append blocked by unreadable threads state", exc_info=True)
-                return {"ok": False, "reason": "threads_state_unreadable", "error": str(exc)}
+                return {"ok": False, "reason": _state_error_reason(exc, "threads_state_unreadable"), "error": str(exc)}
 
             dedupe_index = threads_state.setdefault("dedupeIndex", {})
             dedupe_token = ""
@@ -591,7 +623,11 @@ def append_message(root: str, payload: Dict[str, Any], policy: Optional[Dict[str
                             response["recovery"] = "applied_pending_transaction"
                         return response
 
-            rows = _load_messages(root)
+            try:
+                rows = _load_messages(root, fail_closed=True, strict=True)
+            except CollaborationStateError as exc:
+                LOGGER.warning("collaboration append blocked by unreadable messages state", exc_info=True)
+                return {"ok": False, "reason": _state_error_reason(exc, "messages_state_unreadable"), "error": str(exc)}
             rows.append(message)
             _write_append_transaction(root, message, dedupe_scope)
             _save_messages(root, rows)
@@ -625,14 +661,19 @@ def get_thread(root: str, thread_id: str) -> Dict[str, Any]:
         return {}
     with _STATE_LOCK:
         with _cross_process_state_lock(root):
+            state_warning = ""
             try:
                 _recover_append_transaction_if_needed(root)
-            except Exception:
+            except Exception as exc:
                 LOGGER.warning("failed to recover state before reading thread", exc_info=True)
+                state_warning = _state_error_reason(exc, "state_recovery_failed")
             state = _load_threads_state(root)
             threads = state.get("threads") if isinstance(state.get("threads"), dict) else {}
             row = threads.get(thread_key)
-            return dict(row) if isinstance(row, dict) else {}
+            out = dict(row) if isinstance(row, dict) else {}
+            if state_warning:
+                out["stateWarning"] = state_warning
+            return out
 
 
 def list_thread_messages(root: str, thread_id: str, limit: int = 0) -> List[Dict[str, Any]]:
@@ -641,11 +682,15 @@ def list_thread_messages(root: str, thread_id: str, limit: int = 0) -> List[Dict
         return []
     with _STATE_LOCK:
         with _cross_process_state_lock(root):
+            state_warning = ""
             try:
                 _recover_append_transaction_if_needed(root)
-            except Exception:
+            except Exception as exc:
                 LOGGER.warning("failed to recover state before listing thread messages", exc_info=True)
+                state_warning = _state_error_reason(exc, "state_recovery_failed")
             rows = [row for row in _load_messages(root) if str(row.get("threadId") or "") == thread_key]
+            if state_warning and rows:
+                rows = [dict(row, stateWarning=state_warning) if isinstance(row, dict) else row for row in rows]
     if limit > 0:
         return rows[-limit:]
     return rows

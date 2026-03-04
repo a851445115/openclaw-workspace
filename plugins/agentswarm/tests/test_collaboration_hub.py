@@ -173,11 +173,10 @@ class CollaborationHubTests(unittest.TestCase):
         for worker in workers:
             worker.start()
         start_event.set()
+        outputs = [result_queue.get(timeout=10) for _ in workers]
         for worker in workers:
             worker.join(timeout=10)
             self.assertEqual(worker.exitcode, 0)
-
-        outputs = [result_queue.get(timeout=5) for _ in workers]
         success_count = sum(1 for item in outputs if item.get("ok"))
         duplicate_count = sum(1 for item in outputs if item.get("reason") == "duplicate_question")
         self.assertEqual(success_count, 1, outputs)
@@ -205,11 +204,10 @@ class CollaborationHubTests(unittest.TestCase):
         for worker in workers:
             worker.start()
         start_event.set()
+        outputs = [result_queue.get(timeout=10) for _ in workers]
         for worker in workers:
             worker.join(timeout=10)
             self.assertEqual(worker.exitcode, 0)
-
-        outputs = [result_queue.get(timeout=5) for _ in workers]
         failed = [item for item in outputs if not item.get("ok")]
         self.assertEqual(failed, [], outputs)
 
@@ -256,6 +254,63 @@ class CollaborationHubTests(unittest.TestCase):
 
         self.assertEqual((state_dir / "collab.threads.json").read_text(encoding="utf-8"), before_threads)
         self.assertEqual((state_dir / "collab.messages.jsonl").read_text(encoding="utf-8"), before_messages)
+
+    def test_corrupted_messages_file_blocks_append_fail_closed(self):
+        first = self.mod.append_message(self.root.as_posix(), self._message("question", "Where is failure?"))
+        self.assertTrue(first.get("ok"), first)
+
+        state_dir = self.root / "state"
+        messages_path = state_dir / "collab.messages.jsonl"
+        threads_path = state_dir / "collab.threads.json"
+        transaction_path = state_dir / "collab.append.transaction.json"
+        messages_path.write_text("{broken-json\n", encoding="utf-8")
+
+        before_messages = messages_path.read_text(encoding="utf-8")
+        before_threads = threads_path.read_text(encoding="utf-8")
+
+        second = self._message("answer", "Root cause is timeout")
+        second["fromAgent"] = "debugger"
+        second["toAgent"] = "coder"
+        second["request"] = "Resolved"
+        second["createdAt"] = "2026-03-04T09:31:00Z"
+
+        appended = self.mod.append_message(self.root.as_posix(), second)
+        self.assertFalse(appended.get("ok"), appended)
+        self.assertEqual(appended.get("reason"), "messages_state_unreadable", appended)
+
+        self.assertEqual(messages_path.read_text(encoding="utf-8"), before_messages)
+        self.assertEqual(threads_path.read_text(encoding="utf-8"), before_threads)
+        self.assertFalse(transaction_path.exists(), transaction_path)
+
+    def test_corrupted_transaction_is_observable_and_blocks_recovery_write(self):
+        first = self.mod.append_message(self.root.as_posix(), self._message("question", "Where is failure?"))
+        self.assertTrue(first.get("ok"), first)
+
+        state_dir = self.root / "state"
+        messages_path = state_dir / "collab.messages.jsonl"
+        threads_path = state_dir / "collab.threads.json"
+        transaction_path = state_dir / "collab.append.transaction.json"
+        transaction_path.write_text("{broken", encoding="utf-8")
+
+        before_messages = messages_path.read_text(encoding="utf-8")
+        before_threads = threads_path.read_text(encoding="utf-8")
+
+        blocked = self.mod.append_message(self.root.as_posix(), self._message("decision", "Proceed"))
+        self.assertFalse(blocked.get("ok"), blocked)
+        self.assertEqual(blocked.get("reason"), "append_transaction_unreadable", blocked)
+
+        thread = self.mod.get_thread(self.root.as_posix(), "TH-1")
+        listed = self.mod.list_thread_messages(self.root.as_posix(), "TH-1")
+
+        self.assertEqual(thread.get("threadId"), "TH-1", thread)
+        self.assertEqual(thread.get("stateWarning"), "append_transaction_unreadable", thread)
+        self.assertEqual(len(listed), 1, listed)
+        self.assertEqual(listed[0].get("threadId"), "TH-1", listed)
+        self.assertEqual(listed[0].get("stateWarning"), "append_transaction_unreadable", listed)
+
+        self.assertEqual(messages_path.read_text(encoding="utf-8"), before_messages)
+        self.assertEqual(threads_path.read_text(encoding="utf-8"), before_threads)
+        self.assertTrue(transaction_path.exists(), transaction_path)
 
     def test_failed_second_file_write_is_recovered_next_append(self):
         original = self.mod._save_threads_state
