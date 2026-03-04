@@ -80,6 +80,22 @@ def _decide_recovery_same_key_worker(root: str, rounds: int, start_event, result
         result_queue.put({"ok": False, "error": repr(err)})
 
 
+def _hold_recovery_lock_worker(root: str, hold_seconds: float, result_queue) -> None:
+    try:
+        recovery_mod = load_recovery_module()
+        if recovery_mod.fcntl is None:
+            result_queue.put({"ok": False, "error": "fcntl unavailable"})
+            return
+        lock_path = Path(recovery_mod.recovery_state_lock_path(root))
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+", encoding="utf-8") as lock_fp:
+            recovery_mod.fcntl.flock(lock_fp.fileno(), recovery_mod.fcntl.LOCK_EX)
+            result_queue.put({"ok": True})
+            time.sleep(max(0.0, hold_seconds))
+    except Exception as err:
+        result_queue.put({"ok": False, "error": repr(err)})
+
+
 class RecoveryLoopTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -352,18 +368,120 @@ class RecoveryLoopTests(unittest.TestCase):
         self.assertEqual(after_first, {}, after_first)
         self.assertTrue(after_second, after_second)
 
-    def test_decide_recovery_requires_lock_for_state_write(self):
+    def test_decide_recovery_fails_closed_on_load_error_without_overwriting(self):
+        state_path = self.root / "state" / "recovery.state.json"
+        broken_payload = '{"entries": {"T-OLD|spawn_failed": {"taskId": "T-OLD"}'
+        state_path.write_text(broken_payload, encoding="utf-8")
+
+        expected_error = getattr(self.recovery_mod, "RecoveryStateLoadError", RuntimeError)
+        with self.assertRaises(expected_error):
+            self.recovery_mod.decide_recovery(
+                self.root.as_posix(),
+                "T-LOAD-FAIL",
+                "coder",
+                "spawn_failed",
+                now_ts=1_700_200_000,
+            )
+        self.assertEqual(state_path.read_text(encoding="utf-8"), broken_payload)
+
+    def test_clear_task_fails_closed_on_load_error(self):
+        state_path = self.root / "state" / "recovery.state.json"
+        broken_payload = '{"entries": '
+        state_path.write_text(broken_payload, encoding="utf-8")
+
+        expected_error = getattr(self.recovery_mod, "RecoveryStateLoadError", RuntimeError)
+        with self.assertRaises(expected_error):
+            self.recovery_mod.clear_task(self.root.as_posix(), "T-LOAD-FAIL")
+        self.assertEqual(state_path.read_text(encoding="utf-8"), broken_payload)
+
+    def test_save_recovery_state_fails_closed_on_load_error(self):
+        state_path = self.root / "state" / "recovery.state.json"
+        broken_payload = '{"entries": '
+        state_path.write_text(broken_payload, encoding="utf-8")
+
+        expected_error = getattr(self.recovery_mod, "RecoveryStateLoadError", RuntimeError)
+        with self.assertRaises(expected_error):
+            self.recovery_mod.save_recovery_state(
+                self.root.as_posix(),
+                {"entries": {"T-SAVE|spawn_failed": {"taskId": "T-SAVE"}}},
+            )
+        self.assertEqual(state_path.read_text(encoding="utf-8"), broken_payload)
+
+    def test_decide_recovery_fcntl_unavailable_falls_back_when_not_strict(self):
         with mock.patch.object(self.recovery_mod, "fcntl", None):
-            with self.assertLogs(self.recovery_mod.LOGGER.name, level="ERROR") as logs:
-                with self.assertRaises(RuntimeError):
-                    self.recovery_mod.decide_recovery(
+            with mock.patch.dict("os.environ", {"STRICT_FILE_LOCK": "false"}, clear=False):
+                with self.assertLogs(self.recovery_mod.LOGGER.name, level="WARNING") as logs:
+                    out = self.recovery_mod.decide_recovery(
                         self.root.as_posix(),
-                        "T-LOCK-FAIL",
+                        "T-LOCK-FALLBACK",
                         "coder",
                         "spawn_failed",
-                        now_ts=1_700_200_000,
+                        now_ts=1_700_200_100,
                     )
-        self.assertIn("failed to acquire recovery state lock", "\n".join(logs.output))
+        self.assertEqual(out.get("attempt"), 1, out)
+        combined_logs = "\n".join(logs.output)
+        self.assertIn("HIGH PRIORITY", combined_logs)
+        self.assertIn("STRICT_FILE_LOCK", combined_logs)
+
+    def test_decide_recovery_requires_file_lock_when_strict_enabled(self):
+        lock_error = getattr(self.recovery_mod, "RecoveryStateLockError", RuntimeError)
+        with mock.patch.object(self.recovery_mod, "fcntl", None):
+            with self.assertLogs(self.recovery_mod.LOGGER.name, level="ERROR") as logs:
+                with mock.patch.dict("os.environ", {"STRICT_FILE_LOCK": "true"}, clear=False):
+                    with self.assertRaises(lock_error):
+                        self.recovery_mod.decide_recovery(
+                            self.root.as_posix(),
+                            "T-LOCK-FAIL",
+                            "coder",
+                            "spawn_failed",
+                            now_ts=1_700_200_000,
+                        )
+        combined_logs = "\n".join(logs.output)
+        self.assertIn("failed to acquire recovery state lock", combined_logs)
+        self.assertIn("STRICT_FILE_LOCK", combined_logs)
+
+    def test_decide_recovery_lock_timeout_raises_with_wait_details(self):
+        if self.recovery_mod.fcntl is None:
+            self.skipTest("fcntl unavailable")
+
+        lock_error = getattr(self.recovery_mod, "RecoveryStateLockError", RuntimeError)
+        ctx = multiprocessing.get_context("spawn")
+        result_queue = ctx.Queue()
+        holder = ctx.Process(
+            target=_hold_recovery_lock_worker,
+            args=(self.root.as_posix(), 1.0, result_queue),
+        )
+        holder.start()
+        ready = result_queue.get(timeout=5)
+        self.assertTrue(ready.get("ok"), ready)
+
+        try:
+            with mock.patch.dict(
+                "os.environ",
+                {
+                    "RECOVERY_STATE_LOCK_TIMEOUT_SEC": "0.2",
+                    "RECOVERY_STATE_LOCK_RETRY_SEC": "0.05",
+                    "STRICT_FILE_LOCK": "true",
+                },
+                clear=False,
+            ):
+                with self.assertLogs(self.recovery_mod.LOGGER.name, level="ERROR") as logs:
+                    with self.assertRaises(lock_error):
+                        self.recovery_mod.decide_recovery(
+                            self.root.as_posix(),
+                            "T-LOCK-TIMEOUT",
+                            "coder",
+                            "spawn_failed",
+                            now_ts=1_700_200_200,
+                        )
+            combined_logs = "\n".join(logs.output)
+            self.assertIn("timed out waiting", combined_logs)
+            self.assertIn("recovery.state.lock", combined_logs)
+        finally:
+            holder.join(timeout=5)
+            if holder.is_alive():
+                holder.terminate()
+                holder.join(timeout=5)
 
     def test_decide_recovery_multi_process_keeps_state_json_intact(self):
         workers = 8

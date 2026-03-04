@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from contextlib import contextmanager
+import errno
 import json
 import logging
 import os
@@ -34,10 +35,37 @@ DEFAULT_RECOVERY_POLICY: Dict[str, Any] = {
 }
 LOGGER = logging.getLogger(__name__)
 _RECOVERY_STATE_LOCK = threading.RLock()
+STRICT_FILE_LOCK_ENV = "STRICT_FILE_LOCK"
+LOCK_TIMEOUT_ENV = "RECOVERY_STATE_LOCK_TIMEOUT_SEC"
+LOCK_RETRY_ENV = "RECOVERY_STATE_LOCK_RETRY_SEC"
+DEFAULT_LOCK_TIMEOUT_SEC = 5.0
+DEFAULT_LOCK_RETRY_SEC = 0.05
 
 
 class RecoveryStateLockError(RuntimeError):
     pass
+
+
+class RecoveryStateLoadError(RuntimeError):
+    pass
+
+
+def _env_truthy(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        parsed = float(raw)
+    except Exception:
+        return default
+    return parsed if parsed > 0 else default
 
 
 def now_iso() -> str:
@@ -190,20 +218,52 @@ def _write_json_atomic(path: str, payload: Dict[str, Any]) -> None:
 @contextmanager
 def _recovery_state_guard(root: str, require_lock: bool = False):
     lock_path = recovery_state_lock_path(root)
+    strict_file_lock = _env_truthy(STRICT_FILE_LOCK_ENV, default=False)
+    lock_timeout_sec = _env_float(LOCK_TIMEOUT_ENV, DEFAULT_LOCK_TIMEOUT_SEC)
+    lock_retry_sec = _env_float(LOCK_RETRY_ENV, DEFAULT_LOCK_RETRY_SEC)
     lock_fp = None
     lock_acquired = False
     with _RECOVERY_STATE_LOCK:
         if fcntl is None:
-            if require_lock:
-                message = f"failed to acquire recovery state lock: root={root} lock={lock_path} (fcntl unavailable)"
+            if require_lock and strict_file_lock:
+                message = (
+                    f"failed to acquire recovery state lock: root={root} lock={lock_path} "
+                    f"(fcntl unavailable; {STRICT_FILE_LOCK_ENV}=true)"
+                )
                 LOGGER.error(message)
                 raise RecoveryStateLockError(message)
+            if require_lock:
+                LOGGER.warning(
+                    "HIGH PRIORITY: fcntl unavailable, falling back to process lock + atomic write: "
+                    "root=%s lock=%s %s=false",
+                    root,
+                    lock_path,
+                    STRICT_FILE_LOCK_ENV,
+                )
         else:
             try:
                 os.makedirs(os.path.dirname(lock_path), exist_ok=True)
                 lock_fp = open(lock_path, "a+", encoding="utf-8")
-                fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX)
-                lock_acquired = True
+                started_at = time.monotonic()
+                while True:
+                    try:
+                        fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        lock_acquired = True
+                        break
+                    except OSError as err:
+                        if err.errno not in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+                            raise
+                        waited_sec = max(0.0, time.monotonic() - started_at)
+                        if waited_sec >= lock_timeout_sec:
+                            message = (
+                                f"timed out waiting {waited_sec:.3f}s for recovery state lock: "
+                                f"root={root} lock={lock_path}"
+                            )
+                            LOGGER.error(message)
+                            if require_lock:
+                                raise RecoveryStateLockError(message) from err
+                            break
+                        time.sleep(lock_retry_sec)
             except Exception as err:
                 LOGGER.exception("failed to acquire recovery state lock: root=%s lock=%s", root, lock_path)
                 if lock_fp is not None:
@@ -250,6 +310,32 @@ def _load_recovery_state_unlocked(root: str) -> Dict[str, Any]:
     return {"entries": entries, "updatedAt": str(data.get("updatedAt") or "")}
 
 
+def _load_recovery_state_unlocked_strict(root: str, caller: str) -> Dict[str, Any]:
+    path = recovery_state_path(root)
+    if not os.path.exists(path):
+        return _empty_recovery_state()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as err:
+        message = f"failed to load recovery state in write path: caller={caller} path={path}"
+        LOGGER.error(message, exc_info=True)
+        raise RecoveryStateLoadError(message) from err
+    if not isinstance(data, dict):
+        message = f"invalid recovery state payload type in write path: caller={caller} path={path} type={type(data).__name__}"
+        LOGGER.error(message)
+        raise RecoveryStateLoadError(message)
+    if "entries" in data and not isinstance(data.get("entries"), dict):
+        message = (
+            f"invalid recovery state entries in write path: caller={caller} path={path} "
+            f"type={type(data.get('entries')).__name__}"
+        )
+        LOGGER.error(message)
+        raise RecoveryStateLoadError(message)
+    entries = data.get("entries") if isinstance(data.get("entries"), dict) else {}
+    return {"entries": entries, "updatedAt": str(data.get("updatedAt") or "")}
+
+
 def load_recovery_state(root: str) -> Dict[str, Any]:
     return _load_recovery_state_unlocked(root)
 
@@ -262,6 +348,7 @@ def _save_recovery_state_unlocked(root: str, state: Dict[str, Any]) -> None:
 
 def save_recovery_state(root: str, state: Dict[str, Any]) -> None:
     with _recovery_state_guard(root, require_lock=True):
+        _load_recovery_state_unlocked_strict(root, caller="save_recovery_state")
         _save_recovery_state_unlocked(root, state)
 
 
@@ -362,7 +449,7 @@ def decide_recovery(root: str, task_id: str, current_assignee: str, reason_code:
     cooldown_sec = max(0, safe_int(reason_conf.get("cooldownSec"), 180))
 
     with _recovery_state_guard(root, require_lock=True):
-        state = _load_recovery_state_unlocked(root)
+        state = _load_recovery_state_unlocked_strict(root, caller="decide_recovery")
         entries = state.setdefault("entries", {})
         key = f"{task_id}|{reason}"
         prev = entries.get(key) if isinstance(entries.get(key), dict) else {}
@@ -450,7 +537,7 @@ def clear_task(root: str, task_id: str) -> Dict[str, Any]:
         return {"taskId": "", "cleared": False, "removedKeys": []}
 
     with _recovery_state_guard(root, require_lock=True):
-        state = _load_recovery_state_unlocked(root)
+        state = _load_recovery_state_unlocked_strict(root, caller="clear_task")
         entries = state.setdefault("entries", {})
         removed_keys: List[str] = []
 
