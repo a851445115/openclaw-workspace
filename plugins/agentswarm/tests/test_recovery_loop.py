@@ -407,21 +407,22 @@ class RecoveryLoopTests(unittest.TestCase):
             )
         self.assertEqual(state_path.read_text(encoding="utf-8"), broken_payload)
 
-    def test_decide_recovery_fcntl_unavailable_falls_back_when_not_strict(self):
+    def test_decide_recovery_fcntl_unavailable_fails_closed_even_when_not_strict(self):
+        lock_error = getattr(self.recovery_mod, "RecoveryStateLockError", RuntimeError)
         with mock.patch.object(self.recovery_mod, "fcntl", None):
-            with mock.patch.dict("os.environ", {"STRICT_FILE_LOCK": "false"}, clear=False):
-                with self.assertLogs(self.recovery_mod.LOGGER.name, level="WARNING") as logs:
-                    out = self.recovery_mod.decide_recovery(
-                        self.root.as_posix(),
-                        "T-LOCK-FALLBACK",
-                        "coder",
-                        "spawn_failed",
-                        now_ts=1_700_200_100,
-                    )
-        self.assertEqual(out.get("attempt"), 1, out)
+            with self.assertLogs(self.recovery_mod.LOGGER.name, level="ERROR") as logs:
+                with mock.patch.dict("os.environ", {"STRICT_FILE_LOCK": "false"}, clear=False):
+                    with self.assertRaises(lock_error):
+                        self.recovery_mod.decide_recovery(
+                            self.root.as_posix(),
+                            "T-LOCK-FALLBACK",
+                            "coder",
+                            "spawn_failed",
+                            now_ts=1_700_200_100,
+                        )
         combined_logs = "\n".join(logs.output)
-        self.assertIn("HIGH PRIORITY", combined_logs)
-        self.assertIn("STRICT_FILE_LOCK", combined_logs)
+        self.assertIn("failed to acquire recovery state lock", combined_logs)
+        self.assertIn("fcntl unavailable", combined_logs)
 
     def test_decide_recovery_requires_file_lock_when_strict_enabled(self):
         lock_error = getattr(self.recovery_mod, "RecoveryStateLockError", RuntimeError)
@@ -452,10 +453,9 @@ class RecoveryLoopTests(unittest.TestCase):
             args=(self.root.as_posix(), 1.0, result_queue),
         )
         holder.start()
-        ready = result_queue.get(timeout=5)
-        self.assertTrue(ready.get("ok"), ready)
-
         try:
+            ready = result_queue.get(timeout=5)
+            self.assertTrue(ready.get("ok"), ready)
             with mock.patch.dict(
                 "os.environ",
                 {

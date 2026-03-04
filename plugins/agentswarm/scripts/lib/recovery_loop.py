@@ -225,21 +225,22 @@ def _recovery_state_guard(root: str, require_lock: bool = False):
     lock_acquired = False
     with _RECOVERY_STATE_LOCK:
         if fcntl is None:
-            if require_lock and strict_file_lock:
+            if require_lock:
                 message = (
                     f"failed to acquire recovery state lock: root={root} lock={lock_path} "
-                    f"(fcntl unavailable; {STRICT_FILE_LOCK_ENV}=true)"
+                    f"(fcntl unavailable; write path requires file lock; "
+                    f"{STRICT_FILE_LOCK_ENV}={str(strict_file_lock).lower()})"
                 )
                 LOGGER.error(message)
                 raise RecoveryStateLockError(message)
-            if require_lock:
-                LOGGER.warning(
-                    "HIGH PRIORITY: fcntl unavailable, falling back to process lock + atomic write: "
-                    "root=%s lock=%s %s=false",
-                    root,
-                    lock_path,
-                    STRICT_FILE_LOCK_ENV,
+            if strict_file_lock:
+                message = (
+                    f"failed to acquire recovery state lock: root={root} lock={lock_path} "
+                    f"(fcntl unavailable; non-write path requires file lock because "
+                    f"{STRICT_FILE_LOCK_ENV}=true)"
                 )
+                LOGGER.error(message)
+                raise RecoveryStateLockError(message)
         else:
             try:
                 os.makedirs(os.path.dirname(lock_path), exist_ok=True)
@@ -293,47 +294,55 @@ def _recovery_state_guard(root: str, require_lock: bool = False):
                     LOGGER.warning("failed to close recovery lock file: lock=%s", lock_path, exc_info=True)
 
 
-def _load_recovery_state_unlocked(root: str) -> Dict[str, Any]:
-    path = recovery_state_path(root)
+def _load_recovery_state_payload(path: str, strict: bool = False, caller: str = "") -> Dict[str, Any]:
     if not os.path.exists(path):
         return _empty_recovery_state()
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        LOGGER.warning("failed to load recovery state: path=%s", path, exc_info=True)
-        return _empty_recovery_state()
-    if not isinstance(data, dict):
-        LOGGER.warning("invalid recovery state payload type: path=%s type=%s", path, type(data).__name__)
-        return _empty_recovery_state()
-    entries = data.get("entries") if isinstance(data.get("entries"), dict) else {}
-    return {"entries": entries, "updatedAt": str(data.get("updatedAt") or "")}
 
-
-def _load_recovery_state_unlocked_strict(root: str, caller: str) -> Dict[str, Any]:
-    path = recovery_state_path(root)
-    if not os.path.exists(path):
-        return _empty_recovery_state()
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception as err:
-        message = f"failed to load recovery state in write path: caller={caller} path={path}"
-        LOGGER.error(message, exc_info=True)
-        raise RecoveryStateLoadError(message) from err
+        if strict:
+            message = f"failed to load recovery state in write path: caller={caller} path={path}"
+            LOGGER.error(message, exc_info=True)
+            raise RecoveryStateLoadError(message) from err
+        LOGGER.warning("failed to load recovery state: path=%s", path, exc_info=True)
+        return _empty_recovery_state()
+
     if not isinstance(data, dict):
-        message = f"invalid recovery state payload type in write path: caller={caller} path={path} type={type(data).__name__}"
-        LOGGER.error(message)
-        raise RecoveryStateLoadError(message)
+        if strict:
+            message = (
+                f"invalid recovery state payload type in write path: "
+                f"caller={caller} path={path} type={type(data).__name__}"
+            )
+            LOGGER.error(message)
+            raise RecoveryStateLoadError(message)
+        LOGGER.warning("invalid recovery state payload type: path=%s type=%s", path, type(data).__name__)
+        return _empty_recovery_state()
+
     if "entries" in data and not isinstance(data.get("entries"), dict):
-        message = (
-            f"invalid recovery state entries in write path: caller={caller} path={path} "
-            f"type={type(data.get('entries')).__name__}"
-        )
-        LOGGER.error(message)
-        raise RecoveryStateLoadError(message)
+        if strict:
+            message = (
+                f"invalid recovery state entries in write path: caller={caller} path={path} "
+                f"type={type(data.get('entries')).__name__}"
+            )
+            LOGGER.error(message)
+            raise RecoveryStateLoadError(message)
+        LOGGER.warning("invalid recovery state entries: path=%s type=%s", path, type(data.get("entries")).__name__)
+        return _empty_recovery_state()
+
     entries = data.get("entries") if isinstance(data.get("entries"), dict) else {}
     return {"entries": entries, "updatedAt": str(data.get("updatedAt") or "")}
+
+
+def _load_recovery_state_unlocked(root: str) -> Dict[str, Any]:
+    path = recovery_state_path(root)
+    return _load_recovery_state_payload(path, strict=False)
+
+
+def _load_recovery_state_unlocked_strict(root: str, caller: str) -> Dict[str, Any]:
+    path = recovery_state_path(root)
+    return _load_recovery_state_payload(path, strict=True, caller=caller)
 
 
 def load_recovery_state(root: str) -> Dict[str, Any]:
