@@ -3779,17 +3779,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("协作线程摘要", texts, out)
         self.assertIn("专家组状态", texts, out)
 
-    def test_build_manager_kpis_blocked_recovery_rate_uses_blocked_done_final_ratio(self):
+    def test_build_manager_kpis_blocked_recovery_rate_uses_timestamp_order_for_out_of_order_events(self):
         now_ts = int(time.time())
         metrics_path = self.root / "state" / "ops.metrics.jsonl"
+        at_blocked = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now_ts + 40))
+        at_done = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now_ts + 50))
         rows = [
-            {"event": "dispatch_blocked", "taskId": "T-BR-1", "ts": now_ts + 1},
-            {"event": "dispatch_done", "taskId": "T-BR-1", "ts": now_ts + 2},
-            {"event": "dispatch_blocked", "taskId": "T-BR-2", "ts": now_ts + 3},
-            {"event": "dispatch_blocked", "taskId": "T-BR-3", "ts": now_ts + 4},
-            {"event": "dispatch_done", "taskId": "T-BR-3", "ts": now_ts + 5},
-            {"event": "dispatch_blocked", "taskId": "T-BR-3", "ts": now_ts + 6},
-            {"event": "dispatch_done", "taskId": "T-DONE-ONLY", "ts": now_ts + 7},
+            # Intentionally out of order: done happens after blocked by timestamp.
+            {"event": "dispatch_done", "taskId": "T-BR-1", "ts": now_ts + 20},
+            {"event": "dispatch_blocked", "taskId": "T-BR-1", "ts": now_ts + 10},
+            {"event": "dispatch_blocked", "taskId": "T-BR-2", "ts": now_ts + 30},
+            # Missing ts should safely fall back to "at".
+            {"event": "dispatch_done", "taskId": "T-BR-3", "at": at_done},
+            {"event": "dispatch_blocked", "taskId": "T-BR-3", "at": at_blocked},
+            {"event": "dispatch_done", "taskId": "T-DONE-ONLY", "ts": now_ts + 60},
         ]
         metrics_path.write_text(
             "\n".join(json.dumps(row, ensure_ascii=True) for row in rows) + "\n",
@@ -3799,7 +3802,7 @@ class RuntimeTests(unittest.TestCase):
         module = load_milestone_module()
         kpis = module.build_manager_kpis(str(self.root), tasks={}, days=1)
         self.assertIn("blockedRecoveryRate", kpis, kpis)
-        self.assertAlmostEqual(kpis.get("blockedRecoveryRate"), round(1.0 / 3.0, 4), places=4, msg=str(kpis))
+        self.assertAlmostEqual(kpis.get("blockedRecoveryRate"), round(2.0 / 3.0, 4), places=4, msg=str(kpis))
 
     def test_feishu_router_report_failure_returns_structured_error(self):
         module = load_milestone_module()
@@ -3910,6 +3913,32 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("风险TOP", report_text, out)
         self.assertIn("专家组状态摘要", report_text, out)
         self.assertIn("下一步建议", report_text, out)
+
+    def test_build_manager_report_surfaces_degraded_state_when_ops_metrics_aggregate_fails(self):
+        module = load_milestone_module()
+        real_aggregate = module.ops_metrics.aggregate_metrics
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("aggregate unavailable")
+
+        try:
+            module.ops_metrics.aggregate_metrics = boom
+            report = module.build_manager_report(str(self.root), period="daily")
+        finally:
+            module.ops_metrics.aggregate_metrics = real_aggregate
+
+        self.assertTrue(report.get("ok"), report)
+        self.assertTrue(report.get("degraded"), report)
+        self.assertIn("aggregate unavailable", str(report.get("opsMetricsError") or ""), report)
+        warnings = report.get("warnings")
+        self.assertIsInstance(warnings, list, report)
+        self.assertTrue(warnings, report)
+
+        report_path = Path(str(report.get("path") or ""))
+        self.assertTrue(report_path.exists(), report)
+        report_text = report_path.read_text(encoding="utf-8")
+        self.assertIn("degraded: true", report_text, report)
+        self.assertIn("aggregate unavailable", report_text, report)
 
     def test_status_full_includes_ops_metrics(self):
         now_ts = int(time.time())

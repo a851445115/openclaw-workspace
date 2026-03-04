@@ -1032,6 +1032,19 @@ def collect_expert_group_closure_minutes(root: str, days: int = 7, now_ts: Optio
     return durations
 
 
+def _blocked_recovery_event_sort_key(row: Dict[str, Any], index: int) -> Tuple[int, int, int]:
+    ts = nonneg_int(row.get("ts"), -1)
+    if ts >= 0:
+        return (0, ts, index)
+
+    at_ts = parse_iso_to_ts(row.get("at"))
+    if at_ts > 0:
+        return (0, at_ts, index)
+
+    # Keep unknown timestamps deterministic while preserving stable fallback ordering.
+    return (1, index, index)
+
+
 def compute_blocked_recovery_rate(root: str, days: int = 7) -> float:
     safe_days = max(0, int(days))
     try:
@@ -1040,7 +1053,10 @@ def compute_blocked_recovery_rate(root: str, days: int = 7) -> float:
         return 0.0
 
     task_states: Dict[str, Dict[str, Any]] = {}
-    for row in rows:
+    indexed_rows = [(index, row) for index, row in enumerate(rows) if isinstance(row, dict)]
+    indexed_rows.sort(key=lambda item: _blocked_recovery_event_sort_key(item[1], item[0]))
+
+    for _, row in indexed_rows:
         if not isinstance(row, dict):
             continue
         event = str(row.get("event") or "").strip()
@@ -1118,10 +1134,17 @@ def build_manager_report(root: str, period: str = "daily") -> Dict[str, Any]:
     tasks = snapshot.get("tasks") if isinstance(snapshot.get("tasks"), dict) else {}
     progress = collect_board_progress(tasks)
 
+    degraded = False
+    warnings: List[str] = []
+    ops_metrics_error = ""
     try:
         ops_summary = ops_metrics.aggregate_metrics(root, days=days)
-    except Exception:
+    except Exception as exc:
         ops_summary = {}
+        degraded = True
+        ops_metrics_error = f"{type(exc).__name__}: {exc}"
+        warnings.append(f"ops_metrics.aggregate_metrics failed: {ops_metrics_error}")
+        LOGGER.warning("build_manager_report degraded: %s", warnings[-1])
     manager_kpis = build_manager_kpis(root, tasks=tasks, ops_summary=ops_summary, days=days)
 
     blocked_distribution = (
@@ -1149,13 +1172,24 @@ def build_manager_report(root: str, period: str = "daily") -> Dict[str, Any]:
     completion_pct = float(manager_kpis.get("taskCompletionRate") or 0.0) * 100.0
     recovery_pct = float(manager_kpis.get("blockedRecoveryRate") or 0.0) * 100.0
     expert_minutes = float(manager_kpis.get("expertGroupMedianClosureMinutes") or 0.0)
+    warning_lines = [f"- {line}" for line in warnings]
     markdown = "\n".join(
         [
             f"# Orchestrator {period_key.title()} Report",
             "",
             f"- generatedAt: {generated_at}",
             f"- period: {period_key}",
+            f"- degraded: {'true' if degraded else 'false'}",
             "",
+            *(
+                [
+                    "## 运行告警",
+                    *warning_lines,
+                    "",
+                ]
+                if warning_lines
+                else []
+            ),
             "## 看板进度（done/pending-like/blocked）",
             f"- done: {int(progress.get('done') or 0)}",
             f"- pending-like: {int(progress.get('pendingLike') or 0)}",
@@ -1198,6 +1232,17 @@ def build_manager_report(root: str, period: str = "daily") -> Dict[str, Any]:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, report_path)
+        try:
+            dir_flags = os.O_RDONLY
+            if hasattr(os, "O_DIRECTORY"):
+                dir_flags |= os.O_DIRECTORY
+            dir_fd = os.open(reports_dir, dir_flags)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except Exception:
+            pass
     except Exception:
         try:
             os.unlink(tmp_path)
@@ -1216,6 +1261,9 @@ def build_manager_report(root: str, period: str = "daily") -> Dict[str, Any]:
         "riskTop": risk_top,
         "expertGroupSummary": expert_summary,
         "collaborationSummary": collab_summary,
+        "degraded": degraded,
+        "warnings": warnings,
+        "opsMetricsError": ops_metrics_error,
     }
 
 
@@ -6254,6 +6302,9 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
                     "boardProgress": report_meta.get("boardProgress") if isinstance(report_meta.get("boardProgress"), dict) else {},
                     "riskTop": report_meta.get("riskTop") if isinstance(report_meta.get("riskTop"), list) else [],
                     "expertGroupSummary": report_meta.get("expertGroupSummary") if isinstance(report_meta.get("expertGroupSummary"), dict) else {},
+                    "degraded": bool(report_meta.get("degraded")),
+                    "warnings": report_meta.get("warnings") if isinstance(report_meta.get("warnings"), list) else [],
+                    "opsMetricsError": str(report_meta.get("opsMetricsError") or ""),
                     "send": out,
                 },
                 ensure_ascii=True,
