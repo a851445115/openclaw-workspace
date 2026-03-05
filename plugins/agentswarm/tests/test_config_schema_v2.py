@@ -56,10 +56,19 @@ class ConfigSchemaV2Tests(unittest.TestCase):
         backoff = retry.get("backoff") if isinstance(retry.get("backoff"), dict) else {}
         budget = orchestrator.get("budgetPolicy") if isinstance(orchestrator.get("budgetPolicy"), dict) else {}
         guardrails = budget.get("guardrails") if isinstance(budget.get("guardrails"), dict) else {}
+        continuation = (
+            orchestrator.get("continuationPolicy") if isinstance(orchestrator.get("continuationPolicy"), dict) else {}
+        )
         self.assertEqual(orchestrator.get("maxConcurrentSpawns"), 2, loaded)
         self.assertGreaterEqual(int(retry.get("maxAttempts") or 0), 1, loaded)
         self.assertIn(backoff.get("mode"), {"fixed", "linear", "exponential"}, loaded)
         self.assertGreaterEqual(int(guardrails.get("maxTaskTokens") or 0), 1, loaded)
+        self.assertEqual(continuation.get("enabled"), True, loaded)
+        self.assertEqual(continuation.get("maxContinuationRounds"), 6, loaded)
+        self.assertEqual(continuation.get("noProgressWindowRounds"), 2, loaded)
+        self.assertEqual(continuation.get("minProgressDeltaPct"), 3, loaded)
+        self.assertEqual(continuation.get("minEvidenceDeltaItems"), 1, loaded)
+        self.assertEqual(continuation.get("maxContinuationWallTimeSec"), 1800, loaded)
 
     def test_load_mixed_config_merges_v2_and_old_shapes(self):
         mixed = {
@@ -79,10 +88,40 @@ class ConfigSchemaV2Tests(unittest.TestCase):
         backoff = retry.get("backoff") if isinstance(retry.get("backoff"), dict) else {}
         budget = orchestrator.get("budgetPolicy") if isinstance(orchestrator.get("budgetPolicy"), dict) else {}
         guardrails = budget.get("guardrails") if isinstance(budget.get("guardrails"), dict) else {}
+        continuation = (
+            orchestrator.get("continuationPolicy") if isinstance(orchestrator.get("continuationPolicy"), dict) else {}
+        )
         self.assertEqual(retry.get("maxAttempts"), 4, loaded)
         self.assertIsInstance(backoff, dict, loaded)
         self.assertEqual(guardrails.get("maxTaskTokens"), 999, loaded)
         self.assertGreaterEqual(int(guardrails.get("maxTaskRetries") or 0), 1, loaded)
+        self.assertEqual(continuation.get("enabled"), True, loaded)
+        self.assertGreaterEqual(int(continuation.get("maxContinuationRounds") or 0), 1, loaded)
+
+    def test_continuation_policy_normalizes_bounds_and_types(self):
+        mixed = {
+            "orchestrator": {
+                "continuationPolicy": {
+                    "enabled": "yes",
+                    "maxContinuationRounds": 0,
+                    "noProgressWindowRounds": -3,
+                    "minProgressDeltaPct": 999,
+                    "minEvidenceDeltaItems": -4,
+                    "maxContinuationWallTimeSec": -11,
+                }
+            }
+        }
+        loaded = self.runtime.load_runtime_config(str(self.root), override=mixed)
+        orchestrator = loaded.get("orchestrator") if isinstance(loaded.get("orchestrator"), dict) else {}
+        continuation = (
+            orchestrator.get("continuationPolicy") if isinstance(orchestrator.get("continuationPolicy"), dict) else {}
+        )
+        self.assertEqual(continuation.get("enabled"), True, loaded)
+        self.assertEqual(continuation.get("maxContinuationRounds"), 1, loaded)
+        self.assertEqual(continuation.get("noProgressWindowRounds"), 1, loaded)
+        self.assertEqual(continuation.get("minProgressDeltaPct"), 100, loaded)
+        self.assertEqual(continuation.get("minEvidenceDeltaItems"), 0, loaded)
+        self.assertEqual(continuation.get("maxContinuationWallTimeSec"), 0, loaded)
 
     def test_load_v2_full_config_preserves_explicit_values(self):
         full = {
@@ -108,6 +147,14 @@ class ConfigSchemaV2Tests(unittest.TestCase):
                         "maxTaskWallTimeSec": 456,
                         "maxTaskRetries": 3,
                     }
+                },
+                "continuationPolicy": {
+                    "enabled": False,
+                    "maxContinuationRounds": 4,
+                    "noProgressWindowRounds": 2,
+                    "minProgressDeltaPct": 5,
+                    "minEvidenceDeltaItems": 2,
+                    "maxContinuationWallTimeSec": 900,
                 },
             },
         }

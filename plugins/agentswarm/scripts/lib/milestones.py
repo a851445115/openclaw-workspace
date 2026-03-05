@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import logging
 import math
@@ -38,6 +39,7 @@ import session_registry
 import context_pack
 import collaboration_hub
 import expert_group
+import config_runtime
 
 LOGGER = logging.getLogger(__name__)
 
@@ -124,6 +126,17 @@ RUNTIME_POLICY_CONFIG_CANDIDATES = (
     os.path.join("config", "runtime-policy.json"),
     os.path.join("state", "runtime-policy.json"),
 )
+CONTINUATION_STATE_FILE = os.path.join("state", "continuation.state.json")
+DEFAULT_CONTINUATION_POLICY: Dict[str, Any] = {
+    "enabled": True,
+    "maxContinuationRounds": 6,
+    "noProgressWindowRounds": 2,
+    "minProgressDeltaPct": 3,
+    "minEvidenceDeltaItems": 1,
+    "maxContinuationWallTimeSec": 1800,
+}
+CHECKPOINT_CONTINUE_HINTS = {"continue", "need_input", "handoff_suggested"}
+CHECKPOINT_STALL_SIGNALS = {"none", "soft_stall", "hard_block"}
 SPAWN_EXECUTOR_OPENCLAW = "openclaw_agent"
 SPAWN_EXECUTOR_CODEX = "codex_cli"
 SPAWN_EXECUTOR_CLAUDE = "claude_cli"
@@ -263,6 +276,10 @@ KNOWLEDGE_HINT_PROMPT_LIMIT = 0
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def ts_to_iso(ts: int) -> str:
+    return datetime.fromtimestamp(max(0, int(ts)), tz=timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def record_ops_event(root: str, event: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1348,6 +1365,10 @@ def collect_spawn_unfinished_checklist(spawn: Dict[str, Any]) -> List[str]:
     items = normalize_string_list(report.get("nextActions"), limit=6, item_limit=220)
     if items:
         return items
+    checkpoint = report.get("checkpoint") if isinstance(report.get("checkpoint"), dict) else {}
+    next_action = clip(str(checkpoint.get("nextAction") or ""), 220) if checkpoint else ""
+    if next_action:
+        return [next_action]
     detail = clip(spawn.get("detail"), 220)
     if detail:
         return [detail]
@@ -1504,6 +1525,15 @@ def build_structured_output_schema(task_id: str, agent: str) -> Dict[str, Any]:
         "evidence": ["日志/命令输出/截图路径/链接"],
         "risks": ["潜在风险或注意事项"],
         "nextActions": ["下一步建议（可为空）"],
+        "checkpoint": {
+            "progressPercent": 0,
+            "completed": ["本轮已完成子步骤"],
+            "remaining": ["剩余子步骤"],
+            "nextAction": "下一步确定动作",
+            "continueHint": "continue|need_input|handoff_suggested",
+            "stallSignal": "none|soft_stall|hard_block",
+            "evidenceDelta": ["本轮新增证据项"],
+        },
     }
 
 
@@ -2243,6 +2273,7 @@ def cleanup_done_state(root: str, task_id: str, session_agent: str = "", session
         "taskId": task_key,
         "contextCleared": False,
         "recoveryCleared": False,
+        "continuationCleared": False,
         "sessionUpdated": False,
         "session": {},
         "lifecycle": {
@@ -2267,6 +2298,12 @@ def cleanup_done_state(root: str, task_id: str, session_agent: str = "", session
         out["recoveryCleared"] = bool(cleared.get("cleared"))
     except Exception:
         LOGGER.warning("done cleanup failed for recovery state: taskId=%s", task_key, exc_info=True)
+
+    try:
+        cleared = clear_continuation_task(root, task_key)
+        out["continuationCleared"] = bool(cleared.get("cleared"))
+    except Exception:
+        LOGGER.warning("done cleanup failed for continuation state: taskId=%s", task_key, exc_info=True)
 
     try:
         if session_agent and session_executor:
@@ -2314,6 +2351,45 @@ def extract_text_for_judgement(obj: Any) -> str:
     return "\n".join(chunks)
 
 
+def normalize_checkpoint_payload(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+
+    progress_percent = min(100, max(0, nonneg_int(raw.get("progressPercent"), 0)))
+    completed = normalize_string_list(raw.get("completed"), limit=16, item_limit=220)
+    remaining = normalize_string_list(raw.get("remaining"), limit=16, item_limit=220)
+    next_action = clip(str(raw.get("nextAction") or ""), 220)
+    continue_hint = str(raw.get("continueHint") or "continue").strip().lower()
+    stall_signal = str(raw.get("stallSignal") or "none").strip().lower()
+    evidence_delta = normalize_string_list(raw.get("evidenceDelta"), limit=20, item_limit=220)
+
+    if continue_hint not in CHECKPOINT_CONTINUE_HINTS:
+        continue_hint = "continue"
+    if stall_signal not in CHECKPOINT_STALL_SIGNALS:
+        stall_signal = "none"
+
+    return {
+        "progressPercent": progress_percent,
+        "completed": completed,
+        "remaining": remaining,
+        "nextAction": next_action,
+        "continueHint": continue_hint,
+        "stallSignal": stall_signal,
+        "evidenceDelta": evidence_delta,
+    }
+
+
+def is_valid_checkpoint_payload(checkpoint: Dict[str, Any]) -> bool:
+    if not isinstance(checkpoint, dict):
+        return False
+    progress = nonneg_int(checkpoint.get("progressPercent"), -1)
+    if progress < 0 or progress > 100:
+        return False
+    next_action = str(checkpoint.get("nextAction") or "").strip()
+    stall_signal = str(checkpoint.get("stallSignal") or "").strip().lower()
+    return bool(next_action) and stall_signal in CHECKPOINT_STALL_SIGNALS
+
+
 def normalize_spawn_report(task_id: str, role: str, spawn_obj: Dict[str, Any], fallback_text: str = "") -> Dict[str, Any]:
     base = spawn_obj
     if isinstance(spawn_obj.get("report"), dict):
@@ -2327,6 +2403,7 @@ def normalize_spawn_report(task_id: str, role: str, spawn_obj: Dict[str, Any], f
     evidence = normalize_string_list(base.get("evidence"))
     risks = normalize_string_list(base.get("risks"))
     next_actions = normalize_string_list(base.get("nextActions") or base.get("next"))
+    checkpoint = normalize_checkpoint_payload(base.get("checkpoint"))
 
     changes_raw = base.get("changes")
     changes: List[Dict[str, str]] = []
@@ -2379,9 +2456,9 @@ def normalize_spawn_report(task_id: str, role: str, spawn_obj: Dict[str, Any], f
 
     structured = bool(
         isinstance(base, dict)
-        and any(k in base for k in ("summary", "evidence", "changes", "nextActions", "risks", "status"))
+        and any(k in base for k in ("summary", "evidence", "changes", "nextActions", "risks", "status", "checkpoint"))
     )
-    return {
+    out = {
         "taskId": task_id,
         "agent": role,
         "status": status_hint,
@@ -2397,9 +2474,139 @@ def normalize_spawn_report(task_id: str, role: str, spawn_obj: Dict[str, Any], f
         "detail": detail,
         "structured": structured,
     }
+    if checkpoint:
+        out["checkpoint"] = checkpoint
+    return out
 
 
-def classify_spawn_result(root: str, task_id: str, role: str, spawn_obj: Dict[str, Any], fallback_text: str = "") -> Dict[str, Any]:
+def _digest_string_items(items: List[str]) -> str:
+    normalized = "\n".join([str(x).strip() for x in items if str(x).strip()])
+    if not normalized:
+        return ""
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def evaluate_checkpoint_continuation(
+    root: str,
+    task_id: str,
+    detail: str,
+    report: Dict[str, Any],
+    persist_state: bool = True,
+    now_ts: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    policy = load_continuation_policy(root)
+    if not bool(policy.get("enabled", True)):
+        return None
+
+    checkpoint = report.get("checkpoint") if isinstance(report.get("checkpoint"), dict) else {}
+    if not is_valid_checkpoint_payload(checkpoint):
+        return None
+
+    continue_hint = str(checkpoint.get("continueHint") or "continue").strip().lower()
+    stall_signal = str(checkpoint.get("stallSignal") or "none").strip().lower()
+    progress_percent = min(100, max(0, nonneg_int(checkpoint.get("progressPercent"), 0)))
+    next_action = clip(str(checkpoint.get("nextAction") or ""), 220)
+    evidence_delta = normalize_string_list(checkpoint.get("evidenceDelta"), limit=20, item_limit=220)
+    now_unix = int(time.time()) if now_ts is None else max(0, int(now_ts))
+
+    state = _load_continuation_state(root)
+    tasks = state.get("tasks") if isinstance(state.get("tasks"), dict) else {}
+    previous = tasks.get(task_id) if isinstance(tasks.get(task_id), dict) else {}
+    previous_rounds = nonneg_int(previous.get("rounds"), 0)
+    previous_first_ts = nonneg_int(previous.get("firstTs"), 0)
+    previous_progress = min(100, max(0, nonneg_int(previous.get("lastProgressPercent"), 0)))
+    previous_streak = nonneg_int(previous.get("noProgressStreak"), 0)
+    previous_evidence_set = normalize_string_list(previous.get("evidenceSet"), limit=120, item_limit=220)
+
+    rounds = previous_rounds + 1
+    first_ts = previous_first_ts if previous_first_ts > 0 else now_unix
+    last_ts = now_unix
+    elapsed_sec = max(0, last_ts - first_ts)
+
+    evidence_set = list(previous_evidence_set)
+    new_items: List[str] = []
+    for item in evidence_delta:
+        if item not in evidence_set:
+            new_items.append(item)
+            evidence_set.append(item)
+    if len(evidence_set) > 120:
+        evidence_set = evidence_set[-120:]
+
+    progress_delta = progress_percent - previous_progress
+    min_progress_delta = nonneg_int(policy.get("minProgressDeltaPct"), int(DEFAULT_CONTINUATION_POLICY["minProgressDeltaPct"]))
+    min_evidence_delta_items = nonneg_int(
+        policy.get("minEvidenceDeltaItems"),
+        int(DEFAULT_CONTINUATION_POLICY["minEvidenceDeltaItems"]),
+    )
+    no_progress_round = progress_delta < min_progress_delta and len(new_items) < min_evidence_delta_items
+    no_progress_streak = previous_streak + 1 if no_progress_round else 0
+
+    max_rounds = max(1, nonneg_int(policy.get("maxContinuationRounds"), int(DEFAULT_CONTINUATION_POLICY["maxContinuationRounds"])))
+    no_progress_window = max(
+        1,
+        nonneg_int(policy.get("noProgressWindowRounds"), int(DEFAULT_CONTINUATION_POLICY["noProgressWindowRounds"])),
+    )
+    max_wall_time_sec = max(
+        0,
+        nonneg_int(
+            policy.get("effectiveMaxContinuationWallTimeSec"),
+            nonneg_int(policy.get("maxContinuationWallTimeSec"), int(DEFAULT_CONTINUATION_POLICY["maxContinuationWallTimeSec"])),
+        ),
+    )
+
+    decision = "continue"
+    reason_code = "checkpoint_continue"
+    if continue_hint == "need_input":
+        decision = "blocked"
+        reason_code = "continuation_need_input"
+    elif stall_signal == "hard_block":
+        decision = "blocked"
+        reason_code = "blocked_signal"
+    elif rounds > max_rounds:
+        decision = "blocked"
+        reason_code = "continuation_round_limit"
+    elif max_wall_time_sec > 0 and elapsed_sec > max_wall_time_sec:
+        decision = "blocked"
+        reason_code = "continuation_timeout"
+    elif no_progress_streak >= no_progress_window:
+        decision = "blocked"
+        reason_code = "continuation_no_progress"
+
+    if persist_state:
+        entry = {
+            "rounds": rounds,
+            "firstTs": first_ts,
+            "lastTs": last_ts,
+            "firstAt": str(previous.get("firstAt") or ts_to_iso(first_ts)),
+            "lastAt": ts_to_iso(last_ts),
+            "lastProgressPercent": progress_percent,
+            "noProgressStreak": no_progress_streak,
+            "evidenceSet": evidence_set,
+            "evidenceHash": _digest_string_items(evidence_set),
+            "updatedAt": now_iso(),
+            "lastReasonCode": reason_code,
+        }
+        tasks[task_id] = entry
+        save_continuation_state(root, {"tasks": tasks})
+
+    detail_suffix = f"checkpoint {progress_percent}% | next: {next_action}" if next_action else f"checkpoint {progress_percent}%"
+    combined_detail = clip(f"{detail} | {detail_suffix}", 200) if detail else clip(detail_suffix, 200)
+    return {
+        "decision": decision,
+        "detail": combined_detail,
+        "reasonCode": reason_code,
+        "report": report,
+    }
+
+
+def classify_spawn_result(
+    root: str,
+    task_id: str,
+    role: str,
+    spawn_obj: Dict[str, Any],
+    fallback_text: str = "",
+    persist_state: bool = True,
+) -> Dict[str, Any]:
     structured_report = extract_structured_report_from_spawn(spawn_obj)
     source_obj = structured_report if isinstance(structured_report, dict) else spawn_obj
     status_hint = str(source_obj.get("status") or source_obj.get("taskStatus") or "").strip().lower()
@@ -2415,7 +2622,16 @@ def classify_spawn_result(root: str, task_id: str, role: str, spawn_obj: Dict[st
     detail = str(report.get("detail") or "").strip()
     kind = parse_wakeup_kind(text or detail)
 
+    def _clear_continuation_on_terminal() -> None:
+        if not persist_state:
+            return
+        try:
+            clear_continuation_task(root, task_id)
+        except Exception:
+            LOGGER.warning("failed to clear continuation state: taskId=%s", task_id, exc_info=True)
+
     if status_hint in {"blocked", "failed", "error", "timeout", "cancelled"}:
+        _clear_continuation_on_terminal()
         return {
             "decision": "blocked",
             "detail": clip(detail or text or f"{task_id} 子代理执行失败", 200),
@@ -2424,6 +2640,7 @@ def classify_spawn_result(root: str, task_id: str, role: str, spawn_obj: Dict[st
         }
 
     if ok_flag is False:
+        _clear_continuation_on_terminal()
         return {
             "decision": "blocked",
             "detail": clip(detail or text or f"{task_id} 子代理执行失败", 200),
@@ -2440,6 +2657,7 @@ def classify_spawn_result(root: str, task_id: str, role: str, spawn_obj: Dict[st
     if maybe_done:
         accepted = evaluate_acceptance(root, role, text or detail, structured_report=report)
         if accepted.get("ok"):
+            _clear_continuation_on_terminal()
             return {
                 "decision": "done",
                 "detail": clip(detail or text or f"{task_id} 子代理返回完成", 200),
@@ -2447,6 +2665,7 @@ def classify_spawn_result(root: str, task_id: str, role: str, spawn_obj: Dict[st
                 "acceptanceReasonCode": str(accepted.get("reasonCode") or "accepted"),
                 "report": report,
             }
+        _clear_continuation_on_terminal()
         return {
             "decision": "blocked",
             "detail": clip(
@@ -2459,6 +2678,7 @@ def classify_spawn_result(root: str, task_id: str, role: str, spawn_obj: Dict[st
         }
 
     if str(report.get("status") or "") in {"blocked", "failed", "error"} or kind == "blocked":
+        _clear_continuation_on_terminal()
         return {
             "decision": "blocked",
             "detail": clip(detail or text or f"{task_id} 子代理返回阻塞", 200),
@@ -2466,6 +2686,23 @@ def classify_spawn_result(root: str, task_id: str, role: str, spawn_obj: Dict[st
             "report": report,
         }
 
+    maybe_progress = (
+        status_hint in {"progress", "in_progress", "running"}
+        or str(report.get("status") or "").strip().lower() in {"progress", "in_progress", "running"}
+        or kind == "progress"
+    )
+    if maybe_progress:
+        continuation_decision = evaluate_checkpoint_continuation(
+            root,
+            task_id,
+            detail,
+            report,
+            persist_state=persist_state,
+        )
+        if isinstance(continuation_decision, dict):
+            return continuation_decision
+
+    _clear_continuation_on_terminal()
     return {
         "decision": "blocked",
         "detail": clip(detail or text or f"{task_id} 子代理未给出完成信号", 200),
@@ -3271,6 +3508,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                     args.agent,
                     parsed_hint,
                     fallback_text=args.spawn_output,
+                    persist_state=False,
                 )
                 hinted_reason = str(classified_hint.get("reasonCode") or "").strip()
                 if recovery_loop.should_trigger_recovery(hinted_reason):
@@ -3480,7 +3718,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
             detail = clip(spawn.get("detail") or f"{args.task_id} 子代理执行结果未明确", 200)
             recovery_decision: Optional[Dict[str, Any]] = None
             reason_code = str(spawn.get("reasonCode") or "").strip()
-            if decision != "done" and recovery_loop.should_trigger_recovery(reason_code):
+            if decision == "blocked" and recovery_loop.should_trigger_recovery(reason_code):
                 recovery_decision = recovery_loop.decide_recovery(
                     args.root,
                     args.task_id,
@@ -3495,6 +3733,12 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                 spawn["cooldownUntil"] = str(recovery_decision.get("cooldownUntil") or "")
             if decision == "done":
                 close_apply = board_apply(args.root, "orchestrator", f"mark done {args.task_id}: {detail}")
+            elif decision == "continue":
+                spawn["nextAssignee"] = str(args.agent)
+                spawn["action"] = "continue"
+                spawn["recoveryState"] = "continuation_inflight"
+                spawn["cooldownActive"] = False
+                close_apply = board_apply(args.root, "orchestrator", f"@{args.agent} claim task {args.task_id}")
             elif isinstance(recovery_decision, dict):
                 recovery_action = str(recovery_decision.get("action") or "escalate")
                 next_assignee = str(recovery_decision.get("nextAssignee") or "human")
@@ -3529,6 +3773,24 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                 cleaned_session = cleanup.get("session")
                 if isinstance(cleaned_session, dict) and cleaned_session:
                     session_meta = cleaned_session
+            elif decision == "continue":
+                retry_context_pack = {}
+                try:
+                    final_executor = str(spawn.get("executor") or session_executor or "unknown")
+                    session_record = session_registry.ensure_session(
+                        args.root,
+                        args.task_id,
+                        args.agent,
+                        final_executor,
+                    )
+                    session_meta = session_registry.build_session_metadata(session_record)
+                except Exception:
+                    LOGGER.warning(
+                        "session ensure active failed on continuation: taskId=%s agent=%s",
+                        args.task_id,
+                        args.agent,
+                        exc_info=True,
+                    )
             else:
                 try:
                     final_executor = str(spawn.get("executor") or session_executor or "unknown")
@@ -3589,7 +3851,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     backfill_result: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "spawn_done_or_not_enabled"}
     if args.spawn:
         spawn_decision = str(spawn.get("decision") or "").strip().lower()
-        if spawn_decision and spawn_decision != "done":
+        if spawn_decision == "blocked":
             try:
                 backfill_result = knowledge_adapter.backfill_failure_feedback(
                     args.root,
@@ -3672,11 +3934,13 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         }
         if decision == "done":
             record_ops_event(args.root, "dispatch_done", event_payload)
+        elif decision == "continue":
+            record_ops_event(args.root, "dispatch_continue", event_payload)
         elif decision == "blocked":
             record_ops_event(args.root, "dispatch_blocked", event_payload)
 
         recovery_action = str(spawn.get("action") or "").strip().lower()
-        if decision != "done" and recovery_action:
+        if decision == "blocked" and recovery_action:
             recovery_payload = {
                 "taskId": args.task_id,
                 "agent": args.agent,
@@ -3790,8 +4054,11 @@ def autopilot_once(args: argparse.Namespace) -> Dict[str, Any]:
             break
 
         if dispatch_result.get("autoClose"):
-            if str((dispatch_result.get("spawn") or {}).get("decision") or "") == "done":
+            spawn_decision = str((dispatch_result.get("spawn") or {}).get("decision") or "")
+            if spawn_decision == "done":
                 summary["done"] += 1
+            elif spawn_decision == "continue":
+                summary["manual"] += 1
             else:
                 summary["blocked"] += 1
         else:
@@ -5164,6 +5431,137 @@ def load_executor_routing(root: str) -> Dict[str, str]:
                     continue
                 routing[role] = executor
     return routing
+
+
+def continuation_state_path(root: str) -> str:
+    return os.path.join(root, CONTINUATION_STATE_FILE)
+
+
+def _empty_continuation_state() -> Dict[str, Any]:
+    return {"tasks": {}, "updatedAt": ""}
+
+
+def _load_continuation_state(root: str) -> Dict[str, Any]:
+    path = continuation_state_path(root)
+    if not os.path.exists(path):
+        return _empty_continuation_state()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+    except Exception:
+        return _empty_continuation_state()
+    if not isinstance(loaded, dict):
+        return _empty_continuation_state()
+    tasks = loaded.get("tasks") if isinstance(loaded.get("tasks"), dict) else {}
+    return {
+        "tasks": tasks,
+        "updatedAt": str(loaded.get("updatedAt") or ""),
+    }
+
+
+def _write_json_atomic(path: str, payload: Dict[str, Any]) -> None:
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=True, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                LOGGER.warning("failed to remove tmp continuation state file: path=%s", tmp_path, exc_info=True)
+
+
+def save_continuation_state(root: str, state: Dict[str, Any]) -> None:
+    path = continuation_state_path(root)
+    tasks = state.get("tasks") if isinstance(state.get("tasks"), dict) else {}
+    payload = {"tasks": tasks, "updatedAt": now_iso()}
+    _write_json_atomic(path, payload)
+
+
+def clear_continuation_task(root: str, task_id: str) -> Dict[str, Any]:
+    task_key = str(task_id or "").strip()
+    if not task_key:
+        return {"taskId": "", "cleared": False}
+    state = _load_continuation_state(root)
+    tasks = state.get("tasks") if isinstance(state.get("tasks"), dict) else {}
+    if task_key not in tasks:
+        return {"taskId": task_key, "cleared": False}
+    tasks.pop(task_key, None)
+    save_continuation_state(root, {"tasks": tasks})
+    return {"taskId": task_key, "cleared": True}
+
+
+def _normalize_continuation_policy(policy: Dict[str, Any]) -> Dict[str, Any]:
+    defaults = dict(DEFAULT_CONTINUATION_POLICY)
+    data = policy if isinstance(policy, dict) else {}
+
+    def _as_bool(value: Any, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            token = value.strip().lower()
+            if token in {"1", "true", "yes", "on"}:
+                return True
+            if token in {"0", "false", "no", "off"}:
+                return False
+        return bool(default)
+
+    return {
+        "enabled": _as_bool(data.get("enabled"), bool(defaults["enabled"])),
+        "maxContinuationRounds": max(
+            1,
+            nonneg_int(data.get("maxContinuationRounds"), int(defaults["maxContinuationRounds"])),
+        ),
+        "noProgressWindowRounds": max(
+            1,
+            nonneg_int(data.get("noProgressWindowRounds"), int(defaults["noProgressWindowRounds"])),
+        ),
+        "minProgressDeltaPct": min(
+            100,
+            max(0, nonneg_int(data.get("minProgressDeltaPct"), int(defaults["minProgressDeltaPct"]))),
+        ),
+        "minEvidenceDeltaItems": max(
+            0,
+            nonneg_int(data.get("minEvidenceDeltaItems"), int(defaults["minEvidenceDeltaItems"])),
+        ),
+        "maxContinuationWallTimeSec": max(
+            0,
+            nonneg_int(data.get("maxContinuationWallTimeSec"), int(defaults["maxContinuationWallTimeSec"])),
+        ),
+    }
+
+
+def load_continuation_policy(root: str) -> Dict[str, Any]:
+    runtime_loaded: Dict[str, Any] = {}
+    try:
+        runtime_loaded = config_runtime.load_runtime_config(root)
+    except Exception:
+        runtime_loaded = {}
+    orchestrator = runtime_loaded.get("orchestrator") if isinstance(runtime_loaded.get("orchestrator"), dict) else {}
+    continuation = orchestrator.get("continuationPolicy") if isinstance(orchestrator.get("continuationPolicy"), dict) else {}
+    normalized = _normalize_continuation_policy(continuation)
+
+    budget_policy = orchestrator.get("budgetPolicy") if isinstance(orchestrator.get("budgetPolicy"), dict) else {}
+    guardrails = budget_policy.get("guardrails") if isinstance(budget_policy.get("guardrails"), dict) else {}
+    budget_wall_time = nonneg_int(guardrails.get("maxTaskWallTimeSec"), 0)
+    continuation_wall_time = nonneg_int(normalized.get("maxContinuationWallTimeSec"), 0)
+
+    if budget_wall_time > 0 and continuation_wall_time > 0:
+        effective_wall_time = min(budget_wall_time, continuation_wall_time)
+    elif budget_wall_time > 0:
+        effective_wall_time = budget_wall_time
+    else:
+        effective_wall_time = continuation_wall_time
+
+    normalized["effectiveMaxContinuationWallTimeSec"] = effective_wall_time
+    return normalized
 
 
 def resolve_spawn_executor(root: str, agent: str) -> str:

@@ -13,6 +13,7 @@ Runtime config schema v2 is defined in `openclaw.plugin.json`, with load/normali
 - `orchestrator.retryPolicy.maxAttempts`: retry budget per execution path.
 - `orchestrator.retryPolicy.backoff`: retry backoff model (`fixed` / `linear` / `exponential`) and timing controls.
 - `orchestrator.budgetPolicy.guardrails`: budget guardrails (`maxTaskTokens` / `maxTaskWallTimeSec` / `maxTaskRetries`).
+- `orchestrator.continuationPolicy`: checkpoint continuation guardrails for long-running `progress` tasks.
 - `agents`: supports backward-compatible string items and v2 object items (`{id, capabilities[]}`).
 
 ## Default Behavior
@@ -51,6 +52,12 @@ Reason code semantics in spawn acceptance:
   - `verify_command_failed`
   - `stage_only`
   - `role_policy_missing_keyword`
+- Continuation path reason codes:
+  - `checkpoint_continue` (non-terminal; dispatch keeps task in progress)
+  - `continuation_round_limit`
+  - `continuation_no_progress`
+  - `continuation_timeout`
+  - `continuation_need_input`
 
 ## Runtime Policy v2
 
@@ -86,6 +93,14 @@ Minimal template:
         "maxTaskWallTimeSec": 0,
         "maxTaskRetries": 3
       }
+    },
+    "continuationPolicy": {
+      "enabled": true,
+      "maxContinuationRounds": 6,
+      "noProgressWindowRounds": 2,
+      "minProgressDeltaPct": 3,
+      "minEvidenceDeltaItems": 1,
+      "maxContinuationWallTimeSec": 1800
     }
   }
 }

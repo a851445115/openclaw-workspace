@@ -2639,6 +2639,319 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(status["task"]["status"], "in_progress", status)
         self.assertEqual(status["task"]["owner"], "debugger", status)
 
+    def test_dispatch_checkpoint_progress_continues_without_recovery(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-CP1: continuation happy path",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-CP1",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"progress","summary":"still running","checkpoint":{"progressPercent":20,"completed":["mapped root cause"],"remaining":["patch classifier"],"nextAction":"patch milestones classifier","continueHint":"continue","stallSignal":"none","evidenceDelta":["found no_completion_signal fallthrough"]}}',
+        ])
+        self.assertTrue(out["ok"], out)
+        spawn = out.get("spawn") or {}
+        self.assertEqual(spawn.get("decision"), "continue", out)
+        self.assertEqual(spawn.get("reasonCode"), "checkpoint_continue", out)
+        self.assertEqual((out.get("closeApply") or {}).get("intent"), "claim_task", out)
+        self.assertNotIn(spawn.get("action"), {"retry", "human", "escalate"}, out)
+
+        status = run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "status T-CP1",
+        ])
+        self.assertEqual(status["task"]["status"], "in_progress", status)
+        self.assertEqual(status["task"]["owner"], "coder", status)
+
+        cont_state = json.loads((self.root / "state" / "continuation.state.json").read_text(encoding="utf-8"))
+        row = ((cont_state.get("tasks") or {}).get("T-CP1")) or {}
+        self.assertEqual(int(row.get("rounds") or 0), 1, cont_state)
+        self.assertGreaterEqual(int(row.get("firstTs") or 0), 1, cont_state)
+        self.assertGreaterEqual(int(row.get("lastTs") or 0), int(row.get("firstTs") or 0), cont_state)
+        self.assertEqual(int(row.get("lastProgressPercent") or -1), 20, cont_state)
+        self.assertEqual(int(row.get("noProgressStreak", -1)), 0, cont_state)
+        self.assertIsInstance(row.get("evidenceSet"), list, cont_state)
+        self.assertTrue(str(row.get("evidenceHash") or "").strip(), cont_state)
+
+    def test_dispatch_checkpoint_need_input_blocks(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-CP2: continuation need input",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-CP2",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"progress","summary":"need user choice","checkpoint":{"progressPercent":25,"completed":["triaged branch"],"remaining":["decide deployment target"],"nextAction":"wait for user selection","continueHint":"need_input","stallSignal":"none","evidenceDelta":["two rollout options prepared"]}}',
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual((out.get("spawn") or {}).get("decision"), "blocked", out)
+        self.assertEqual((out.get("spawn") or {}).get("reasonCode"), "continuation_need_input", out)
+
+    def test_dispatch_checkpoint_hard_block_stays_blocked(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-CP3: continuation hard block",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-CP3",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"progress","summary":"blocked by upstream secret","checkpoint":{"progressPercent":15,"completed":["validated env"],"remaining":["fetch missing secret"],"nextAction":"request secret access","continueHint":"continue","stallSignal":"hard_block","evidenceDelta":["missing SECRET_KEY in env"]}}',
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual((out.get("spawn") or {}).get("decision"), "blocked", out)
+        self.assertEqual((out.get("spawn") or {}).get("reasonCode"), "blocked_signal", out)
+
+    def test_dispatch_checkpoint_round_limit_blocks(self):
+        self._write_json_file(
+            "config/runtime-policy.json",
+            {
+                "orchestrator": {
+                    "continuationPolicy": {
+                        "enabled": True,
+                        "maxContinuationRounds": 1,
+                        "noProgressWindowRounds": 2,
+                        "minProgressDeltaPct": 3,
+                        "minEvidenceDeltaItems": 1,
+                        "maxContinuationWallTimeSec": 1800,
+                    }
+                }
+            },
+        )
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-CP4: continuation round limit",
+        ])
+        first = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-CP4",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"progress","summary":"round1","checkpoint":{"progressPercent":10,"completed":["step1"],"remaining":["step2"],"nextAction":"continue","continueHint":"continue","stallSignal":"none","evidenceDelta":["first evidence"]}}',
+        ])
+        self.assertEqual((first.get("spawn") or {}).get("decision"), "continue", first)
+
+        second = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-CP4",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"progress","summary":"round2","checkpoint":{"progressPercent":40,"completed":["step2"],"remaining":[],"nextAction":"finalize","continueHint":"continue","stallSignal":"none","evidenceDelta":["second evidence"]}}',
+        ])
+        self.assertEqual((second.get("spawn") or {}).get("decision"), "blocked", second)
+        self.assertEqual((second.get("spawn") or {}).get("reasonCode"), "continuation_round_limit", second)
+
+    def test_dispatch_checkpoint_no_progress_window_blocks(self):
+        self._write_json_file(
+            "config/runtime-policy.json",
+            {
+                "orchestrator": {
+                    "continuationPolicy": {
+                        "enabled": True,
+                        "maxContinuationRounds": 6,
+                        "noProgressWindowRounds": 1,
+                        "minProgressDeltaPct": 3,
+                        "minEvidenceDeltaItems": 1,
+                        "maxContinuationWallTimeSec": 1800,
+                    }
+                }
+            },
+        )
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-CP5: continuation no progress",
+        ])
+        first = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-CP5",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"progress","summary":"round1","checkpoint":{"progressPercent":12,"completed":["step1"],"remaining":["step2"],"nextAction":"continue","continueHint":"continue","stallSignal":"none","evidenceDelta":["first evidence"]}}',
+        ])
+        self.assertEqual((first.get("spawn") or {}).get("decision"), "continue", first)
+
+        second = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-CP5",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"progress","summary":"round2","checkpoint":{"progressPercent":12,"completed":["step1"],"remaining":["step2"],"nextAction":"continue","continueHint":"continue","stallSignal":"none","evidenceDelta":[]}}',
+        ])
+        self.assertEqual((second.get("spawn") or {}).get("decision"), "blocked", second)
+        self.assertEqual((second.get("spawn") or {}).get("reasonCode"), "continuation_no_progress", second)
+
+    def test_dispatch_checkpoint_timeout_blocks(self):
+        self._write_json_file(
+            "config/runtime-policy.json",
+            {
+                "orchestrator": {
+                    "continuationPolicy": {
+                        "enabled": True,
+                        "maxContinuationRounds": 6,
+                        "noProgressWindowRounds": 2,
+                        "minProgressDeltaPct": 3,
+                        "minEvidenceDeltaItems": 1,
+                        "maxContinuationWallTimeSec": 1,
+                    }
+                }
+            },
+        )
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-CP6: continuation timeout",
+        ])
+        self._write_json_file(
+            "state/continuation.state.json",
+            {
+                "tasks": {
+                    "T-CP6": {
+                        "rounds": 1,
+                        "firstTs": 1,
+                        "lastTs": 1,
+                        "lastProgressPercent": 10,
+                        "evidenceSet": ["old-evidence"],
+                        "evidenceHash": "old-hash",
+                        "noProgressStreak": 0,
+                    }
+                }
+            },
+        )
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-CP6",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"progress","summary":"round2","checkpoint":{"progressPercent":40,"completed":["step2"],"remaining":[],"nextAction":"finalize","continueHint":"continue","stallSignal":"none","evidenceDelta":["new evidence"]}}',
+        ])
+        self.assertEqual((out.get("spawn") or {}).get("decision"), "blocked", out)
+        self.assertEqual((out.get("spawn") or {}).get("reasonCode"), "continuation_timeout", out)
+
     def test_user_friendly_help_and_project_status_alias(self):
         run_json([
             "python3",

@@ -181,6 +181,14 @@ class RecoveryLoopTests(unittest.TestCase):
         self.assertEqual(out["spawn"]["attempt"], 1, out)
         self.assertEqual(out["spawn"]["nextAssignee"], "debugger", out)
 
+    def test_checkpoint_continue_reason_does_not_trigger_recovery(self):
+        self.assertFalse(self.recovery_mod.should_trigger_recovery("checkpoint_continue"))
+        self.assertFalse(self.recovery_mod.should_trigger_recovery("continuation_round_limit"))
+        self.assertFalse(self.recovery_mod.should_trigger_recovery("continuation_no_progress"))
+        self.assertFalse(self.recovery_mod.should_trigger_recovery("continuation_timeout"))
+        self.assertFalse(self.recovery_mod.should_trigger_recovery("continuation_need_input"))
+        self.assertTrue(self.recovery_mod.should_trigger_recovery("spawn_failed"))
+
     def test_cooldown_prevents_attempt_increment(self):
         self._create_task("T-110", "coder", "cooldown branch")
         first = self._dispatch("T-110", "coder", '{"status":"failed","message":"first fail"}')

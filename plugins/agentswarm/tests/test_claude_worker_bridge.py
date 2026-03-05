@@ -143,6 +143,63 @@ class ClaudeWorkerBridgeTests(unittest.TestCase):
         self.assertEqual(out.get("summary"), "fake structured", out)
         self.assertEqual(out.get("evidence"), ["tests/test_claude_worker_bridge.py"], out)
 
+    def test_build_schema_includes_checkpoint_contract(self):
+        schema = self.bridge.build_schema()
+        props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+        checkpoint = props.get("checkpoint") if isinstance(props.get("checkpoint"), dict) else {}
+        checkpoint_props = checkpoint.get("properties") if isinstance(checkpoint.get("properties"), dict) else {}
+        required = checkpoint.get("required") if isinstance(checkpoint.get("required"), list) else []
+
+        self.assertIn("checkpoint", props, schema)
+        self.assertEqual(checkpoint_props.get("progressPercent", {}).get("type"), "integer", schema)
+        self.assertEqual(checkpoint_props.get("completed", {}).get("type"), "array", schema)
+        self.assertEqual(checkpoint_props.get("remaining", {}).get("type"), "array", schema)
+        self.assertEqual(checkpoint_props.get("nextAction", {}).get("type"), "string", schema)
+        self.assertEqual(checkpoint_props.get("continueHint", {}).get("type"), "string", schema)
+        self.assertEqual(checkpoint_props.get("stallSignal", {}).get("type"), "string", schema)
+        self.assertEqual(checkpoint_props.get("evidenceDelta", {}).get("type"), "array", schema)
+        self.assertEqual(
+            required,
+            [
+                "progressPercent",
+                "completed",
+                "remaining",
+                "nextAction",
+                "continueHint",
+                "stallSignal",
+                "evidenceDelta",
+            ],
+            schema,
+        )
+
+    def test_normalize_result_preserves_checkpoint_payload(self):
+        result = self.bridge.normalize_result(
+            "T-CP",
+            "coder",
+            {
+                "status": "progress",
+                "summary": "checkpoint update",
+                "checkpoint": {
+                    "progressPercent": 35,
+                    "completed": ["indexed files"],
+                    "remaining": ["patch retry path"],
+                    "nextAction": "patch classifier",
+                    "continueHint": "continue",
+                    "stallSignal": "none",
+                    "evidenceDelta": ["found fallback branch"],
+                },
+            },
+        )
+
+        checkpoint = result.get("checkpoint") if isinstance(result.get("checkpoint"), dict) else {}
+        self.assertEqual(checkpoint.get("progressPercent"), 35, result)
+        self.assertEqual(checkpoint.get("completed"), ["indexed files"], result)
+        self.assertEqual(checkpoint.get("remaining"), ["patch retry path"], result)
+        self.assertEqual(checkpoint.get("nextAction"), "patch classifier", result)
+        self.assertEqual(checkpoint.get("continueHint"), "continue", result)
+        self.assertEqual(checkpoint.get("stallSignal"), "none", result)
+        self.assertEqual(checkpoint.get("evidenceDelta"), ["found fallback branch"], result)
+
 
 if __name__ == "__main__":
     unittest.main()

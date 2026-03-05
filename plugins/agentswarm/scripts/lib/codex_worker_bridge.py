@@ -9,6 +9,8 @@ from typing import Any, Dict, List
 
 TASK_CONTEXT_STATE_FILE = "task-context-map.json"
 DEFAULT_CODER_WORKSPACE = os.path.expanduser("~/.openclaw/agents/coder/workspace")
+CHECKPOINT_HINTS = {"continue", "need_input", "handoff_suggested"}
+CHECKPOINT_STALL_SIGNALS = {"none", "soft_stall", "hard_block"}
 
 
 def clip(text: str, limit: int = 300) -> str:
@@ -88,6 +90,35 @@ def as_list(value: Any) -> List[str]:
     return []
 
 
+def normalize_checkpoint(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+
+    progress = safe_int(raw.get("progressPercent"), 0)
+    progress = min(100, max(0, progress))
+    completed = as_list(raw.get("completed"))
+    remaining = as_list(raw.get("remaining"))
+    next_action = str(raw.get("nextAction") or "").strip()
+    continue_hint = str(raw.get("continueHint") or "continue").strip().lower()
+    stall_signal = str(raw.get("stallSignal") or "none").strip().lower()
+    evidence_delta = as_list(raw.get("evidenceDelta"))
+
+    if continue_hint not in CHECKPOINT_HINTS:
+        continue_hint = "continue"
+    if stall_signal not in CHECKPOINT_STALL_SIGNALS:
+        stall_signal = "none"
+
+    return {
+        "progressPercent": progress,
+        "completed": completed,
+        "remaining": remaining,
+        "nextAction": next_action,
+        "continueHint": continue_hint,
+        "stallSignal": stall_signal,
+        "evidenceDelta": evidence_delta,
+    }
+
+
 def normalize_result(task_id: str, agent: str, raw: Dict[str, Any], fallback_text: str = "") -> Dict[str, Any]:
     status = str(raw.get("status") or raw.get("taskStatus") or "progress").strip().lower()
     if status not in {"done", "blocked", "progress"}:
@@ -111,8 +142,9 @@ def normalize_result(task_id: str, agent: str, raw: Dict[str, Any], fallback_tex
 
     risks = as_list(raw.get("risks"))
     next_actions = as_list(raw.get("nextActions"))
+    checkpoint = normalize_checkpoint(raw.get("checkpoint"))
 
-    return {
+    result = {
         "taskId": task_id,
         "agent": agent,
         "status": status,
@@ -122,6 +154,9 @@ def normalize_result(task_id: str, agent: str, raw: Dict[str, Any], fallback_tex
         "risks": risks,
         "nextActions": next_actions,
     }
+    if checkpoint:
+        result["checkpoint"] = checkpoint
+    return result
 
 
 def safe_int(value: Any, default: int = -1) -> int:
@@ -222,6 +257,28 @@ def build_schema() -> Dict[str, Any]:
             "evidence": {"type": "array", "items": {"type": "string"}},
             "risks": {"type": "array", "items": {"type": "string"}},
             "nextActions": {"type": "array", "items": {"type": "string"}},
+            "checkpoint": {
+                "type": "object",
+                "additionalProperties": True,
+                "properties": {
+                    "progressPercent": {"type": "integer", "minimum": 0, "maximum": 100},
+                    "completed": {"type": "array", "items": {"type": "string"}},
+                    "remaining": {"type": "array", "items": {"type": "string"}},
+                    "nextAction": {"type": "string"},
+                    "continueHint": {"type": "string", "enum": ["continue", "need_input", "handoff_suggested"]},
+                    "stallSignal": {"type": "string", "enum": ["none", "soft_stall", "hard_block"]},
+                    "evidenceDelta": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": [
+                    "progressPercent",
+                    "completed",
+                    "remaining",
+                    "nextAction",
+                    "continueHint",
+                    "stallSignal",
+                    "evidenceDelta",
+                ],
+            },
             "metrics": {
                 "type": "object",
                 "additionalProperties": True,

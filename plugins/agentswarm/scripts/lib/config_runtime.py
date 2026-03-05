@@ -35,6 +35,14 @@ DEFAULT_RUNTIME_CONFIG: Dict[str, Any] = {
                 "maxTaskRetries": 3,
             }
         },
+        "continuationPolicy": {
+            "enabled": True,
+            "maxContinuationRounds": 6,
+            "noProgressWindowRounds": 2,
+            "minProgressDeltaPct": 3,
+            "minEvidenceDeltaItems": 1,
+            "maxContinuationWallTimeSec": 1800,
+        },
     },
 }
 
@@ -197,6 +205,49 @@ def _normalize_budget_policy(raw: Any, fallback_guardrails: Optional[Dict[str, A
     return {"guardrails": _normalize_guardrails(guardrails_raw)}
 
 
+def _safe_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in {"1", "true", "yes", "on"}:
+            return True
+        if token in {"0", "false", "no", "off"}:
+            return False
+    return bool(default)
+
+
+def _normalize_continuation_policy(raw: Any) -> Dict[str, Any]:
+    defaults = copy.deepcopy(DEFAULT_RUNTIME_CONFIG["orchestrator"]["continuationPolicy"])
+    data = raw if isinstance(raw, dict) else {}
+    return {
+        "enabled": _safe_bool(data.get("enabled", defaults["enabled"]), bool(defaults["enabled"])),
+        "maxContinuationRounds": max(
+            1,
+            _safe_int(data.get("maxContinuationRounds", defaults["maxContinuationRounds"]), int(defaults["maxContinuationRounds"])),
+        ),
+        "noProgressWindowRounds": max(
+            1,
+            _safe_int(data.get("noProgressWindowRounds", defaults["noProgressWindowRounds"]), int(defaults["noProgressWindowRounds"])),
+        ),
+        "minProgressDeltaPct": min(
+            100,
+            max(0, _safe_int(data.get("minProgressDeltaPct", defaults["minProgressDeltaPct"]), int(defaults["minProgressDeltaPct"]))),
+        ),
+        "minEvidenceDeltaItems": max(
+            0,
+            _safe_int(data.get("minEvidenceDeltaItems", defaults["minEvidenceDeltaItems"]), int(defaults["minEvidenceDeltaItems"])),
+        ),
+        "maxContinuationWallTimeSec": max(
+            0,
+            _safe_int(
+                data.get("maxContinuationWallTimeSec", defaults["maxContinuationWallTimeSec"]),
+                int(defaults["maxContinuationWallTimeSec"]),
+            ),
+        ),
+    }
+
+
 def _load_legacy_budget_guardrails(root: str) -> Tuple[Dict[str, Any], List[str]]:
     script_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     search_roots = [script_root, root]
@@ -239,11 +290,13 @@ def _normalize_orchestrator(raw: Any, fallback_guardrails: Optional[Dict[str, An
 
     budget_policy_raw = data.get("budgetPolicy")
     budget_policy = _normalize_budget_policy(budget_policy_raw, fallback_guardrails=fallback_guardrails)
+    continuation_policy_raw = data.get("continuationPolicy")
 
     return {
         "maxConcurrentSpawns": max_concurrent_spawns,
         "retryPolicy": _normalize_retry_policy(retry_raw),
         "budgetPolicy": budget_policy,
+        "continuationPolicy": _normalize_continuation_policy(continuation_policy_raw),
     }
 
 

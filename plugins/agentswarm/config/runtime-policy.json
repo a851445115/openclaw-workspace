@@ -30,6 +30,14 @@
         "maxTaskWallTimeSec": 0,
         "maxTaskRetries": 3
       }
+    },
+    "continuationPolicy": {
+      "enabled": true,
+      "maxContinuationRounds": 6,
+      "noProgressWindowRounds": 2,
+      "minProgressDeltaPct": 3,
+      "minEvidenceDeltaItems": 1,
+      "maxContinuationWallTimeSec": 1800
     }
   }
 }
