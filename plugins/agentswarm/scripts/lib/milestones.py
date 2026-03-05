@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import errno
 import hashlib
 import json
 import logging
@@ -10,6 +11,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -127,6 +129,7 @@ RUNTIME_POLICY_CONFIG_CANDIDATES = (
     os.path.join("state", "runtime-policy.json"),
 )
 CONTINUATION_STATE_FILE = os.path.join("state", "continuation.state.json")
+CONTINUATION_STATE_LOCK_FILE = os.path.join("state", "continuation.state.lock")
 DEFAULT_CONTINUATION_POLICY: Dict[str, Any] = {
     "enabled": True,
     "maxContinuationRounds": 6,
@@ -135,6 +138,12 @@ DEFAULT_CONTINUATION_POLICY: Dict[str, Any] = {
     "minEvidenceDeltaItems": 1,
     "maxContinuationWallTimeSec": 1800,
 }
+_CONTINUATION_STATE_LOCK = threading.RLock()
+STRICT_FILE_LOCK_ENV = "STRICT_FILE_LOCK"
+CONTINUATION_LOCK_TIMEOUT_ENV = "CONTINUATION_STATE_LOCK_TIMEOUT_SEC"
+CONTINUATION_LOCK_RETRY_ENV = "CONTINUATION_STATE_LOCK_RETRY_SEC"
+DEFAULT_CONTINUATION_LOCK_TIMEOUT_SEC = 5.0
+DEFAULT_CONTINUATION_LOCK_RETRY_SEC = 0.05
 CHECKPOINT_CONTINUE_HINTS = {"continue", "need_input", "handoff_suggested"}
 CHECKPOINT_STALL_SIGNALS = {"none", "soft_stall", "hard_block"}
 SPAWN_EXECUTOR_OPENCLAW = "openclaw_agent"
@@ -2508,39 +2517,11 @@ def evaluate_checkpoint_continuation(
     next_action = clip(str(checkpoint.get("nextAction") or ""), 220)
     evidence_delta = normalize_string_list(checkpoint.get("evidenceDelta"), limit=20, item_limit=220)
     now_unix = int(time.time()) if now_ts is None else max(0, int(now_ts))
-
-    state = _load_continuation_state(root)
-    tasks = state.get("tasks") if isinstance(state.get("tasks"), dict) else {}
-    previous = tasks.get(task_id) if isinstance(tasks.get(task_id), dict) else {}
-    previous_rounds = nonneg_int(previous.get("rounds"), 0)
-    previous_first_ts = nonneg_int(previous.get("firstTs"), 0)
-    previous_progress = min(100, max(0, nonneg_int(previous.get("lastProgressPercent"), 0)))
-    previous_streak = nonneg_int(previous.get("noProgressStreak"), 0)
-    previous_evidence_set = normalize_string_list(previous.get("evidenceSet"), limit=120, item_limit=220)
-
-    rounds = previous_rounds + 1
-    first_ts = previous_first_ts if previous_first_ts > 0 else now_unix
-    last_ts = now_unix
-    elapsed_sec = max(0, last_ts - first_ts)
-
-    evidence_set = list(previous_evidence_set)
-    new_items: List[str] = []
-    for item in evidence_delta:
-        if item not in evidence_set:
-            new_items.append(item)
-            evidence_set.append(item)
-    if len(evidence_set) > 120:
-        evidence_set = evidence_set[-120:]
-
-    progress_delta = progress_percent - previous_progress
     min_progress_delta = nonneg_int(policy.get("minProgressDeltaPct"), int(DEFAULT_CONTINUATION_POLICY["minProgressDeltaPct"]))
     min_evidence_delta_items = nonneg_int(
         policy.get("minEvidenceDeltaItems"),
         int(DEFAULT_CONTINUATION_POLICY["minEvidenceDeltaItems"]),
     )
-    no_progress_round = progress_delta < min_progress_delta and len(new_items) < min_evidence_delta_items
-    no_progress_streak = previous_streak + 1 if no_progress_round else 0
-
     max_rounds = max(1, nonneg_int(policy.get("maxContinuationRounds"), int(DEFAULT_CONTINUATION_POLICY["maxContinuationRounds"])))
     no_progress_window = max(
         1,
@@ -2554,25 +2535,49 @@ def evaluate_checkpoint_continuation(
         ),
     )
 
-    decision = "continue"
-    reason_code = "checkpoint_continue"
-    if continue_hint == "need_input":
-        decision = "blocked"
-        reason_code = "continuation_need_input"
-    elif stall_signal == "hard_block":
-        decision = "blocked"
-        reason_code = "blocked_signal"
-    elif rounds > max_rounds:
-        decision = "blocked"
-        reason_code = "continuation_round_limit"
-    elif max_wall_time_sec > 0 and elapsed_sec > max_wall_time_sec:
-        decision = "blocked"
-        reason_code = "continuation_timeout"
-    elif no_progress_streak >= no_progress_window:
-        decision = "blocked"
-        reason_code = "continuation_no_progress"
+    def _compute(previous: Dict[str, Any]) -> Tuple[str, str, Dict[str, Any]]:
+        previous_rounds = nonneg_int(previous.get("rounds"), 0)
+        previous_first_ts = nonneg_int(previous.get("firstTs"), 0)
+        previous_progress = min(100, max(0, nonneg_int(previous.get("lastProgressPercent"), 0)))
+        previous_streak = nonneg_int(previous.get("noProgressStreak"), 0)
+        previous_evidence_set = normalize_string_list(previous.get("evidenceSet"), limit=120, item_limit=220)
 
-    if persist_state:
+        rounds = previous_rounds + 1
+        first_ts = previous_first_ts if previous_first_ts > 0 else now_unix
+        last_ts = now_unix
+        elapsed_sec = max(0, last_ts - first_ts)
+
+        evidence_set = list(previous_evidence_set)
+        new_items: List[str] = []
+        for item in evidence_delta:
+            if item not in evidence_set:
+                new_items.append(item)
+                evidence_set.append(item)
+        if len(evidence_set) > 120:
+            evidence_set = evidence_set[-120:]
+
+        progress_delta = progress_percent - previous_progress
+        no_progress_round = progress_delta < min_progress_delta and len(new_items) < min_evidence_delta_items
+        no_progress_streak = previous_streak + 1 if no_progress_round else 0
+
+        decision = "continue"
+        reason_code = "checkpoint_continue"
+        if continue_hint == "need_input":
+            decision = "blocked"
+            reason_code = "continuation_need_input"
+        elif stall_signal == "hard_block":
+            decision = "blocked"
+            reason_code = "blocked_signal"
+        elif rounds > max_rounds:
+            decision = "blocked"
+            reason_code = "continuation_round_limit"
+        elif max_wall_time_sec > 0 and elapsed_sec > max_wall_time_sec:
+            decision = "blocked"
+            reason_code = "continuation_timeout"
+        elif no_progress_streak >= no_progress_window:
+            decision = "blocked"
+            reason_code = "continuation_no_progress"
+
         entry = {
             "rounds": rounds,
             "firstTs": first_ts,
@@ -2586,8 +2591,21 @@ def evaluate_checkpoint_continuation(
             "updatedAt": now_iso(),
             "lastReasonCode": reason_code,
         }
-        tasks[task_id] = entry
-        save_continuation_state(root, {"tasks": tasks})
+        return decision, reason_code, entry
+
+    if persist_state:
+        with _continuation_state_guard(root, require_lock=True):
+            state = _load_continuation_state_unlocked_strict(root, caller="evaluate_checkpoint_continuation")
+            tasks = state.get("tasks") if isinstance(state.get("tasks"), dict) else {}
+            previous = tasks.get(task_id) if isinstance(tasks.get(task_id), dict) else {}
+            decision, reason_code, entry = _compute(previous)
+            tasks[task_id] = entry
+            _save_continuation_state_unlocked(root, {"tasks": tasks})
+    else:
+        state = _load_continuation_state(root)
+        tasks = state.get("tasks") if isinstance(state.get("tasks"), dict) else {}
+        previous = tasks.get(task_id) if isinstance(tasks.get(task_id), dict) else {}
+        decision, reason_code, _ = _compute(previous)
 
     detail_suffix = f"checkpoint {progress_percent}% | next: {next_action}" if next_action else f"checkpoint {progress_percent}%"
     combined_detail = clip(f"{detail} | {detail_suffix}", 200) if detail else clip(detail_suffix, 200)
@@ -2597,6 +2615,90 @@ def evaluate_checkpoint_continuation(
         "reasonCode": reason_code,
         "report": report,
     }
+
+
+_PROGRESS_PERCENT_RE = re.compile(r"\b(\d{1,3})\s*%")
+
+
+def _extract_progress_percent_hint(parts: List[str]) -> int:
+    for item in parts:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        match = _PROGRESS_PERCENT_RE.search(text)
+        if not match:
+            continue
+        return min(100, max(0, nonneg_int(match.group(1), 0)))
+    return 0
+
+
+def _legacy_progress_continuation_report(report: Dict[str, Any], text: str, detail: str) -> Optional[Dict[str, Any]]:
+    status_hint = str(report.get("status") or "").strip().lower()
+    if status_hint in {"blocked", "failed", "error", "done", "completed", "success", "succeeded"}:
+        return None
+
+    combined = "\n".join(
+        [
+            str(text or "").strip(),
+            str(detail or "").strip(),
+            str(report.get("summary") or "").strip(),
+        ]
+    ).strip()
+    if parse_wakeup_kind(combined) != "progress" or has_failure_signal(combined):
+        return None
+
+    next_actions = normalize_string_list(report.get("nextActions"), limit=4, item_limit=220)
+    hard_evidence = normalize_string_list(report.get("hardEvidence"), limit=8, item_limit=220)
+    explicit_evidence = normalize_string_list(report.get("evidence"), limit=8, item_limit=220)
+    evidence_pool: List[str] = []
+    evidence_pool.extend(hard_evidence)
+    evidence_pool.extend(explicit_evidence)
+    changes = report.get("changes") if isinstance(report.get("changes"), list) else []
+    rendered_changes: List[str] = []
+    for row in changes[:8]:
+        if not isinstance(row, dict):
+            continue
+        rendered = clip(f"{row.get('path') or ''} {row.get('summary') or ''}".strip(), 220)
+        if rendered:
+            rendered_changes.append(rendered)
+    evidence_pool.extend(rendered_changes)
+
+    has_explicit_progress_signal = bool(next_actions or hard_evidence or explicit_evidence or rendered_changes)
+    if not has_explicit_progress_signal:
+        return None
+
+    summary = clip(str(report.get("summary") or ""), 220)
+    if summary:
+        evidence_pool.append(summary)
+    if detail:
+        evidence_pool.append(clip(detail, 220))
+
+    evidence_delta = merge_unique_strings(evidence_pool, limit=20, item_limit=220)
+    next_action = clip(next_actions[0] if next_actions else "", 220)
+    if not next_action:
+        next_action = "continue current execution"
+
+    has_inflight_signal = bool(next_actions or evidence_delta)
+    if not has_inflight_signal:
+        return None
+
+    checkpoint = normalize_checkpoint_payload(
+        {
+            "progressPercent": _extract_progress_percent_hint([summary, detail, text]),
+            "completed": [],
+            "remaining": next_actions[:4],
+            "nextAction": next_action,
+            "continueHint": "continue",
+            "stallSignal": "none",
+            "evidenceDelta": evidence_delta,
+        }
+    )
+    if not is_valid_checkpoint_payload(checkpoint):
+        return None
+
+    merged = dict(report)
+    merged["checkpoint"] = checkpoint
+    return merged
 
 
 def classify_spawn_result(
@@ -2701,6 +2803,23 @@ def classify_spawn_result(
         )
         if isinstance(continuation_decision, dict):
             return continuation_decision
+        legacy_report = _legacy_progress_continuation_report(report, text, detail)
+        if isinstance(legacy_report, dict):
+            legacy_decision = evaluate_checkpoint_continuation(
+                root,
+                task_id,
+                detail,
+                legacy_report,
+                persist_state=persist_state,
+            )
+            if isinstance(legacy_decision, dict):
+                if (
+                    legacy_decision.get("decision") == "continue"
+                    and str(legacy_decision.get("reasonCode") or "") == "checkpoint_continue"
+                ):
+                    legacy_decision = dict(legacy_decision)
+                    legacy_decision["reasonCode"] = "legacy_progress_continue"
+                return legacy_decision
 
     _clear_continuation_on_terminal()
     return {
@@ -5437,26 +5556,90 @@ def continuation_state_path(root: str) -> str:
     return os.path.join(root, CONTINUATION_STATE_FILE)
 
 
+def continuation_state_lock_path(root: str) -> str:
+    return os.path.join(root, CONTINUATION_STATE_LOCK_FILE)
+
+
+class ContinuationStateLockError(RuntimeError):
+    pass
+
+
+class ContinuationStateLoadError(RuntimeError):
+    pass
+
+
+def _env_truthy(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        parsed = float(raw)
+    except Exception:
+        return default
+    return parsed if parsed > 0 else default
+
+
 def _empty_continuation_state() -> Dict[str, Any]:
     return {"tasks": {}, "updatedAt": ""}
 
 
-def _load_continuation_state(root: str) -> Dict[str, Any]:
-    path = continuation_state_path(root)
+def _load_continuation_state_payload(path: str, strict: bool = False, caller: str = "") -> Dict[str, Any]:
     if not os.path.exists(path):
         return _empty_continuation_state()
+
     try:
         with open(path, "r", encoding="utf-8") as f:
             loaded = json.load(f)
-    except Exception:
+    except Exception as err:
+        if strict:
+            message = f"failed to load continuation state in write path: caller={caller} path={path}"
+            LOGGER.error(message, exc_info=True)
+            raise ContinuationStateLoadError(message) from err
         return _empty_continuation_state()
+
     if not isinstance(loaded, dict):
+        if strict:
+            message = (
+                f"invalid continuation state payload type in write path: "
+                f"caller={caller} path={path} type={type(loaded).__name__}"
+            )
+            LOGGER.error(message)
+            raise ContinuationStateLoadError(message)
         return _empty_continuation_state()
+    if "tasks" in loaded and not isinstance(loaded.get("tasks"), dict):
+        if strict:
+            message = (
+                f"invalid continuation state tasks in write path: "
+                f"caller={caller} path={path} type={type(loaded.get('tasks')).__name__}"
+            )
+            LOGGER.error(message)
+            raise ContinuationStateLoadError(message)
+        return _empty_continuation_state()
+
     tasks = loaded.get("tasks") if isinstance(loaded.get("tasks"), dict) else {}
     return {
         "tasks": tasks,
         "updatedAt": str(loaded.get("updatedAt") or ""),
     }
+
+
+def _load_continuation_state_unlocked(root: str) -> Dict[str, Any]:
+    return _load_continuation_state_payload(continuation_state_path(root), strict=False)
+
+
+def _load_continuation_state_unlocked_strict(root: str, caller: str) -> Dict[str, Any]:
+    return _load_continuation_state_payload(continuation_state_path(root), strict=True, caller=caller)
+
+
+def _load_continuation_state(root: str) -> Dict[str, Any]:
+    return _load_continuation_state_unlocked(root)
 
 
 def _write_json_atomic(path: str, payload: Dict[str, Any]) -> None:
@@ -5478,24 +5661,119 @@ def _write_json_atomic(path: str, payload: Dict[str, Any]) -> None:
                 LOGGER.warning("failed to remove tmp continuation state file: path=%s", tmp_path, exc_info=True)
 
 
-def save_continuation_state(root: str, state: Dict[str, Any]) -> None:
+@contextmanager
+def _continuation_state_guard(root: str, require_lock: bool = False):
+    lock_path = continuation_state_lock_path(root)
+    strict_file_lock = _env_truthy(STRICT_FILE_LOCK_ENV, default=False)
+    lock_timeout_sec = _env_float(CONTINUATION_LOCK_TIMEOUT_ENV, DEFAULT_CONTINUATION_LOCK_TIMEOUT_SEC)
+    lock_retry_sec = _env_float(CONTINUATION_LOCK_RETRY_ENV, DEFAULT_CONTINUATION_LOCK_RETRY_SEC)
+    lock_fp = None
+    lock_acquired = False
+
+    with _CONTINUATION_STATE_LOCK:
+        if fcntl is None:
+            if require_lock:
+                message = (
+                    f"failed to acquire continuation state lock: root={root} lock={lock_path} "
+                    f"(fcntl unavailable; write path requires file lock; "
+                    f"{STRICT_FILE_LOCK_ENV}={str(strict_file_lock).lower()})"
+                )
+                LOGGER.error(message)
+                raise ContinuationStateLockError(message)
+            if strict_file_lock:
+                message = (
+                    f"failed to acquire continuation state lock: root={root} lock={lock_path} "
+                    f"(fcntl unavailable; non-write path requires file lock because "
+                    f"{STRICT_FILE_LOCK_ENV}=true)"
+                )
+                LOGGER.error(message)
+                raise ContinuationStateLockError(message)
+        else:
+            try:
+                os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+                lock_fp = open(lock_path, "a+", encoding="utf-8")
+                started_at = time.monotonic()
+                while True:
+                    try:
+                        fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        lock_acquired = True
+                        break
+                    except OSError as err:
+                        if err.errno not in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+                            raise
+                        waited_sec = max(0.0, time.monotonic() - started_at)
+                        if waited_sec >= lock_timeout_sec:
+                            message = (
+                                f"timed out waiting {waited_sec:.3f}s for continuation state lock: "
+                                f"root={root} lock={lock_path}"
+                            )
+                            LOGGER.error(message)
+                            if require_lock:
+                                raise ContinuationStateLockError(message) from err
+                            break
+                        time.sleep(lock_retry_sec)
+            except Exception as err:
+                LOGGER.exception("failed to acquire continuation state lock: root=%s lock=%s", root, lock_path)
+                if lock_fp is not None:
+                    try:
+                        lock_fp.close()
+                    except Exception:
+                        LOGGER.warning(
+                            "failed to close continuation lock file after acquire error: lock=%s",
+                            lock_path,
+                            exc_info=True,
+                        )
+                    lock_fp = None
+                if require_lock:
+                    raise ContinuationStateLockError(
+                        f"failed to acquire continuation state lock: root={root} lock={lock_path}"
+                    ) from err
+
+        try:
+            yield
+        finally:
+            if lock_fp is not None:
+                if lock_acquired:
+                    try:
+                        fcntl.flock(lock_fp.fileno(), fcntl.LOCK_UN)
+                    except Exception:
+                        LOGGER.warning(
+                            "failed to release continuation state lock: root=%s lock=%s",
+                            root,
+                            lock_path,
+                            exc_info=True,
+                        )
+                try:
+                    lock_fp.close()
+                except Exception:
+                    LOGGER.warning("failed to close continuation lock file: lock=%s", lock_path, exc_info=True)
+
+
+def _save_continuation_state_unlocked(root: str, state: Dict[str, Any]) -> None:
     path = continuation_state_path(root)
     tasks = state.get("tasks") if isinstance(state.get("tasks"), dict) else {}
     payload = {"tasks": tasks, "updatedAt": now_iso()}
     _write_json_atomic(path, payload)
 
 
+def save_continuation_state(root: str, state: Dict[str, Any]) -> None:
+    with _continuation_state_guard(root, require_lock=True):
+        _load_continuation_state_unlocked_strict(root, caller="save_continuation_state")
+        _save_continuation_state_unlocked(root, state)
+
+
 def clear_continuation_task(root: str, task_id: str) -> Dict[str, Any]:
     task_key = str(task_id or "").strip()
     if not task_key:
         return {"taskId": "", "cleared": False}
-    state = _load_continuation_state(root)
-    tasks = state.get("tasks") if isinstance(state.get("tasks"), dict) else {}
-    if task_key not in tasks:
-        return {"taskId": task_key, "cleared": False}
-    tasks.pop(task_key, None)
-    save_continuation_state(root, {"tasks": tasks})
-    return {"taskId": task_key, "cleared": True}
+    with _continuation_state_guard(root, require_lock=True):
+        state = _load_continuation_state_unlocked_strict(root, caller="clear_continuation_task")
+        tasks = state.get("tasks") if isinstance(state.get("tasks"), dict) else {}
+        if task_key not in tasks:
+            return {"taskId": task_key, "cleared": False}
+        tasks.pop(task_key, None)
+        _save_continuation_state_unlocked(root, {"tasks": tasks})
+        return {"taskId": task_key, "cleared": True}
 
 
 def _normalize_continuation_policy(policy: Dict[str, Any]) -> Dict[str, Any]:
@@ -5505,6 +5783,11 @@ def _normalize_continuation_policy(policy: Dict[str, Any]) -> Dict[str, Any]:
     def _as_bool(value: Any, default: bool) -> bool:
         if isinstance(value, bool):
             return value
+        if isinstance(value, (int, float)):
+            if value == 1:
+                return True
+            if value == 0:
+                return False
         if isinstance(value, str):
             token = value.strip().lower()
             if token in {"1", "true", "yes", "on"}:

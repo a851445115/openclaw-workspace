@@ -2,6 +2,7 @@ import argparse
 import contextlib
 import json
 import io
+import multiprocessing
 import os
 import subprocess
 import tempfile
@@ -38,6 +39,36 @@ def run_json(cmd, cwd=REPO):
         return json.loads(proc.stdout.strip())
     except Exception as err:
         raise AssertionError(f"invalid json output: {err}\nstdout={proc.stdout}\nstderr={proc.stderr}")
+
+
+def _continuation_same_key_worker(root: str, rounds: int, start_event, result_queue) -> None:
+    try:
+        module = load_milestone_module()
+        if not start_event.wait(timeout=10):
+            raise TimeoutError("start_event timed out")
+        for round_index in range(rounds):
+            checkpoint = {
+                "progressPercent": 50,
+                "completed": ["triage"],
+                "remaining": ["patch"],
+                "nextAction": "continue",
+                "continueHint": "continue",
+                "stallSignal": "none",
+                "evidenceDelta": [f"worker-{os.getpid()}-{round_index}"],
+            }
+            out = module.evaluate_checkpoint_continuation(
+                root,
+                "T-CP-LOCK",
+                "continuation lock test",
+                {"status": "progress", "checkpoint": checkpoint},
+                persist_state=True,
+                now_ts=1_700_300_000 + round_index,
+            )
+            if str((out or {}).get("decision") or "") != "continue":
+                raise AssertionError(f"unexpected continuation decision: {out}")
+        result_queue.put({"ok": True})
+    except Exception as err:
+        result_queue.put({"ok": False, "error": repr(err)})
 
 
 class RuntimeTests(unittest.TestCase):
@@ -2697,6 +2728,180 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(int(row.get("noProgressStreak", -1)), 0, cont_state)
         self.assertIsInstance(row.get("evidenceSet"), list, cont_state)
         self.assertTrue(str(row.get("evidenceHash") or "").strip(), cont_state)
+
+    def test_dispatch_progress_without_checkpoint_uses_legacy_continuation_heuristic(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-CP1B: continuation legacy fallback",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-CP1B",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"progress","summary":"still running, collecting logs and preparing patch","evidence":["logs/t-cp1b.log"],"nextActions":["patch milestones classifier"]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        spawn = out.get("spawn") or {}
+        self.assertEqual(spawn.get("decision"), "continue", out)
+        self.assertEqual(spawn.get("reasonCode"), "legacy_progress_continue", out)
+
+        cont_state = json.loads((self.root / "state" / "continuation.state.json").read_text(encoding="utf-8"))
+        row = ((cont_state.get("tasks") or {}).get("T-CP1B")) or {}
+        self.assertEqual(int(row.get("rounds") or 0), 1, cont_state)
+        self.assertEqual(int(row.get("lastProgressPercent")) if row.get("lastProgressPercent") is not None else -1, 0, cont_state)
+
+    def test_dispatch_progress_without_checkpoint_explicit_blocked_stays_blocked(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-CP1C: continuation fallback must keep blocked",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-CP1C",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"progress","summary":"blocked by missing SECRET_KEY from upstream env"}',
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual((out.get("spawn") or {}).get("decision"), "blocked", out)
+        self.assertEqual((out.get("spawn") or {}).get("reasonCode"), "blocked_signal", out)
+
+    def test_dispatch_checkpoint_enabled_zero_disables_continuation(self):
+        self._write_json_file(
+            "config/runtime-policy.json",
+            {
+                "orchestrator": {
+                    "continuationPolicy": {
+                        "enabled": 0,
+                        "maxContinuationRounds": 6,
+                        "noProgressWindowRounds": 2,
+                        "minProgressDeltaPct": 3,
+                        "minEvidenceDeltaItems": 1,
+                        "maxContinuationWallTimeSec": 1800,
+                    }
+                }
+            },
+        )
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-CP1D: continuation disabled by numeric zero",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-CP1D",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"progress","summary":"round1","checkpoint":{"progressPercent":10,"completed":["step1"],"remaining":["step2"],"nextAction":"continue","continueHint":"continue","stallSignal":"none","evidenceDelta":["first evidence"]}}',
+        ])
+        self.assertTrue(out["ok"], out)
+        self.assertEqual((out.get("spawn") or {}).get("decision"), "blocked", out)
+        self.assertEqual((out.get("spawn") or {}).get("reasonCode"), "no_completion_signal", out)
+        path = self.root / "state" / "continuation.state.json"
+        if path.exists():
+            state = json.loads(path.read_text(encoding="utf-8"))
+            self.assertNotIn("T-CP1D", (state.get("tasks") or {}), state)
+
+    def test_continuation_policy_normalizer_honors_numeric_zero_enabled(self):
+        module = load_milestone_module()
+        normalized = module._normalize_continuation_policy({"enabled": 0})
+        self.assertEqual(normalized.get("enabled"), False, normalized)
+
+    def test_checkpoint_continuation_same_key_multi_process_counts_all_rounds(self):
+        workers = 6
+        rounds = 6
+        expected_rounds = workers * rounds
+
+        self._write_json_file(
+            "config/runtime-policy.json",
+            {
+                "orchestrator": {
+                    "continuationPolicy": {
+                        "enabled": True,
+                        "maxContinuationRounds": expected_rounds + 10,
+                        "noProgressWindowRounds": expected_rounds + 10,
+                        "minProgressDeltaPct": 0,
+                        "minEvidenceDeltaItems": 0,
+                        "maxContinuationWallTimeSec": 0,
+                    }
+                }
+            },
+        )
+
+        ctx = multiprocessing.get_context("spawn")
+        start_event = ctx.Event()
+        result_queue = ctx.Queue()
+        processes = []
+        for _ in range(workers):
+            process = ctx.Process(
+                target=_continuation_same_key_worker,
+                args=(self.root.as_posix(), rounds, start_event, result_queue),
+            )
+            process.start()
+            processes.append(process)
+
+        start_event.set()
+        for process in processes:
+            process.join(timeout=90)
+            self.assertFalse(process.is_alive(), f"worker did not finish: pid={process.pid}")
+            self.assertEqual(process.exitcode, 0, f"worker exit code mismatch: pid={process.pid}")
+
+        worker_results = [result_queue.get(timeout=5) for _ in range(workers)]
+        failures = [item for item in worker_results if not item.get("ok")]
+        self.assertEqual(failures, [], worker_results)
+
+        state_path = self.root / "state" / "continuation.state.json"
+        loaded = json.loads(state_path.read_text(encoding="utf-8"))
+        row = ((loaded.get("tasks") or {}).get("T-CP-LOCK")) or {}
+        self.assertEqual(int(row.get("rounds") or 0), expected_rounds, loaded)
 
     def test_dispatch_checkpoint_need_input_blocks(self):
         run_json([

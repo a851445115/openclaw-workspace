@@ -123,6 +123,22 @@ class ConfigSchemaV2Tests(unittest.TestCase):
         self.assertEqual(continuation.get("minEvidenceDeltaItems"), 0, loaded)
         self.assertEqual(continuation.get("maxContinuationWallTimeSec"), 0, loaded)
 
+    def test_continuation_policy_enabled_honors_numeric_zero(self):
+        mixed = {
+            "orchestrator": {
+                "continuationPolicy": {
+                    "enabled": 0,
+                    "maxContinuationRounds": 6,
+                }
+            }
+        }
+        loaded = self.runtime.load_runtime_config(str(self.root), override=mixed)
+        orchestrator = loaded.get("orchestrator") if isinstance(loaded.get("orchestrator"), dict) else {}
+        continuation = (
+            orchestrator.get("continuationPolicy") if isinstance(orchestrator.get("continuationPolicy"), dict) else {}
+        )
+        self.assertEqual(continuation.get("enabled"), False, loaded)
+
     def test_load_v2_full_config_preserves_explicit_values(self):
         full = {
             "agents": [

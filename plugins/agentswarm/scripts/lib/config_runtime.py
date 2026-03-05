@@ -208,6 +208,11 @@ def _normalize_budget_policy(raw: Any, fallback_guardrails: Optional[Dict[str, A
 def _safe_bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value
+    if isinstance(value, (int, float)):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
     if isinstance(value, str):
         token = value.strip().lower()
         if token in {"1", "true", "yes", "on"}:
