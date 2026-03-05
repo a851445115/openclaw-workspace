@@ -1,0 +1,29 @@
+{
+  "sessions": {
+    "T-025|coder|claude_cli": {
+      "taskId": "T-025",
+      "agent": "coder",
+      "executor": "claude_cli",
+      "sessionId": "ws-T-025-coder-claude_cli-1772692333226",
+      "createdAt": "2026-03-05T06:32:13Z",
+      "lastActiveAt": "2026-03-05T06:33:57Z",
+      "status": "done",
+      "retryCount": 1,
+      "lastReasonCode": "done",
+      "lastDetail": "\u751f\u6210\u770b\u677f\u5065\u5eb7\u68c0\u67e5\u62a5\u544a\u5b8c\u6210\uff1a\u5206\u679025\u4e2a\u4efb\u52a1\uff0c60%\u5b8c\u6210\u7387\uff0c\u5305\u542b\u8d28\u91cf\u6307\u6807\u3001\u98ce\u9669\u8bc4\u4f30\u548c\u9a8c\u8bc1\u65e5\u5fd7 | \u786c\u8bc1\u636e: /tmp/agentswarm-smoke-20260305/coder-health.md; coder-health.md | \u53d8\u66f4: /tmp/agentswarm-smoke-20260305/coder-health.md \u521b\u5efa136\u884c\u5065\u5eb7\u68c0\u67e5\u62a5\u544a\uff0c\u5305\u542b\u4efb\u52a1\u5206\u5e03\u3001\u9879\u76ee\u8fdb\u5ea6\u3001\u8d28\u91cf\u6307\u6807\u3001..."
+    },
+    "T-026|debugger|claude_cli": {
+      "taskId": "T-026",
+      "agent": "debugger",
+      "executor": "claude_cli",
+      "sessionId": "ws-T-026-debugger-claude_cli-1772692460137",
+      "createdAt": "2026-03-05T06:34:20Z",
+      "lastActiveAt": "2026-03-05T06:34:20Z",
+      "status": "active",
+      "retryCount": 0,
+      "lastReasonCode": "",
+      "lastDetail": ""
+    }
+  },
+  "updatedAt": "2026-03-05T06:34:20Z"
+}

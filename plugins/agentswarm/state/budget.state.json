@@ -207,7 +207,15 @@
       "elapsedMs": 120937,
       "retryCount": 1,
       "updatedAt": "2026-03-03T17:10:16Z"
+    },
+    "T-025|coder": {
+      "taskId": "T-025",
+      "agent": "coder",
+      "tokenUsage": 48268,
+      "elapsedMs": 94004,
+      "retryCount": 1,
+      "updatedAt": "2026-03-05T06:33:53Z"
     }
   },
-  "updatedAt": "2026-03-03T17:10:16Z"
+  "updatedAt": "2026-03-05T06:33:53Z"
 }

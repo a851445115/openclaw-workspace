@@ -588,11 +588,58 @@
       "blockedBy": [],
       "priority": 0,
       "impact": 0
+    },
+    "T-025": {
+      "taskId": "T-025",
+      "title": "[SMOKE-20260305] Stage A: \u751f\u6210\u770b\u677f\u5065\u5eb7\u68c0\u67e5\u62a5\u544a\uff08\u542b\u9a8c\u8bc1\u65e5\u5fd7\uff09",
+      "status": "done",
+      "owner": "coder",
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-03-05T06:31:46Z",
+      "updatedAt": "2026-03-05T06:33:53Z",
+      "blockedReason": null,
+      "result": "\u751f\u6210\u770b\u677f\u5065\u5eb7\u68c0\u67e5\u62a5\u544a\u5b8c\u6210\uff1a\u5206\u679025\u4e2a\u4efb\u52a1\uff0c60%\u5b8c\u6210\u7387\uff0c\u5305\u542b\u8d28\u91cf\u6307\u6807\u3001\u98ce\u9669\u8bc4\u4f30\u548c\u9a8c\u8bc1\u65e5\u5fd7 | \u786c\u8bc1\u636e: /tmp/agentswarm-smoke-20260305/coder-health.md; coder-health.md | \u53d8\u66f4: /tmp/agentswarm-smoke-20260305/coder-health.md \u521b\u5efa136\u884c\u5065\u5eb7\u68c0\u67e5\u62a5\u544a\uff0c\u5305\u542b\u4efb\u52a1\u5206\u5e03\u3001\u9879\u76ee\u8fdb\u5ea6\u3001\u8d28\u91cf\u6307\u6807\u3001...",
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "b8fbbb6c-7e69-4c36-91ca-36c11cd03150",
+        "c64f74ec-264f-4d0c-a96e-3a3a90879acb",
+        "8a1ff729-b494-4439-ae0b-af0668f63184"
+      ],
+      "dependsOn": [],
+      "blockedBy": [],
+      "priority": 0,
+      "impact": 0
+    },
+    "T-026": {
+      "taskId": "T-026",
+      "title": "[SMOKE-20260305] Stage B: \u590d\u6838\u5065\u5eb7\u68c0\u67e5\u5e76\u8f93\u51fa\u98ce\u9669\u7ed3\u8bba\uff08\u542b\u9a8c\u8bc1\u65e5\u5fd7\uff09",
+      "status": "claimed",
+      "owner": "debugger",
+      "assigneeHint": "orchestrator",
+      "createdBy": "orchestrator",
+      "createdAt": "2026-03-05T06:34:08Z",
+      "updatedAt": "2026-03-05T06:34:20Z",
+      "blockedReason": null,
+      "result": null,
+      "review": null,
+      "relatedTo": null,
+      "projectId": null,
+      "history": [
+        "1b13afc8-ae9c-45a9-815b-652cb3e63755",
+        "7655d6e5-e90e-4ad4-b484-5ca08ac345e4"
+      ],
+      "dependsOn": [],
+      "blockedBy": [],
+      "priority": 0,
+      "impact": 0
     }
   },
   "meta": {
     "version": 2,
-    "updatedAt": "2026-03-03T17:10:16Z",
+    "updatedAt": "2026-03-05T06:34:20Z",
     "rebuild": {
       "events": 78,
       "generatedAt": "2026-03-03T16:57:51Z",
