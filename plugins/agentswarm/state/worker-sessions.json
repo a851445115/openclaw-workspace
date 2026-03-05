@@ -18,12 +18,12 @@
       "executor": "claude_cli",
       "sessionId": "ws-T-026-debugger-claude_cli-1772692460137",
       "createdAt": "2026-03-05T06:34:20Z",
-      "lastActiveAt": "2026-03-05T06:34:20Z",
-      "status": "active",
-      "retryCount": 0,
-      "lastReasonCode": "",
-      "lastDetail": ""
+      "lastActiveAt": "2026-03-05T06:36:14Z",
+      "status": "done",
+      "retryCount": 1,
+      "lastReasonCode": "done",
+      "lastDetail": "Health check validated with 3 medium risks identified: reproduction pipeline stall (48h gap), 12% task reopen rate, and agent capacity imbalance. Review document created with comprehensive verificati..."
     }
   },
-  "updatedAt": "2026-03-05T06:34:20Z"
+  "updatedAt": "2026-03-05T06:36:14Z"
 }

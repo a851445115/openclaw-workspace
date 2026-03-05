@@ -215,7 +215,15 @@
       "elapsedMs": 94004,
       "retryCount": 1,
       "updatedAt": "2026-03-05T06:33:53Z"
+    },
+    "T-026|debugger": {
+      "taskId": "T-026",
+      "agent": "debugger",
+      "tokenUsage": 40692,
+      "elapsedMs": 104250,
+      "retryCount": 1,
+      "updatedAt": "2026-03-05T06:36:10Z"
     }
   },
-  "updatedAt": "2026-03-05T06:33:53Z"
+  "updatedAt": "2026-03-05T06:36:10Z"
 }

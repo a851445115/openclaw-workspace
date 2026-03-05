@@ -57,3 +57,4 @@
 {"event": "dispatch_done", "at": "2026-03-03T17:10:21Z", "ts": 1772557821, "taskId": "T-002", "agent": "broadcaster", "decision": "done", "reasonCode": "done_with_evidence", "cycleMs": 120937, "autoClose": true, "dispatchMode": "spawn"}
 {"event": "autopilot_cycle", "at": "2026-03-03T17:10:21Z", "ts": 1772557821, "maxSteps": 3, "stepsRun": 3, "done": 3, "blocked": 0, "manual": 0, "stopReason": "max_steps_reached", "ok": true, "spawnEnabled": true}
 {"event": "dispatch_done", "at": "2026-03-05T06:34:00Z", "ts": 1772692440, "taskId": "T-025", "agent": "coder", "decision": "done", "reasonCode": "done_with_evidence", "cycleMs": 94004, "autoClose": true, "dispatchMode": "spawn"}
+{"event": "dispatch_done", "at": "2026-03-05T06:36:17Z", "ts": 1772692577, "taskId": "T-026", "agent": "debugger", "decision": "done", "reasonCode": "done_with_evidence", "cycleMs": 104250, "autoClose": true, "dispatchMode": "spawn"}
