@@ -11,8 +11,9 @@
   "orchestrator": {
     "maxConcurrentSpawns": 3,
     "executorRouting": {
-      "coder": "claude_cli",
-      "debugger": "codex_cli"
+      "coder": "codex_cli",
+      "debugger": "codex_cli",
+      "default": "codex_cli"
     },
     "retryPolicy": {
       "maxAttempts": 2,

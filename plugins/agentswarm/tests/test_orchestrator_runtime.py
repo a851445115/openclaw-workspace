@@ -3765,7 +3765,7 @@ class RuntimeTests(unittest.TestCase):
             planned = out.get("plannedCommand") or []
             self.assertTrue(any("trigger-xhs-workflow.sh" in str(x) for x in planned), out)
 
-    def test_scheme_b_coder_dispatch_uses_claude_worker_executor(self):
+    def test_scheme_b_code_task_prefers_codex_executor(self):
         run_json([
             "python3",
             str(BOARD),
@@ -3797,9 +3797,9 @@ class RuntimeTests(unittest.TestCase):
         ])
         self.assertTrue(out["ok"], out)
         spawn = out.get("spawn") or {}
-        self.assertEqual(spawn.get("executor"), "claude_cli", out)
+        self.assertEqual(spawn.get("executor"), "codex_cli", out)
         planned = spawn.get("plannedCommand") or []
-        self.assertTrue(any("claude_worker_bridge.py" in str(x) for x in planned), out)
+        self.assertTrue(any("codex_worker_bridge.py" in str(x) for x in planned), out)
         metrics = spawn.get("metrics") or {}
         self.assertIn("tokenUsage", metrics, out)
 
@@ -3839,7 +3839,7 @@ class RuntimeTests(unittest.TestCase):
         planned = spawn.get("plannedCommand") or []
         self.assertTrue(any("codex_worker_bridge.py" in str(x) for x in planned), out)
 
-    def test_writing_task_forces_claude_executor_even_for_debugger(self):
+    def test_writing_task_forces_gemini_executor_even_for_debugger(self):
         run_json([
             "python3",
             str(BOARD),
@@ -3871,11 +3871,11 @@ class RuntimeTests(unittest.TestCase):
         ])
         self.assertTrue(out["ok"], out)
         spawn = out.get("spawn") or {}
-        self.assertEqual(spawn.get("executor"), "claude_cli", out)
+        self.assertEqual(spawn.get("executor"), "gemini_cli", out)
         planned = spawn.get("plannedCommand") or []
-        self.assertTrue(any("claude_worker_bridge.py" in str(x) for x in planned), out)
+        self.assertTrue(any("gemini_worker_bridge.py" in str(x) for x in planned), out)
 
-    def test_scheme_b_other_roles_keep_openclaw_executor(self):
+    def test_planning_task_forces_claude_executor(self):
         run_json([
             "python3",
             str(BOARD),
@@ -3885,7 +3885,43 @@ class RuntimeTests(unittest.TestCase):
             "--actor",
             "orchestrator",
             "--text",
-            "@invest-analyst create task T-062: 其他角色走 openclaw",
+            "@coder create task T-062P: 请先规划系统架构方案与执行路线",
+        ])
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--task-id",
+            "T-062P",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"完成","evidence":["logs/route.log"]}',
+        ])
+        self.assertTrue(out["ok"], out)
+        spawn = out.get("spawn") or {}
+        self.assertEqual(spawn.get("executor"), "claude_cli", out)
+        planned = spawn.get("plannedCommand") or []
+        self.assertTrue(any("claude_worker_bridge.py" in str(x) for x in planned), out)
+
+    def test_scheme_b_other_roles_default_to_codex_executor(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@invest-analyst create task T-062: 其他角色默认走 codex",
         ])
         out = run_json([
             "python3",
@@ -3907,7 +3943,9 @@ class RuntimeTests(unittest.TestCase):
         ])
         self.assertTrue(out["ok"], out)
         spawn = out.get("spawn") or {}
-        self.assertEqual(spawn.get("executor"), "openclaw_agent", out)
+        self.assertEqual(spawn.get("executor"), "codex_cli", out)
+        planned = spawn.get("plannedCommand") or []
+        self.assertTrue(any("codex_worker_bridge.py" in str(x) for x in planned), out)
 
     def test_scheme_b_executor_routing_can_be_overridden_by_runtime_policy(self):
         runtime_policy_path = self.root / "config" / "runtime-policy.json"

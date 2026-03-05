@@ -150,14 +150,17 @@ CHECKPOINT_STALL_SIGNALS = {"none", "soft_stall", "hard_block"}
 SPAWN_EXECUTOR_OPENCLAW = "openclaw_agent"
 SPAWN_EXECUTOR_CODEX = "codex_cli"
 SPAWN_EXECUTOR_CLAUDE = "claude_cli"
+SPAWN_EXECUTOR_GEMINI = "gemini_cli"
 SUPPORTED_SPAWN_EXECUTORS = {
     SPAWN_EXECUTOR_OPENCLAW,
     SPAWN_EXECUTOR_CODEX,
     SPAWN_EXECUTOR_CLAUDE,
+    SPAWN_EXECUTOR_GEMINI,
 }
 DEFAULT_EXECUTOR_ROUTING: Dict[str, str] = {
-    "coder": SPAWN_EXECUTOR_CLAUDE,
+    "coder": SPAWN_EXECUTOR_CODEX,
     "debugger": SPAWN_EXECUTOR_CODEX,
+    "default": SPAWN_EXECUTOR_CODEX,
 }
 DEFAULT_XHS_WORKFLOW_ROOT = "/Users/chengren17/.openclaw/projects/paper-xhs-3min-workflow"
 DEFAULT_XHS_OUTPUT_ROOT = "/Users/chengren17/xhs-share"
@@ -5970,6 +5973,18 @@ def resolve_spawn_executor(root: str, agent: str) -> str:
 WRITING_TASK_KEYWORDS = (
     "xhs",
     "draft",
+    "write",
+    "writing",
+    "copywriting",
+    "rewrite",
+    "article",
+    "blog post",
+    "social post",
+    "post draft",
+    "newsletter",
+    "announcement",
+    "release notes",
+    "title ideas",
     "citation",
     "fact check",
     "style-notes",
@@ -5981,21 +5996,84 @@ WRITING_TASK_KEYWORDS = (
     "artifact package",
     "文案",
     "写作",
+    "文字任务",
+    "写一段",
+    "写一篇",
+    "润色",
+    "改写",
+    "扩写",
+    "摘要",
+    "总结",
     "小红书",
     "标题",
     "封面",
     "图文",
     "核查",
-    "润色",
     "发布",
 )
 
 
+PLANNING_HIGH_INTEL_KEYWORDS = (
+    "architecture plan",
+    "design proposal",
+    "solution design",
+    "technical plan",
+    "implementation plan",
+    "task breakdown",
+    "decompose",
+    "roadmap",
+    "high-intelligence task",
+    "deep reasoning",
+    "step-by-step reasoning",
+    "brainstorm",
+    "方案规划",
+    "规划方案",
+    "技术方案",
+    "架构方案",
+    "系统架构",
+    "系统设计",
+    "任务拆解",
+    "执行路线",
+    "路线图",
+    "高智任务",
+    "高智能任务",
+    "深度推理",
+    "分步推理",
+    "深度分析",
+    "复杂推理",
+    "规划",
+    "架构",
+    "方案",
+    "拆解",
+)
+
+
+TASK_SIGNAL_FIELD_PATTERN = re.compile(r'"(?:title|objective)"\s*:\s*"([^"]+)"')
+
+
+def extract_task_signal_text(task_prompt: str) -> str:
+    text = str(task_prompt or "").strip()
+    if not text:
+        return ""
+    signals = [str(m.group(1) or "").strip() for m in TASK_SIGNAL_FIELD_PATTERN.finditer(text)]
+    compact_signals = [item for item in signals if item]
+    if compact_signals:
+        return " ".join(compact_signals).lower()
+    return text.lower()
+
+
 def is_writing_task(task_prompt: str) -> bool:
-    text = str(task_prompt or "").strip().lower()
+    text = extract_task_signal_text(task_prompt)
     if not text:
         return False
     return any(keyword in text for keyword in WRITING_TASK_KEYWORDS)
+
+
+def is_planning_or_high_intelligence_task(task_prompt: str) -> bool:
+    text = extract_task_signal_text(task_prompt)
+    if not text:
+        return False
+    return any(keyword in text for keyword in PLANNING_HIGH_INTEL_KEYWORDS)
 
 
 def render_spawn_template(template: str, values: Dict[str, Any]) -> List[str]:
@@ -6016,10 +6094,17 @@ def resolve_spawn_plan(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
     timeout_sec = normalize_timeout_sec(getattr(args, "timeout_sec", 0), default=0)
     codex_bridge = os.path.join(os.path.dirname(__file__), "codex_worker_bridge.py")
     claude_bridge = os.path.join(os.path.dirname(__file__), "claude_worker_bridge.py")
+    gemini_bridge = os.path.join(os.path.dirname(__file__), "gemini_worker_bridge.py")
     selected_executor = resolve_spawn_executor(args.root, str(args.agent or ""))
-    if is_writing_task(task_prompt):
+    if is_planning_or_high_intelligence_task(task_prompt):
         selected_executor = SPAWN_EXECUTOR_CLAUDE
-    selected_bridge = codex_bridge if selected_executor == SPAWN_EXECUTOR_CODEX else claude_bridge
+    elif is_writing_task(task_prompt):
+        selected_executor = SPAWN_EXECUTOR_GEMINI
+    selected_bridge = {
+        SPAWN_EXECUTOR_CODEX: codex_bridge,
+        SPAWN_EXECUTOR_CLAUDE: claude_bridge,
+        SPAWN_EXECUTOR_GEMINI: gemini_bridge,
+    }.get(selected_executor, codex_bridge)
     values = {
         "root": args.root,
         "task_id": args.task_id,
@@ -6029,6 +6114,7 @@ def resolve_spawn_plan(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
         "bridge": selected_bridge,
         "codex_bridge": codex_bridge,
         "claude_bridge": claude_bridge,
+        "gemini_bridge": gemini_bridge,
     }
 
     raw_spawn_cmd = str(getattr(args, "spawn_cmd", "") or "").strip()
@@ -6053,6 +6139,14 @@ def resolve_spawn_plan(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
         template = "python3 {bridge} --root {root} --task-id {task_id} --agent {agent} --task {task} --timeout-sec {timeout_sec}"
         return {
             "executor": SPAWN_EXECUTOR_CODEX,
+            "command": append_spawn_workspace_arg(render_spawn_template(template, values), spawn_workspace),
+            "template": template,
+        }
+
+    if selected_executor == SPAWN_EXECUTOR_GEMINI:
+        template = "python3 {gemini_bridge} --root {root} --task-id {task_id} --agent {agent} --task {task} --timeout-sec {timeout_sec}"
+        return {
+            "executor": SPAWN_EXECUTOR_GEMINI,
             "command": append_spawn_workspace_arg(render_spawn_template(template, values), spawn_workspace),
             "template": template,
         }

@@ -12,9 +12,9 @@
   "orchestrator": {
     "maxConcurrentSpawns": 4,
     "executorRouting": {
-      "coder": "claude_cli",
+      "coder": "codex_cli",
       "debugger": "codex_cli",
-      "invest-analyst": "openclaw_agent"
+      "default": "codex_cli"
     },
     "retryPolicy": {
       "maxAttempts": 3,
