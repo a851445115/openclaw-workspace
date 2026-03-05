@@ -1,0 +1,22 @@
+{
+  "enabled": false,
+  "dryRun": true,
+  "todoComments": {
+    "enabled": true,
+    "paths": [
+      "scripts",
+      "tests"
+    ]
+  },
+  "pytestFailures": {
+    "enabled": true
+  },
+  "feishuMessages": {
+    "enabled": true
+  },
+  "arxivRss": {
+    "enabled": false,
+    "feedUrl": "https://export.arxiv.org/rss/cs.AI",
+    "timeoutSec": 2
+  }
+}

@@ -4660,6 +4660,101 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotEqual(content.get("type"), "AdaptiveCard", content)
         self.assertTrue(isinstance(content.get("elements"), list), content)
 
+    def test_dispatch_spawn_injects_worktree_workspace_and_active_session(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-WT1: worktree integration smoke",
+        ])
+
+        module = load_milestone_module()
+        real_run_dispatch_spawn = module.run_dispatch_spawn
+        real_ensure_task_worktree = module.worktree_manager.ensure_task_worktree
+        worktree_path = (self.root / "task-worktrees" / "task-T-WT1").as_posix()
+
+        def fake_ensure_task_worktree(_root, task_id, base_ref="HEAD", **_kwargs):
+            self.assertEqual(task_id, "T-WT1")
+            self.assertEqual(base_ref, "HEAD")
+            return {
+                "ok": True,
+                "created": True,
+                "skipped": False,
+                "reason": "created",
+                "path": worktree_path,
+                "branch": "task/T-WT1",
+                "policy": {"enabled": True, "cleanupOnDone": False},
+            }
+
+        def fake_run_dispatch_spawn(args, _task_prompt):
+            self.assertEqual(str(getattr(args, "workspace", "") or ""), worktree_path)
+            return {
+                "ok": True,
+                "skipped": False,
+                "stdout": '{"status":"done","message":"done with test log"}',
+                "stderr": "",
+                "command": ["python3", "bridge.py"],
+                "executor": "claude_cli",
+                "plannedCommand": ["python3", "bridge.py", "--workspace", worktree_path],
+                "spawnResult": {"status": "done", "message": "done with test log"},
+                "decision": "done",
+                "detail": "done with test log",
+                "reasonCode": "done_with_evidence",
+                "acceptanceReasonCode": "accepted",
+                "normalizedReport": {
+                    "status": "done",
+                    "summary": "done with test log",
+                    "evidence": ["test log output"],
+                },
+                "metrics": {"elapsedMs": 7, "tokenUsage": 11},
+            }
+
+        try:
+            module.worktree_manager.ensure_task_worktree = fake_ensure_task_worktree
+            module.run_dispatch_spawn = fake_run_dispatch_spawn
+            args = argparse.Namespace(
+                root=self.root.as_posix(),
+                task_id="T-WT1",
+                agent="coder",
+                task="worktree dispatch check",
+                actor="orchestrator",
+                session_id="",
+                group_id="oc_test",
+                account_id="orchestrator",
+                mode="dry-run",
+                timeout_sec=0,
+                spawn=True,
+                spawn_cmd="",
+                spawn_output="",
+                visibility_mode="handoff_visible",
+                selection={},
+            )
+            out = module.dispatch_once(args)
+        finally:
+            module.run_dispatch_spawn = real_run_dispatch_spawn
+            module.worktree_manager.ensure_task_worktree = real_ensure_task_worktree
+
+        self.assertTrue(out.get("ok"), out)
+        worktree = out.get("worktree") if isinstance(out.get("worktree"), dict) else {}
+        self.assertEqual(worktree.get("path"), worktree_path, out)
+        spawn = out.get("spawn") if isinstance(out.get("spawn"), dict) else {}
+        spawn_worktree = spawn.get("worktree") if isinstance(spawn.get("worktree"), dict) else {}
+        self.assertEqual(spawn_worktree.get("path"), worktree_path, out)
+        active = spawn.get("activeSession") if isinstance(spawn.get("activeSession"), dict) else {}
+        self.assertEqual(active.get("taskId"), "T-WT1", out)
+        self.assertEqual(active.get("worktreePath"), worktree_path, out)
+        self.assertEqual(active.get("status"), "done", out)
+
+        active_state = module.session_registry.load_active_sessions(self.root.as_posix())
+        active_row = ((active_state.get("sessions") or {}).get("T-WT1")) or {}
+        self.assertEqual(active_row.get("worktreePath"), worktree_path, active_state)
+        self.assertEqual(active_row.get("status"), "done", active_state)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -116,6 +116,47 @@ class SessionRegistryTests(unittest.TestCase):
         entry = ((state.get("sessions") or {}).get(key) or {})
         self.assertEqual(entry.get("retryCount"), workers * attempts_per_worker, state)
 
+    def test_active_session_upsert_heartbeat_and_mark_status(self):
+        upserted = self.mod.upsert_active_session(
+            self.root.as_posix(),
+            "T-ACT-001",
+            worktree_path="/tmp/task-T-ACT-001",
+            pid=12345,
+            tmux_session="agent-T-ACT-001",
+            status="running",
+        )
+        active = upserted.get("activeSession") or {}
+        self.assertEqual(active.get("taskId"), "T-ACT-001", upserted)
+        self.assertEqual(active.get("worktreePath"), "/tmp/task-T-ACT-001", upserted)
+        self.assertEqual(active.get("pid"), 12345, upserted)
+        self.assertEqual(active.get("tmuxSession"), "agent-T-ACT-001", upserted)
+        self.assertEqual(active.get("status"), "running", upserted)
+        self.assertTrue(str(active.get("startTime") or "").strip(), upserted)
+        self.assertTrue(str(active.get("lastHeartbeat") or "").strip(), upserted)
+
+        heartbeat = self.mod.heartbeat_active_session(
+            self.root.as_posix(),
+            "T-ACT-001",
+            pid=22222,
+            tmux_session="agent-T-ACT-001",
+        )
+        self.assertEqual((heartbeat.get("activeSession") or {}).get("pid"), 22222, heartbeat)
+        self.assertEqual((heartbeat.get("activeSession") or {}).get("status"), "running", heartbeat)
+
+        marked = self.mod.mark_active_session_status(self.root.as_posix(), "T-ACT-001", status="done")
+        self.assertEqual((marked.get("activeSession") or {}).get("status"), "done", marked)
+
+        loaded = self.mod.load_active_sessions(self.root.as_posix())
+        final_row = ((loaded.get("sessions") or {}).get("T-ACT-001")) or {}
+        self.assertEqual(final_row.get("status"), "done", loaded)
+        self.assertEqual(final_row.get("pid"), 22222, loaded)
+        self.assertEqual(final_row.get("worktreePath"), "/tmp/task-T-ACT-001", loaded)
+
+    def test_load_active_sessions_returns_empty_default(self):
+        loaded = self.mod.load_active_sessions(self.root.as_posix())
+        self.assertEqual(loaded.get("sessions"), {}, loaded)
+        self.assertEqual(loaded.get("updatedAt"), "", loaded)
+
 
 if __name__ == "__main__":
     unittest.main()

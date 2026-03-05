@@ -11,9 +11,22 @@ from typing import Any, Dict
 
 
 SESSION_STATE_FILE = os.path.join("state", "worker-sessions.json")
+ACTIVE_SESSION_STATE_FILE = os.path.join("state", "active-sessions.json")
 SESSION_STATUS_ACTIVE = "active"
 SESSION_STATUS_FAILED = "failed"
 SESSION_STATUS_DONE = "done"
+ACTIVE_STATUS_RUNNING = "running"
+ACTIVE_STATUS_FAILED = "failed"
+ACTIVE_STATUS_DONE = "done"
+ACTIVE_STATUS_STOPPED = "stopped"
+ACTIVE_STATUS_BLOCKED = "blocked"
+ACTIVE_STATUS_SET = {
+    ACTIVE_STATUS_RUNNING,
+    ACTIVE_STATUS_FAILED,
+    ACTIVE_STATUS_DONE,
+    ACTIVE_STATUS_STOPPED,
+    ACTIVE_STATUS_BLOCKED,
+}
 LOGGER = logging.getLogger(__name__)
 _REGISTRY_LOCK = threading.RLock()
 
@@ -37,6 +50,10 @@ def normalize_token(value: Any, fallback: str = "") -> str:
 
 def session_state_path(root: str) -> str:
     return os.path.join(root, SESSION_STATE_FILE)
+
+
+def active_session_state_path(root: str) -> str:
+    return os.path.join(root, ACTIVE_SESSION_STATE_FILE)
 
 
 def _write_json_atomic(path: str, payload: Dict[str, Any]) -> None:
@@ -75,9 +92,33 @@ def load_registry(root: str) -> Dict[str, Any]:
     return {"sessions": sessions, "updatedAt": str(loaded.get("updatedAt") or "")}
 
 
+def load_active_sessions(root: str) -> Dict[str, Any]:
+    path = active_session_state_path(root)
+    if not os.path.exists(path):
+        return {"sessions": {}, "updatedAt": ""}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+    except Exception:
+        LOGGER.warning("failed to load active session registry: path=%s", path, exc_info=True)
+        return {"sessions": {}, "updatedAt": ""}
+    sessions = loaded.get("sessions") if isinstance(loaded.get("sessions"), dict) else {}
+    return {"sessions": sessions, "updatedAt": str(loaded.get("updatedAt") or "")}
+
+
 def save_registry(root: str, state: Dict[str, Any]) -> None:
     with _REGISTRY_LOCK:
         path = session_state_path(root)
+        payload = {
+            "sessions": state.get("sessions") if isinstance(state.get("sessions"), dict) else {},
+            "updatedAt": now_iso(),
+        }
+        _write_json_atomic(path, payload)
+
+
+def save_active_sessions(root: str, state: Dict[str, Any]) -> None:
+    with _REGISTRY_LOCK:
+        path = active_session_state_path(root)
         payload = {
             "sessions": state.get("sessions") if isinstance(state.get("sessions"), dict) else {},
             "updatedAt": now_iso(),
@@ -102,6 +143,16 @@ def make_session_id(task_id: str, agent: str, executor: str) -> str:
     return f"ws-{safe or 'session'}-{suffix}"
 
 
+def normalize_active_status(value: Any, fallback: str = ACTIVE_STATUS_RUNNING) -> str:
+    token = normalize_token(value, fallback=fallback)
+    return token if token in ACTIVE_STATUS_SET else fallback
+
+
+def _safe_pid(value: Any, default: int = 0) -> int:
+    pid = safe_int(value, default=default)
+    return pid if pid > 0 else 0
+
+
 def _normalize_session_entry(entry: Dict[str, Any], task_id: str, agent: str, executor: str) -> Dict[str, Any]:
     now = now_iso()
     created_at = str(entry.get("createdAt") or now)
@@ -119,6 +170,28 @@ def _normalize_session_entry(entry: Dict[str, Any], task_id: str, agent: str, ex
     }
 
 
+def _normalize_active_session_entry(
+    entry: Dict[str, Any],
+    task_id: str,
+    worktree_path: str = "",
+    pid: Any = 0,
+    tmux_session: str = "",
+    status: str = ACTIVE_STATUS_RUNNING,
+) -> Dict[str, Any]:
+    now = now_iso()
+    existing = entry if isinstance(entry, dict) else {}
+    start_time = str(existing.get("startTime") or now)
+    return {
+        "taskId": str(task_id or "").strip(),
+        "worktreePath": str(worktree_path or existing.get("worktreePath") or ""),
+        "pid": _safe_pid(pid if pid else existing.get("pid"), 0),
+        "tmuxSession": str(tmux_session or existing.get("tmuxSession") or ""),
+        "startTime": start_time,
+        "lastHeartbeat": now,
+        "status": normalize_active_status(status or existing.get("status"), fallback=ACTIVE_STATUS_RUNNING),
+    }
+
+
 def ensure_session(root: str, task_id: str, agent: str, executor: str) -> Dict[str, Any]:
     with _REGISTRY_LOCK:
         key = session_key(task_id, agent, executor)
@@ -132,6 +205,85 @@ def ensure_session(root: str, task_id: str, agent: str, executor: str) -> Dict[s
         sessions[key] = entry
         save_registry(root, state)
         return {"created": created, "key": key, "session": dict(entry)}
+
+
+def upsert_active_session(
+    root: str,
+    task_id: str,
+    worktree_path: str = "",
+    pid: Any = 0,
+    tmux_session: str = "",
+    status: str = ACTIVE_STATUS_RUNNING,
+) -> Dict[str, Any]:
+    task_key = str(task_id or "").strip()
+    if not task_key:
+        return {"created": False, "taskId": "", "activeSession": {}}
+    with _REGISTRY_LOCK:
+        state = load_active_sessions(root)
+        sessions = state.setdefault("sessions", {})
+        existing = sessions.get(task_key) if isinstance(sessions.get(task_key), dict) else {}
+        created = not bool(existing)
+        row = _normalize_active_session_entry(
+            existing,
+            task_key,
+            worktree_path=worktree_path,
+            pid=pid,
+            tmux_session=tmux_session,
+            status=status,
+        )
+        sessions[task_key] = row
+        save_active_sessions(root, state)
+        return {"created": created, "taskId": task_key, "activeSession": dict(row)}
+
+
+def heartbeat_active_session(
+    root: str,
+    task_id: str,
+    pid: Any = 0,
+    tmux_session: str = "",
+    worktree_path: str = "",
+) -> Dict[str, Any]:
+    task_key = str(task_id or "").strip()
+    if not task_key:
+        return {"created": False, "taskId": "", "activeSession": {}}
+    with _REGISTRY_LOCK:
+        state = load_active_sessions(root)
+        sessions = state.setdefault("sessions", {})
+        existing = sessions.get(task_key) if isinstance(sessions.get(task_key), dict) else {}
+        created = not bool(existing)
+        row = _normalize_active_session_entry(
+            existing,
+            task_key,
+            worktree_path=worktree_path,
+            pid=pid,
+            tmux_session=tmux_session,
+            status=ACTIVE_STATUS_RUNNING,
+        )
+        sessions[task_key] = row
+        save_active_sessions(root, state)
+        return {"created": created, "taskId": task_key, "activeSession": dict(row)}
+
+
+def mark_active_session_status(root: str, task_id: str, status: str) -> Dict[str, Any]:
+    task_key = str(task_id or "").strip()
+    if not task_key:
+        return {"created": False, "taskId": "", "activeSession": {}}
+    with _REGISTRY_LOCK:
+        state = load_active_sessions(root)
+        sessions = state.setdefault("sessions", {})
+        existing = sessions.get(task_key) if isinstance(sessions.get(task_key), dict) else {}
+        created = not bool(existing)
+        row = _normalize_active_session_entry(
+            existing,
+            task_key,
+            worktree_path="",
+            pid=0,
+            tmux_session="",
+            status=normalize_active_status(status, fallback=ACTIVE_STATUS_RUNNING),
+        )
+        sessions[task_key] = row
+        save_active_sessions(root, state)
+        return {"created": created, "taskId": task_key, "activeSession": dict(row)}
 
 
 def record_attempt(

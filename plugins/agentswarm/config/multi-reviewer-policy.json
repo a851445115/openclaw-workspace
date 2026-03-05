@@ -1,0 +1,24 @@
+{
+  "enabled": false,
+  "dryRun": true,
+  "passThreshold": 0.7,
+  "allowDegradedPass": true,
+  "minSuccessfulReviewers": 1,
+  "reviewers": [
+    {
+      "model": "codex",
+      "weight": 0.4,
+      "enabled": true
+    },
+    {
+      "model": "claude",
+      "weight": 0.3,
+      "enabled": true
+    },
+    {
+      "model": "gemini",
+      "weight": 0.3,
+      "enabled": true
+    }
+  ]
+}

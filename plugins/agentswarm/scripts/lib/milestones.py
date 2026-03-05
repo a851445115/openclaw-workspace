@@ -38,6 +38,7 @@ import ops_metrics
 import strategy_library
 import knowledge_adapter
 import session_registry
+import worktree_manager
 import context_pack
 import collaboration_hub
 import expert_group
@@ -3573,6 +3574,9 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     claim_send: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "not_sent"}
     task_send: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "not_sent"}
     session_meta: Dict[str, Any] = {}
+    active_session_meta: Dict[str, Any] = {}
+    worktree_info: Dict[str, Any] = {}
+    spawn_workspace = str(getattr(args, "workspace", "") or "").strip()
     session_executor = ""
 
     spawn = {
@@ -3600,6 +3604,31 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
 
     if args.spawn:
         try:
+            ensured_worktree = worktree_manager.ensure_task_worktree(
+                args.root,
+                args.task_id,
+                base_ref="HEAD",
+            )
+            if isinstance(ensured_worktree, dict):
+                worktree_info = dict(ensured_worktree)
+                worktree_path = str(ensured_worktree.get("path") or "").strip()
+                should_use_worktree = bool(ensured_worktree.get("ok")) and not bool(ensured_worktree.get("skipped"))
+                if should_use_worktree and worktree_path:
+                    spawn_workspace = worktree_path
+                    setattr(args, "workspace", spawn_workspace)
+            else:
+                worktree_info = {"ok": False, "skipped": True, "reason": "invalid_worktree_response"}
+        except Exception as err:
+            worktree_info = {
+                "ok": False,
+                "created": False,
+                "skipped": True,
+                "reason": "ensure_exception",
+                "error": clip(str(err), 200),
+            }
+            LOGGER.warning("ensure_task_worktree failed: taskId=%s", args.task_id, exc_info=True)
+
+        try:
             session_plan = resolve_spawn_plan(args, agent_prompt)
             session_executor = str(session_plan.get("executor") or "")
         except Exception:
@@ -3614,6 +3643,28 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
             session_meta = session_registry.build_session_metadata(session_record)
         except Exception:
             session_meta = {}
+
+        try:
+            active_record = session_registry.upsert_active_session(
+                args.root,
+                args.task_id,
+                worktree_path=spawn_workspace,
+                pid=0,
+                tmux_session="",
+                status="running",
+            )
+            active_session_meta = (
+                active_record.get("activeSession")
+                if isinstance(active_record.get("activeSession"), dict)
+                else {}
+            )
+        except Exception:
+            active_session_meta = {}
+            LOGGER.warning(
+                "active session upsert failed: taskId=%s status=running",
+                args.task_id,
+                exc_info=True,
+            )
 
         reason_code_hint = ""
         if args.spawn_output:
@@ -3967,6 +4018,57 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
             else:
                 worker_report = {"ok": True, "skipped": True, "reason": "spawn not done or visibility hidden"}
 
+    if args.spawn:
+        final_decision = str(spawn.get("decision") or "").strip().lower()
+        target_status = ""
+        if final_decision == "done":
+            target_status = "done"
+        elif final_decision == "continue":
+            target_status = "running"
+        elif final_decision == "blocked":
+            target_status = "blocked"
+        elif not bool(spawn.get("ok")):
+            target_status = "failed"
+        if target_status == "running":
+            try:
+                active_record = session_registry.heartbeat_active_session(
+                    args.root,
+                    args.task_id,
+                    pid=0,
+                    tmux_session="",
+                    worktree_path=spawn_workspace,
+                )
+                active_session_meta = (
+                    active_record.get("activeSession")
+                    if isinstance(active_record.get("activeSession"), dict)
+                    else active_session_meta
+                )
+            except Exception:
+                LOGGER.warning(
+                    "active session heartbeat failed: taskId=%s",
+                    args.task_id,
+                    exc_info=True,
+                )
+        elif target_status:
+            try:
+                active_record = session_registry.mark_active_session_status(
+                    args.root,
+                    args.task_id,
+                    status=target_status,
+                )
+                active_session_meta = (
+                    active_record.get("activeSession")
+                    if isinstance(active_record.get("activeSession"), dict)
+                    else active_session_meta
+                )
+            except Exception:
+                LOGGER.warning(
+                    "active session status update failed: taskId=%s status=%s",
+                    args.task_id,
+                    target_status,
+                    exc_info=True,
+                )
+
     backfill_result: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "spawn_done_or_not_enabled"}
     if args.spawn:
         spawn_decision = str(spawn.get("decision") or "").strip().lower()
@@ -3985,6 +4087,10 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
 
     if isinstance(session_meta, dict) and session_meta:
         spawn["session"] = session_meta
+    if isinstance(active_session_meta, dict) and active_session_meta:
+        spawn["activeSession"] = active_session_meta
+    if isinstance(worktree_info, dict) and worktree_info:
+        spawn["worktree"] = worktree_info
     if isinstance(retry_context_pack, dict) and retry_context_pack:
         spawn["retryContext"] = retry_context_pack
     if args.spawn:
@@ -4032,6 +4138,8 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         "knowledge": knowledge_meta,
         "collaboration": collab_summary_state,
         "session": session_meta,
+        "activeSession": active_session_meta,
+        "worktree": worktree_info,
         "retryContext": retry_context_pack,
         "expertGroup": expert_group_out,
     }
