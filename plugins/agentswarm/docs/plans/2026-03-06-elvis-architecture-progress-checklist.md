@@ -5,8 +5,8 @@
 ## 结论
 
 - 已完成：0 / 9
-- 部分完成：6 / 9
-- 未开始：3 / 9
+- 部分完成：7 / 9
+- 未开始：2 / 9
 
 > 说明：这里按原路线图中的“文件 + 集成 + 验收标准”口径统计；只有模块骨架、测试桩、未接主流程的任务，一律记为“部分完成”。
 
@@ -68,13 +68,15 @@
 - [ ] 尚未扩展 orchestrator / workflow 的显式上下文管理命令
 - [ ] 尚未完成更高层业务流的上下文回写闭环
 
-## 未开始
-
 ### P3-1 成本优化仪表盘
-- [ ] 在 `scripts/lib/ops_metrics.py` 增加 daily cost 指标
-- [ ] 增加 `cost_per_commit`
-- [ ] 增加 `agent_breakdown`
-- [ ] 暴露为仪表盘或状态命令可见输出
+- [x] 已在 `scripts/lib/ops_metrics.py` 增加 `dailyCost`
+- [x] 已增加 `costPerCommit`
+- [x] 已增加 executor 维度的 `agentBreakdown`
+- [x] 已在 manager report / `status full` 中暴露成本摘要
+- [ ] 当前仍是内置估算价目表，不代表真实账单成本
+- [ ] 尚未提供独立成本看板或更细粒度账单归因
+
+## 未开始
 
 ### P3-2 智能失败分类
 - [ ] 新增 `scripts/lib/failure_classifier.py`

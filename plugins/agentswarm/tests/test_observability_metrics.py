@@ -148,6 +148,76 @@ class ObservabilityMetricsTests(unittest.TestCase):
         self.assertTrue(math.isfinite(summary["averageCycleMs"]), summary)
         self.assertEqual(summary["averageCycleMs"], 1500.0, summary)
 
+    def test_aggregate_metrics_includes_cost_fields_and_executor_breakdown(self):
+        ops_metrics = load_ops_metrics_module()
+        now = datetime.now(timezone.utc)
+        rows = [
+            {
+                "event": "dispatch_done",
+                "at": self._iso(now - timedelta(hours=3)),
+                "taskId": "T-301",
+                "executor": "codex_cli",
+                "tokenUsage": 2000,
+                "cycleMs": 1200,
+            },
+            {
+                "event": "dispatch_blocked",
+                "at": self._iso(now - timedelta(hours=2)),
+                "taskId": "T-302",
+                "executor": "claude_cli",
+                "tokenUsage": 1000,
+                "reasonCode": "incomplete_output",
+                "cycleMs": 2400,
+            },
+            {
+                "event": "dispatch_continue",
+                "at": self._iso(now - timedelta(hours=1)),
+                "taskId": "T-303",
+                "executor": "gemini_cli",
+                "tokenUsage": 500,
+            },
+            {
+                "event": "dispatch_done",
+                "at": self._iso(now - timedelta(minutes=30)),
+                "taskId": "T-304",
+                "executor": "openclaw_agent",
+                "cycleMs": 800,
+            },
+        ]
+        self._write_events(rows)
+
+        summary = ops_metrics.aggregate_metrics(str(self.root), days=2, now_ts=now.timestamp())
+
+        self.assertIn("dailyCost", summary, summary)
+        self.assertIn("costPerCommit", summary, summary)
+        self.assertIn("agentBreakdown", summary, summary)
+        self.assertGreater(summary["dailyCost"], 0.0, summary)
+        self.assertGreater(summary["costPerCommit"], 0.0, summary)
+        breakdown = summary["agentBreakdown"] or {}
+        self.assertEqual((breakdown.get("codex_cli") or {}).get("tokens"), 2000, summary)
+        self.assertEqual((breakdown.get("claude_cli") or {}).get("tokens"), 1000, summary)
+        self.assertEqual((breakdown.get("gemini_cli") or {}).get("tokens"), 500, summary)
+        self.assertEqual((breakdown.get("openclaw_agent") or {}).get("estimatedCost"), 0.0, summary)
+
+    def test_format_core_summary_surfaces_cost_fields(self):
+        ops_metrics = load_ops_metrics_module()
+        summary_text = ops_metrics.format_core_summary(
+            {
+                "throughputCompleted": 3,
+                "successRate": 0.75,
+                "recoveryRate": 0.5,
+                "averageCycleMs": 1200,
+                "blockedReasonDistribution": {"incomplete_output": 2},
+                "dailyCost": 1.234,
+                "costPerCommit": 0.411,
+                "agentBreakdown": {"codex_cli": {"count": 2, "tokens": 3000, "estimatedCost": 0.09}},
+            },
+            days=7,
+        )
+        self.assertIn("日均成本", summary_text)
+        self.assertIn("单完成成本", summary_text)
+        self.assertIn("codex_cli", summary_text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1240,6 +1240,13 @@ def build_manager_report(root: str, period: str = "daily") -> Dict[str, Any]:
     completion_pct = float(manager_kpis.get("taskCompletionRate") or 0.0) * 100.0
     recovery_pct = float(manager_kpis.get("blockedRecoveryRate") or 0.0) * 100.0
     expert_minutes = float(manager_kpis.get("expertGroupMedianClosureMinutes") or 0.0)
+    daily_cost = float(ops_summary.get("dailyCost") or 0.0) if isinstance(ops_summary, dict) else 0.0
+    cost_per_commit = float(ops_summary.get("costPerCommit") or 0.0) if isinstance(ops_summary, dict) else 0.0
+    cost_breakdown_items = ops_metrics.top_agent_breakdown(ops_summary, top_k=3) if isinstance(ops_summary, dict) else []
+    cost_lines = [
+        f"- {item['executor']}: estimatedCost=${float(item['estimatedCost']):.3f}, tokens={int(item['tokens'])}, count={int(item['count'])}"
+        for item in cost_breakdown_items
+    ] or ["- 无 tokenUsage 样本或全部成本回落为 0"]
     warning_lines = [f"- {line}" for line in warnings]
     markdown = "\n".join(
         [
@@ -1267,6 +1274,11 @@ def build_manager_report(root: str, period: str = "daily") -> Dict[str, Any]:
             f"- taskCompletionRate: {completion_pct:.2f}%",
             f"- blockedRecoveryRate: {recovery_pct:.2f}%",
             f"- expertGroupMedianClosureMinutes: {expert_minutes:.2f}",
+            f"- dailyCost: ${daily_cost:.3f}",
+            f"- costPerCommit: ${cost_per_commit:.3f}",
+            "",
+            "## 执行器成本摘要",
+            *cost_lines,
             "",
             "## 风险TOP（阻塞原因分布）",
             *risk_lines,
@@ -1331,6 +1343,7 @@ def build_manager_report(root: str, period: str = "daily") -> Dict[str, Any]:
         "collaborationSummary": collab_summary,
         "degraded": degraded,
         "warnings": warnings,
+        "opsMetrics": ops_summary,
         "opsMetricsError": ops_metrics_error,
     }
 
@@ -1350,11 +1363,16 @@ def build_manager_report_summary_text(report_meta: Dict[str, Any]) -> str:
     completion_pct = float(kpis.get("taskCompletionRate") or 0.0) * 100.0
     recovery_pct = float(kpis.get("blockedRecoveryRate") or 0.0) * 100.0
     expert_minutes = float(kpis.get("expertGroupMedianClosureMinutes") or 0.0)
+    ops_summary = report_meta.get("opsMetrics") if isinstance(report_meta.get("opsMetrics"), dict) else {}
+    daily_cost = float(ops_summary.get("dailyCost") or 0.0)
+    cost_per_commit = float(ops_summary.get("costPerCommit") or 0.0)
+    cost_top = ops_metrics.format_agent_breakdown_summary(ops_summary, top_k=1)
     return (
         f"[REPORT] {period} | done={int(progress.get('done') or 0)} | "
         f"pending-like={int(progress.get('pendingLike') or 0)} | blocked={int(progress.get('blocked') or 0)} | "
         f"taskCompletionRate={completion_pct:.1f}% | blockedRecoveryRate={recovery_pct:.1f}% | "
-        f"expertGroupMedianClosureMinutes={expert_minutes:.1f} | 风险TOP={risk_label} | "
+        f"expertGroupMedianClosureMinutes={expert_minutes:.1f} | 日均成本=${daily_cost:.3f} | "
+        f"单完成成本=${cost_per_commit:.3f} | 成本Top={cost_top} | 风险TOP={risk_label} | "
         f"path={report_meta.get('path') or '-'}"
     )
 
@@ -4283,6 +4301,8 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         event_payload = {
             "taskId": args.task_id,
             "agent": args.agent,
+            "executor": str(spawn.get("executor") or ""),
+            "tokenUsage": nonneg_int(spawn_metrics.get("tokenUsage"), 0),
             "decision": decision,
             "reasonCode": str(spawn.get("reasonCode") or ""),
             "cycleMs": cycle_ms,

@@ -5200,6 +5200,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("opsMetrics", out, out)
         self.assertEqual((out.get("opsMetrics") or {}).get("windowDays"), 7, out)
         self.assertEqual((out.get("opsMetrics") or {}).get("throughputCompleted"), 1, out)
+        self.assertIn("dailyCost", out.get("opsMetrics") or {}, out)
+        self.assertIn("costPerCommit", out.get("opsMetrics") or {}, out)
+        self.assertIn("agentBreakdown", out.get("opsMetrics") or {}, out)
+        self.assertIn("日均成本", ((out.get("send") or {}).get("payload") or {}).get("text", ""), out)
         manager_kpis = out.get("managerKpis") or {}
         self.assertIsInstance(manager_kpis, dict, out)
         self.assertIn("taskCompletionRate", manager_kpis, out)

@@ -73,3 +73,7 @@ Close the gaps from `docs/plans/2026-03-05-elvis-architecture-integration-plan.m
 ### P2-2 Subtask - Business context storage partial closure
 - Scope: add SQLite context store + CLI + prompt injection for task-bound customer/paper/history context.
 - Acceptance target: `state/business_context.db` auto-init, stable JSON CLI, `BUSINESS_CONTEXT` prompt segment when `customerId` / `paperId` are present.
+
+### P3-1 Subtask - Cost dashboard partial closure
+- Scope: add `dailyCost` / `costPerCommit` / `agentBreakdown` aggregation, wire dispatch ops events with `executor` + `tokenUsage`, and surface cost summaries in manager report plus `status full`.
+- Acceptance target: aggregate JSON exposes cost fields, text summaries show at least one cost metric, and old events without token usage safely fall back to zero cost.

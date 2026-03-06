@@ -29,3 +29,7 @@
 
 - P2-2 最小闭环选择为“SQLite store + CLI + prompt injection”，先不扩飞书/控制台命令，避免把业务上下文能力和命令面耦合。
 - `task-context-map.json` 已天然可承载 `customerId` / `paperId`，因此只需在读取侧做 helper，兼容旧任务上下文格式。
+
+- P3-1 采用内置 executor 价目表而不是新增配置文件：这轮只做低风险最小闭环，后续如果要接真实账单再把价目表外移。
+- `agentBreakdown` 实际按 executor 聚合更稳定，因为 dispatch ops event 已稳定持有 `executor`，而 agent 名称可能跨模型复用。
+- 对无 `tokenUsage` 的旧事件统一回落到 0 成本，但仍保留在 `agentBreakdown` 的 `count` 中，便于观察执行量与成本视角并存。

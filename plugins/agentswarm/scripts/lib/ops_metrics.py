@@ -7,6 +7,15 @@ from typing import Any, Dict, List, Optional
 
 
 OPS_METRICS_REL_PATH = os.path.join("state", "ops.metrics.jsonl")
+DISPATCH_METRIC_EVENTS = {"dispatch_done", "dispatch_blocked", "dispatch_continue"}
+EXECUTOR_PRICE_PER_1K_TOKENS = {
+    "codex_cli": 0.03,
+    "claude_cli": 0.06,
+    "gemini_cli": 0.005,
+    "openclaw_agent": 0.0,
+    "budget_guard": 0.0,
+    "unknown": 0.0,
+}
 
 
 def now_iso() -> str:
@@ -29,6 +38,13 @@ def _as_nonneg_float(value: Any) -> Optional[float]:
     return parsed
 
 
+def _as_nonneg_int(value: Any, default: int = 0) -> int:
+    parsed = _as_nonneg_float(value)
+    if parsed is None:
+        return default
+    return max(0, int(parsed))
+
+
 def _event_ts(row: Dict[str, Any]) -> Optional[float]:
     ts = row.get("ts")
     if ts is not None:
@@ -47,6 +63,23 @@ def _event_ts(row: Dict[str, Any]) -> Optional[float]:
         return datetime.fromisoformat(iso).timestamp()
     except Exception:
         return None
+
+
+def _normalize_executor(row: Dict[str, Any]) -> str:
+    executor = str(row.get("executor") or "").strip()
+    if executor:
+        return executor
+    agent = str(row.get("agent") or "").strip()
+    if agent:
+        return agent
+    return "unknown"
+
+
+def _estimate_cost(executor: str, token_usage: int) -> float:
+    rate = float(EXECUTOR_PRICE_PER_1K_TOKENS.get(str(executor or "").strip(), 0.0) or 0.0)
+    if token_usage <= 0 or rate <= 0:
+        return 0.0
+    return round((float(token_usage) / 1000.0) * rate, 6)
 
 
 def append_event(root: str, event: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -104,6 +137,35 @@ def load_events(root: str, days: int = 7, now_ts: Optional[float] = None) -> Lis
     return out
 
 
+def top_agent_breakdown(summary: Dict[str, Any], top_k: int = 3) -> List[Dict[str, Any]]:
+    breakdown = summary.get("agentBreakdown") if isinstance(summary.get("agentBreakdown"), dict) else {}
+    items: List[Dict[str, Any]] = []
+    for executor, raw in breakdown.items():
+        bucket = raw if isinstance(raw, dict) else {}
+        items.append(
+            {
+                "executor": str(executor),
+                "count": _as_nonneg_int(bucket.get("count"), 0),
+                "tokens": _as_nonneg_int(bucket.get("tokens"), 0),
+                "estimatedCost": float(_as_nonneg_float(bucket.get("estimatedCost")) or 0.0),
+            }
+        )
+    items.sort(key=lambda item: (-float(item["estimatedCost"]), -int(item["tokens"]), str(item["executor"])))
+    return items[: max(0, int(top_k))]
+
+
+def format_agent_breakdown_summary(summary: Dict[str, Any], top_k: int = 3) -> str:
+    items = top_agent_breakdown(summary, top_k=top_k)
+    if not items:
+        return "-"
+    return ", ".join(
+        [
+            f"{item['executor']}:${float(item['estimatedCost']):.3f}/{int(item['tokens'])}tok/{int(item['count'])}次"
+            for item in items
+        ]
+    )
+
+
 def aggregate_metrics(root: str, days: int = 7, now_ts: Optional[float] = None) -> Dict[str, Any]:
     now_value = float(now_ts if now_ts is not None else time.time())
     safe_days = int(days)
@@ -121,6 +183,8 @@ def aggregate_metrics(root: str, days: int = 7, now_ts: Optional[float] = None) 
 
     cycle_total = 0.0
     cycle_count = 0
+    total_estimated_cost = 0.0
+    agent_breakdown: Dict[str, Dict[str, Any]] = {}
 
     for row in rows:
         event = str(row.get("event") or "").strip()
@@ -143,6 +207,23 @@ def aggregate_metrics(root: str, days: int = 7, now_ts: Optional[float] = None) 
                 cycle_total += cycle_ms
                 cycle_count += 1
 
+        if event in DISPATCH_METRIC_EVENTS:
+            executor = _normalize_executor(row)
+            token_usage = _as_nonneg_int(row.get("tokenUsage"), 0)
+            estimated_cost = _estimate_cost(executor, token_usage)
+            bucket = agent_breakdown.setdefault(
+                executor,
+                {
+                    "count": 0,
+                    "tokens": 0,
+                    "estimatedCost": 0.0,
+                },
+            )
+            bucket["count"] = _as_nonneg_int(bucket.get("count"), 0) + 1
+            bucket["tokens"] = _as_nonneg_int(bucket.get("tokens"), 0) + token_usage
+            bucket["estimatedCost"] = round(float(_as_nonneg_float(bucket.get("estimatedCost")) or 0.0) + estimated_cost, 6)
+            total_estimated_cost += estimated_cost
+
     resolved_total = done_count + blocked_count
     success_rate = (float(done_count) / float(resolved_total)) if resolved_total > 0 else 0.0
 
@@ -150,6 +231,18 @@ def aggregate_metrics(root: str, days: int = 7, now_ts: Optional[float] = None) 
     recovery_rate = (float(recovery_scheduled) / float(recovery_total)) if recovery_total > 0 else 0.0
 
     avg_cycle_ms = (cycle_total / float(cycle_count)) if cycle_count > 0 else 0.0
+    total_estimated_cost = round(total_estimated_cost, 6)
+    daily_cost = round(total_estimated_cost / float(safe_days), 6) if safe_days > 0 else 0.0
+    cost_per_commit = round(total_estimated_cost / float(done_count), 6) if done_count > 0 else 0.0
+
+    normalized_breakdown: Dict[str, Dict[str, Any]] = {}
+    for executor in sorted(agent_breakdown.keys()):
+        bucket = agent_breakdown[executor]
+        normalized_breakdown[executor] = {
+            "count": _as_nonneg_int(bucket.get("count"), 0),
+            "tokens": _as_nonneg_int(bucket.get("tokens"), 0),
+            "estimatedCost": round(float(_as_nonneg_float(bucket.get("estimatedCost")) or 0.0), 6),
+        }
 
     return {
         "windowDays": safe_days,
@@ -159,6 +252,10 @@ def aggregate_metrics(root: str, days: int = 7, now_ts: Optional[float] = None) 
         "blockedReasonDistribution": blocked_reasons,
         "recoveryRate": recovery_rate,
         "averageCycleMs": avg_cycle_ms,
+        "dailyCost": daily_cost,
+        "costPerCommit": cost_per_commit,
+        "totalEstimatedCost": total_estimated_cost,
+        "agentBreakdown": normalized_breakdown,
         "counts": {
             "dispatchDone": done_count,
             "dispatchBlocked": blocked_count,
@@ -175,6 +272,9 @@ def format_core_summary(summary: Dict[str, Any], days: int = 7) -> str:
     success_pct = float(summary.get("successRate") or 0.0) * 100.0
     recovery_pct = float(summary.get("recoveryRate") or 0.0) * 100.0
     avg_ms = float(summary.get("averageCycleMs") or 0.0)
+    daily_cost = float(summary.get("dailyCost") or 0.0)
+    cost_per_commit = float(summary.get("costPerCommit") or 0.0)
+    breakdown_text = format_agent_breakdown_summary(summary, top_k=2)
 
     blocked = summary.get("blockedReasonDistribution")
     blocked_text = "-"
@@ -184,5 +284,6 @@ def format_core_summary(summary: Dict[str, Any], days: int = 7) -> str:
 
     return (
         f"[OPS] 最近{int(days)}天 | 完成={done} | 成功率={success_pct:.1f}% | "
-        f"恢复率={recovery_pct:.1f}% | 平均cycle={avg_ms:.0f}ms | 阻塞={blocked_text}"
+        f"恢复率={recovery_pct:.1f}% | 平均cycle={avg_ms:.0f}ms | 阻塞={blocked_text} | "
+        f"日均成本=${daily_cost:.3f} | 单完成成本=${cost_per_commit:.3f} | 执行器成本Top={breakdown_text}"
     )

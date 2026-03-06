@@ -72,3 +72,10 @@
 - Added `scripts/lib/context_store.py` for SQLite-backed `customers` / `papers` / `reproduction_history` storage with auto-init.
 - Added `scripts/context-store` CLI with JSON outputs for init, put/get customer, put/get paper, add/list history.
 - `build_agent_prompt()` now injects `BUSINESS_CONTEXT` when task context binds `customerId` / `paperId` and matching records exist.
+
+- Started P3-1 cost dashboard minimum closure.
+- Extended `scripts/lib/ops_metrics.py` with `dailyCost`, `costPerCommit`, `totalEstimatedCost`, and executor-based `agentBreakdown` using a minimal built-in token price table.
+- `dispatch_done` / `dispatch_blocked` / `dispatch_continue` ops events now carry `executor` and `tokenUsage` in `scripts/lib/milestones.py`.
+- Surfaced cost summary in `build_manager_report()` markdown, `build_manager_report_summary_text()`, and `status full` via `ops_metrics.format_core_summary()`.
+- Extended `tests/test_observability_metrics.py` and `tests/test_orchestrator_runtime.py` for cost aggregation and status visibility coverage.
+- Verification passed: `python3 -m unittest tests/test_observability_metrics.py tests/test_orchestrator_runtime.py -q` (112 tests, OK).
