@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import sys
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+LIB_DIR = os.path.join(SCRIPT_DIR, 'lib')
+if LIB_DIR not in sys.path:
+    sys.path.insert(0, LIB_DIR)
+
+import context_store
+
+
+def _bool_arg(raw: str) -> bool:
+    return str(raw).strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest='cmd', required=True)
+
+    p = sub.add_parser('init')
+    p.add_argument('--root', required=True)
+
+    p = sub.add_parser('put-customer')
+    p.add_argument('--root', required=True)
+    p.add_argument('--id', required=True)
+    p.add_argument('--name', default='')
+    p.add_argument('--requirements', default='')
+    p.add_argument('--tech-stack', default='')
+
+    p = sub.add_parser('get-customer')
+    p.add_argument('--root', required=True)
+    p.add_argument('--id', required=True)
+
+    p = sub.add_parser('put-paper')
+    p.add_argument('--root', required=True)
+    p.add_argument('--id', required=True)
+    p.add_argument('--title', default='')
+    p.add_argument('--authors', default='')
+    p.add_argument('--arxiv-id', default='')
+    p.add_argument('--difficulty-score', type=float, default=None)
+
+    p = sub.add_parser('get-paper')
+    p.add_argument('--root', required=True)
+    p.add_argument('--id', required=True)
+
+    p = sub.add_parser('add-history')
+    p.add_argument('--root', required=True)
+    p.add_argument('--paper-id', required=True)
+    p.add_argument('--success', required=True)
+    p.add_argument('--issues', default='')
+    p.add_argument('--lessons-learned', default='')
+
+    p = sub.add_parser('list-history')
+    p.add_argument('--root', required=True)
+    p.add_argument('--paper-id', required=True)
+    p.add_argument('--limit', type=int, default=5)
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    if args.cmd == 'init':
+        out = context_store.init_schema(args.root)
+    elif args.cmd == 'put-customer':
+        out = context_store.upsert_customer(args.root, args.id, name=args.name, requirements=args.requirements, tech_stack=args.tech_stack)
+    elif args.cmd == 'get-customer':
+        out = context_store.get_customer(args.root, args.id)
+    elif args.cmd == 'put-paper':
+        out = context_store.upsert_paper(args.root, args.id, title=args.title, authors=args.authors, arxiv_id=args.arxiv_id, difficulty_score=args.difficulty_score)
+    elif args.cmd == 'get-paper':
+        out = context_store.get_paper(args.root, args.id)
+    elif args.cmd == 'add-history':
+        out = context_store.add_reproduction_history(args.root, args.paper_id, success=_bool_arg(args.success), issues=args.issues, lessons_learned=args.lessons_learned)
+    elif args.cmd == 'list-history':
+        out = context_store.list_reproduction_history(args.root, args.paper_id, limit=args.limit)
+    else:
+        raise SystemExit(f'unknown command: {args.cmd}')
+    print(json.dumps(out, ensure_ascii=True))
+    return 0 if out.get('ok') else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

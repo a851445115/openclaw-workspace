@@ -69,3 +69,7 @@ Close the gaps from `docs/plans/2026-03-05-elvis-architecture-integration-plan.m
 - Scope: add file-backed task interventions with CLI/script management, prompt injection, orchestrator command routing, and auditable apply-count updates.
 - Constraints: no tmux refactor, keep the current one-shot CLI bridge, prefer a single stable state file, and avoid clearing intervention automatically on terminal task states.
 - Planned verification: `python3 -m unittest tests/test_orchestrator_runtime.py -q`.
+
+### P2-2 Subtask - Business context storage partial closure
+- Scope: add SQLite context store + CLI + prompt injection for task-bound customer/paper/history context.
+- Acceptance target: `state/business_context.db` auto-init, stable JSON CLI, `BUSINESS_CONTEXT` prompt segment when `customerId` / `paperId` are present.

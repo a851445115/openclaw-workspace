@@ -5,8 +5,8 @@
 ## 结论
 
 - 已完成：0 / 9
-- 部分完成：5 / 9
-- 未开始：4 / 9
+- 部分完成：6 / 9
+- 未开始：3 / 9
 
 > 说明：这里按原路线图中的“文件 + 集成 + 验收标准”口径统计；只有模块骨架、测试桩、未接主流程的任务，一律记为“部分完成”。
 
@@ -60,13 +60,15 @@
 - [ ] 尚未实现 tmux/长会话内的在线中断式干预
 - [ ] 尚未完成真实 worker 执行中的中途纠偏验收
 
-## 未开始
-
 ### P2-2 业务上下文存储
-- [ ] 新增 `scripts/lib/context_store.py`
-- [ ] 新增 `state/business_context.db`
-- [ ] 建表：customers / papers / reproduction_history
-- [ ] 将 orchestrator 或 workflow 接入上下文读写
+- [x] 已新增 `scripts/lib/context_store.py`
+- [x] 已支持自动创建 `state/business_context.db`
+- [x] 已建表：`customers` / `papers` / `reproduction_history`
+- [x] 已通过 `BUSINESS_CONTEXT` 将上下文注入 agent prompt
+- [ ] 尚未扩展 orchestrator / workflow 的显式上下文管理命令
+- [ ] 尚未完成更高层业务流的上下文回写闭环
+
+## 未开始
 
 ### P3-1 成本优化仪表盘
 - [ ] 在 `scripts/lib/ops_metrics.py` 增加 daily cost 指标

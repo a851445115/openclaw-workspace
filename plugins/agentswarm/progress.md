@@ -67,3 +67,8 @@
 - `feishu-router` now handles `intervene`, `intervention`, and `clear intervention` with structured dry-run/send acknowledgements.
 - Verified direct CLI smoke: `./scripts/orchestrator-router --root <tmp> --text 'intervene T-ROUTER: Focus on API first.' --milestones dry-run` returned `intent=intervene` with dry-run payload.
 - Verification passed: `python3 -m unittest tests/test_orchestrator_runtime.py -q` (106 tests, OK).
+
+- Started P2-2 business context storage minimum closure.
+- Added `scripts/lib/context_store.py` for SQLite-backed `customers` / `papers` / `reproduction_history` storage with auto-init.
+- Added `scripts/context-store` CLI with JSON outputs for init, put/get customer, put/get paper, add/list history.
+- `build_agent_prompt()` now injects `BUSINESS_CONTEXT` when task context binds `customerId` / `paperId` and matching records exist.

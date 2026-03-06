@@ -45,6 +45,7 @@ import expert_group
 import config_runtime
 import proactive_scanner
 import multi_reviewer
+import context_store
 
 LOGGER = logging.getLogger(__name__)
 
@@ -1673,6 +1674,8 @@ def build_agent_prompt(
     retry_pack = retry_context if isinstance(retry_context, dict) else {}
     collab_summary = collab_thread_summary if isinstance(collab_thread_summary, dict) else {}
     intervention = get_task_intervention(root, task_id, mark_applied=True)
+    task_context_entry = lookup_task_context_entry(root, task_id)
+    business_context = resolve_business_context_for_task(root, task_id)
 
     task_context = {
         "taskId": task_id,
@@ -1686,6 +1689,10 @@ def build_agent_prompt(
     }
     if project_path:
         task_context["projectPath"] = project_path
+    if str(task_context_entry.get("customerId") or "").strip():
+        task_context["customerId"] = str(task_context_entry.get("customerId") or "").strip()
+    if str(task_context_entry.get("paperId") or "").strip():
+        task_context["paperId"] = str(task_context_entry.get("paperId") or "").strip()
 
     lines = [
         "SYSTEM_ROLE: You are a specialist execution agent in a multi-agent project team.",
@@ -1715,6 +1722,13 @@ def build_agent_prompt(
             [
                 "INTERVENTION_CONTEXT:",
                 json.dumps(intervention, ensure_ascii=False, indent=2),
+            ]
+        )
+    if business_context:
+        lines.extend(
+            [
+                "BUSINESS_CONTEXT:",
+                json.dumps(business_context, ensure_ascii=False, indent=2),
             ]
         )
     if hints:
@@ -5778,12 +5792,36 @@ def save_task_context_state(root: str, state: Dict[str, Any]) -> None:
     save_json_file(task_context_state_path(root), {"tasks": tasks})
 
 
+def lookup_task_context_entry(root: str, task_id: str) -> Dict[str, Any]:
+    if not task_id:
+        return {}
+    state = load_task_context_state(root)
+    tasks = state.get("tasks", {})
+    entry = tasks.get(task_id)
+    return dict(entry) if isinstance(entry, dict) else {}
+
+
+def resolve_business_context_for_task(root: str, task_id: str) -> Dict[str, Any]:
+    entry = lookup_task_context_entry(root, task_id)
+    customer_id = str(entry.get("customerId") or "").strip()
+    paper_id = str(entry.get("paperId") or "").strip()
+    if not customer_id and not paper_id:
+        return {}
+    try:
+        return context_store.build_prompt_context(root, customer_id=customer_id, paper_id=paper_id, history_limit=3)
+    except Exception:
+        LOGGER.warning("failed to resolve business context: root=%s taskId=%s", root, task_id, exc_info=True)
+        return {}
+
+
 def bind_task_project_context(
     root: str,
     task_id: str,
     project_path: str,
     project_name: str,
     dispatch_prompt: str = "",
+    customer_id: str = "",
+    paper_id: str = "",
 ) -> None:
     if not task_id:
         return
@@ -5798,6 +5836,10 @@ def bind_task_project_context(
         entry["projectName"] = project_name
     if dispatch_prompt:
         entry["dispatchPrompt"] = str(dispatch_prompt)
+    if str(customer_id or "").strip():
+        entry["customerId"] = str(customer_id).strip()
+    if str(paper_id or "").strip():
+        entry["paperId"] = str(paper_id).strip()
     entry["updatedAt"] = now_iso()
     tasks[task_id] = entry
     save_task_context_state(root, state)

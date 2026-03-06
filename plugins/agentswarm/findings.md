@@ -26,3 +26,6 @@
 - P2-1 prompt 消费语义：不做“一次性消费”，而是在每次构造真实 agent prompt 时递增 `applyCount` 并更新时间，满足后续升级到更复杂消费策略的兼容性。
 - `orchestrator-router` 无需额外专门分支即可支持 intervention：其现有 fallback 会把未知 orchestrator 指令交给 `feishu-router`，而后者现在已识别 `intervene` / `intervention` / `clear intervention`。
 - 为保持审计可读性，本次额外记录 `lastAppliedAt`，从而不需要复用 `updatedAt` 表达“最后一次 prompt 注入”。
+
+- P2-2 最小闭环选择为“SQLite store + CLI + prompt injection”，先不扩飞书/控制台命令，避免把业务上下文能力和命令面耦合。
+- `task-context-map.json` 已天然可承载 `customerId` / `paperId`，因此只需在读取侧做 helper，兼容旧任务上下文格式。

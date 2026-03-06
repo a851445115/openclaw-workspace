@@ -2128,6 +2128,97 @@ class RuntimeTests(unittest.TestCase):
         state = self._read_interventions_state()
         self.assertNotIn("T-040I4", state.get("tasks") or {}, state)
 
+    def test_build_agent_prompt_injects_business_context(self):
+        import sqlite3
+
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-040B1: business context prompt injection",
+        ])
+
+        self._write_json_file(
+            "state/task-context-map.json",
+            {
+                "tasks": {
+                    "T-040B1": {
+                        "projectPath": str(self.root),
+                        "projectName": "runtime-test",
+                        "dispatchPrompt": "use customer + paper context",
+                        "customerId": "cust-a",
+                        "paperId": "paper-a",
+                    }
+                }
+            },
+        )
+
+        db_path = self.root / "state" / "business_context.db"
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE customers (
+                    id TEXT PRIMARY KEY,
+                    name TEXT,
+                    requirements TEXT,
+                    tech_stack TEXT,
+                    created_at TEXT,
+                    updated_at TEXT
+                );
+                CREATE TABLE papers (
+                    id TEXT PRIMARY KEY,
+                    title TEXT,
+                    authors TEXT,
+                    arxiv_id TEXT,
+                    difficulty_score REAL,
+                    created_at TEXT,
+                    updated_at TEXT
+                );
+                CREATE TABLE reproduction_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    paper_id TEXT,
+                    success INTEGER,
+                    issues TEXT,
+                    lessons_learned TEXT,
+                    created_at TEXT
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO customers(id, name, requirements, tech_stack, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("cust-a", "ACME", "Need weekly reports", "Python,SQLite", "2026-03-06T00:00:00Z", "2026-03-06T00:00:00Z"),
+            )
+            conn.execute(
+                "INSERT INTO papers(id, title, authors, arxiv_id, difficulty_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("paper-a", "Test Paper", "Alice;Bob", "2501.00001", 0.7, "2026-03-06T00:00:00Z", "2026-03-06T00:00:00Z"),
+            )
+            conn.execute(
+                "INSERT INTO reproduction_history(paper_id, success, issues, lessons_learned, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("paper-a", 1, "none", "use smaller batch", "2026-03-06T00:00:00Z"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        module = load_milestone_module()
+        task = module.get_task(self.root.as_posix(), "T-040B1")
+        prompt = module.build_agent_prompt(
+            self.root.as_posix(),
+            task,
+            "coder",
+            "T-040B1: business context prompt injection",
+        )
+        self.assertIn("BUSINESS_CONTEXT", prompt)
+        self.assertIn("ACME", prompt)
+        self.assertIn("Test Paper", prompt)
+        self.assertIn("use smaller batch", prompt)
+
     def test_dispatch_prompt_includes_snapshot_history_and_schema(self):
         run_json([
             "python3",
