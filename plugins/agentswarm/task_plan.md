@@ -83,3 +83,10 @@ Close the gaps from `docs/plans/2026-03-05-elvis-architecture-integration-plan.m
 - Constraints: 不改变旧 `reasonCode` 语义，不重写整个 recovery policy，只做最小可验证接入。
 - Current status: partial — 已覆盖 `context_overflow` / `wrong_direction` / `missing_info` / `executor_failure` / `budget_exceeded` / `incomplete_output` / `continuation_stall` / `unknown`，并完成 recovery/runtime 回归；剩余工作是更高精度分类与看板级消费。
 - Verification target: `python3 -m unittest tests/test_failure_classifier.py tests/test_recovery_loop.py tests/test_orchestrator_runtime.py -q`.
+
+### P3-3 Subtask - 可视化证据要求最小闭环
+- Scope: 在 `config/acceptance-policy.json` 扩展 `requireTypes` / `minScreenshots` / `requireComparison` / `minPlots`，并在 `evaluate_acceptance()` 接入最小可用的可视化证据校验。
+- Constraints: 保持旧配置兼容，不改动 `requireAny` / `verifyCommands` / multi reviewer 主流程，不重写 evidence normalizer。
+- Current status: partial — global / role override 已接通，done 验收会阻断缺截图 / 缺 plot / 缺 data / 缺 comparison 的交付；仍属于启发式识别，尚未接入更强的文件元数据或图像内容校验。
+- Verification target: `python3 -m unittest tests/test_quality_gate_v2.py tests/test_orchestrator_runtime.py -q`.
+

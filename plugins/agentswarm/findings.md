@@ -38,3 +38,11 @@
 - P3-2 finding: 低风险方案是保留旧 `reasonCode` 作为兼容主键，再额外挂 `failureType` / `normalizedReason` / `recoveryStrategy` / `signals`，让现有 JSON 消费方不被破坏。
 - P3-2 finding: `no_completion_signal` 不能一刀切视作 `continuation_stall`，否则会破坏既有自动重试链；更稳妥的是只在文本显式出现 stalled/continue-midway 信号时再升级为 `continuation_stall`。
 - P3-2 finding: `blocked_signal` 也不能默认归类为 `missing_info`，否则会把原本的人类升级分支误降级成自动重试；需要更具体的 secret/schema/clarify 信号再触发。
+
+- Advanced P3-3 visual evidence requirements to partial closure.
+- Extended `config/acceptance-policy.json` with compatible defaults for `requireTypes`, `minScreenshots`, `requireComparison`, and `minPlots`.
+- Wired visual evidence checks into `scripts/lib/milestones.py::evaluate_acceptance()` using low-risk helpers layered on top of existing normalized evidence + structured report data.
+- Landed explicit acceptance reason codes for missing required evidence types, insufficient screenshots, missing comparison evidence, and insufficient plot evidence.
+- Fixed two counting pitfalls during audit: ignored synthetic `test:` evidence wrappers for visual classification, and prevented `截图` from being miscounted as generic plot evidence.
+- Extended `tests/test_quality_gate_v2.py` with compatibility, require-types, min-screenshots, require-comparison, min-plots, and all-green coverage.
+- Verification passed: `python3 -m unittest tests/test_quality_gate_v2.py tests/test_orchestrator_runtime.py -q` (132 tests, OK).

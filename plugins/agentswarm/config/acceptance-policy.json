@@ -4,7 +4,11 @@
     "evidenceMode": "hard",
     "evidenceTimeoutSec": 0,
     "verifyTimeoutSec": 0,
-    "verifyCommands": []
+    "verifyCommands": [],
+    "requireTypes": [],
+    "minScreenshots": 0,
+    "requireComparison": false,
+    "minPlots": 0
   },
   "roles": {
     "coder": {

@@ -78,6 +78,10 @@ ZERO_FAILURE_COUNTER_RE = re.compile(
     r"\b0\s+(?:(?:tests?|test suites?)\s+failed|failed|failures|errors?|exceptions?)\b",
     flags=re.IGNORECASE,
 )
+
+COMPARE_SIGNAL_RE = re.compile(r"\b(?:compare|comparison|vs)\b|对比", flags=re.IGNORECASE)
+SCREENSHOT_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+DATA_SUFFIXES = (".csv", ".json", ".parquet", ".tsv")
 EVIDENCE_HINTS = ("/", ".py", ".md", "http", "截图", "日志", "log", "输出", "result", "测试")
 STAGE_ONLY_HINTS = ("接下来", "下一步", "准备", "我先", "随后", "稍后", "计划", "will", "next", "going to", "plan to")
 BOT_OPENID_CONFIG_CANDIDATES = (
@@ -7407,6 +7411,108 @@ def _to_int(value: Any, default: int) -> int:
         return default
 
 
+def _resolve_acceptance_override(global_conf: Dict[str, Any], role_conf: Dict[str, Any], key: str, default: Any = None) -> Any:
+    if isinstance(role_conf, dict) and key in role_conf:
+        return role_conf.get(key)
+    if isinstance(global_conf, dict) and key in global_conf:
+        return global_conf.get(key)
+    return default
+
+
+def _normalize_required_evidence_types(global_conf: Dict[str, Any], role_conf: Dict[str, Any]) -> List[str]:
+    raw = _resolve_acceptance_override(global_conf, role_conf, "requireTypes", [])
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    for item in raw:
+        token = str(item or "").strip().lower()
+        if token in {"screenshot", "plot", "data", "comparison"} and token not in out:
+            out.append(token)
+    return out
+
+
+def _looks_like_plot_signal(text: str) -> bool:
+    lower = text.lower()
+    return any(token in lower for token in ("plot", "chart", "figure")) or ("图" in text and "截图" not in text)
+
+
+def _is_synthetic_visual_evidence_item(item: str) -> bool:
+    token = str(item or "").strip()
+    if not token:
+        return True
+    lower = token.lower()
+    if lower.startswith("test:"):
+        return True
+    if ('{"status":' in lower or "{'status':" in lower) and ('"summary"' in lower or "'summary'" in lower):
+        return True
+    if token.startswith("{") and token.endswith("}") and len(token) > 80:
+        return True
+    return False
+
+
+def _acceptance_evidence_type_summary(
+    hard_evidence: List[str],
+    soft_evidence: List[str],
+    normalized_note: str,
+    structured_report: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    evidence_items: List[str] = []
+    for source in (hard_evidence, (structured_report or {}).get("evidence")):
+        if isinstance(source, list):
+            for item in source:
+                token = str(item or "").strip()
+                if not token or _is_synthetic_visual_evidence_item(token):
+                    continue
+                if token not in evidence_items:
+                    evidence_items.append(token)
+
+    screenshot_count = 0
+    plot_count = 0
+    data_count = 0
+    comparison_found = False
+
+    for item in evidence_items:
+        lower = item.lower()
+        if lower.endswith(SCREENSHOT_SUFFIXES) or "screenshot" in lower or "截图" in item:
+            screenshot_count += 1
+        if _looks_like_plot_signal(item):
+            plot_count += 1
+        if lower.endswith(DATA_SUFFIXES) or "data" in lower or "数据" in item:
+            data_count += 1
+        if COMPARE_SIGNAL_RE.search(item):
+            comparison_found = True
+
+    note = str(normalized_note or "")
+    note_lower = note.lower()
+    if screenshot_count <= 0 and ("screenshot" in note_lower or "截图" in note):
+        screenshot_count = 1
+    if plot_count <= 0 and _looks_like_plot_signal(note):
+        plot_count = 1
+    if data_count <= 0 and ("data" in note_lower or "数据" in note):
+        data_count = 1
+    if not comparison_found and COMPARE_SIGNAL_RE.search(note):
+        comparison_found = True
+
+    matched_types: List[str] = []
+    if screenshot_count > 0:
+        matched_types.append("screenshot")
+    if plot_count > 0:
+        matched_types.append("plot")
+    if data_count > 0:
+        matched_types.append("data")
+    if comparison_found:
+        matched_types.append("comparison")
+
+    return {
+        "screenshots": screenshot_count,
+        "plots": plot_count,
+        "dataItems": data_count,
+        "comparison": comparison_found,
+        "matchedTypes": matched_types,
+        "evidenceItems": evidence_items,
+    }
+
+
 def _normalize_verify_commands(global_conf: Dict[str, Any], role_conf: Dict[str, Any]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     default_timeout = max(
@@ -7786,6 +7892,61 @@ def evaluate_acceptance(
                 "normalizedText": normalized_note,
             }
 
+    evidence_summary = _acceptance_evidence_type_summary(
+        hard_evidence,
+        soft_evidence,
+        normalized_note,
+        structured_report=structured_report,
+    )
+    required_types = _normalize_required_evidence_types(global_conf, role_conf)
+    missing_types = [token for token in required_types if token not in (evidence_summary.get("matchedTypes") or [])]
+    if missing_types:
+        return {
+            "ok": False,
+            "reasonCode": "missing_required_evidence_types",
+            "reason": f"缺少必需证据类型：{', '.join(missing_types[:6])}。",
+            "hardEvidence": hard_evidence,
+            "softEvidence": soft_evidence,
+            "normalizedText": normalized_note,
+            "evidenceSummary": evidence_summary,
+        }
+
+    min_screenshots = max(0, _to_int(_resolve_acceptance_override(global_conf, role_conf, "minScreenshots", 0), 0))
+    if int(evidence_summary.get("screenshots") or 0) < min_screenshots:
+        return {
+            "ok": False,
+            "reasonCode": "insufficient_screenshots",
+            "reason": f"截图证据不足：需要至少 {min_screenshots} 个。",
+            "hardEvidence": hard_evidence,
+            "softEvidence": soft_evidence,
+            "normalizedText": normalized_note,
+            "evidenceSummary": evidence_summary,
+        }
+
+    require_comparison = bool(_resolve_acceptance_override(global_conf, role_conf, "requireComparison", False))
+    if require_comparison and not bool(evidence_summary.get("comparison")):
+        return {
+            "ok": False,
+            "reasonCode": "missing_comparison_evidence",
+            "reason": "缺少 compare/comparison/vs/对比 证据。",
+            "hardEvidence": hard_evidence,
+            "softEvidence": soft_evidence,
+            "normalizedText": normalized_note,
+            "evidenceSummary": evidence_summary,
+        }
+
+    min_plots = max(0, _to_int(_resolve_acceptance_override(global_conf, role_conf, "minPlots", 0), 0))
+    if int(evidence_summary.get("plots") or 0) < min_plots:
+        return {
+            "ok": False,
+            "reasonCode": "insufficient_plot_evidence",
+            "reason": f"plot/chart/figure/图 证据不足：需要至少 {min_plots} 个。",
+            "hardEvidence": hard_evidence,
+            "softEvidence": soft_evidence,
+            "normalizedText": normalized_note,
+            "evidenceSummary": evidence_summary,
+        }
+
     verify_commands = _normalize_verify_commands(global_conf, role_conf)
     verify_result = _run_verify_commands(root, verify_commands) if verify_commands else {"ok": True, "results": []}
     if not verify_result.get("ok"):
@@ -7797,6 +7958,7 @@ def evaluate_acceptance(
             "softEvidence": soft_evidence,
             "normalizedText": normalized_note,
             "verify": verify_result,
+            "evidenceSummary": evidence_summary,
         }
 
     review_result = _evaluate_multi_reviewer_gate(
@@ -7819,6 +7981,7 @@ def evaluate_acceptance(
             "normalizedText": normalized_note,
             "verify": verify_result,
             "multiReviewer": review_result,
+            "evidenceSummary": evidence_summary,
         }
 
     accepted_reason = "通过验收策略"
@@ -7833,6 +7996,7 @@ def evaluate_acceptance(
         "normalizedText": normalized_note,
         "verify": verify_result,
         "multiReviewer": review_result,
+        "evidenceSummary": evidence_summary,
     }
 
 

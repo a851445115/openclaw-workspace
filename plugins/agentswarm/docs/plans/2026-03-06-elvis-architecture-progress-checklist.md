@@ -5,8 +5,8 @@
 ## 结论
 
 - 已完成：0 / 9
-- 部分完成：8 / 9
-- 未开始：1 / 9
+- 部分完成：9 / 9
+- 未开始：0 / 9
 
 > 说明：这里按原路线图中的“文件 + 集成 + 验收标准”口径统计；只有模块骨架、测试桩、未接主流程的任务，一律记为“部分完成”。
 
@@ -85,13 +85,18 @@
 - [ ] 当前仍是规则分类，尚未引入更细粒度的模型辅助判别
 - [ ] 尚未把分类结果接入更高层 failure analytics / dashboard 看板
 
+### P3-3 可视化证据要求
+- [x] 已在 `config/acceptance-policy.json` 增加 `requireTypes`
+- [x] 已增加 `minScreenshots`
+- [x] 已增加 `requireComparison` / `minPlots`
+- [x] 已将可视化证据校验接入 `done` 验收闭环
+- [x] 已在 `tests/test_quality_gate_v2.py` 增加兼容性与新规则回归覆盖
+- [ ] 当前仍为启发式证据识别，尚未接入文件元数据 / 图像内容级校验
+- [ ] 尚未为论文复现角色单独启用更严格的图表/对比策略模板
+
 ## 未开始
 
-### P3-3 可视化证据要求
-- [ ] 在 `config/acceptance-policy.json` 增加 `requireTypes`
-- [ ] 增加 `minScreenshots`
-- [ ] 视论文复现场景增加 `requireComparison` / `minPlots`
-- [ ] 将可视化证据校验接入 done 验收闭环
+- [ ] 当前无未开始事项
 
 ## 建议推进顺序
 

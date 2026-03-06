@@ -248,6 +248,174 @@ class QualityGateV2Tests(unittest.TestCase):
         self.assertEqual(out["spawn"]["decision"], "done", out)
         self.assertEqual(out["spawn"]["reasonCode"], "done_with_evidence", out)
 
+    def test_visual_evidence_policy_compat_keeps_old_coder_done_behavior(self):
+        self._create_task("T-681", "coder", "visual policy compat")
+        out = self._dispatch(
+            "T-681",
+            "coder",
+            json.dumps(
+                {
+                    "status": "done",
+                    "summary": "已完成并验证",
+                    "evidence": ["logs/t681.log", "pytest -q => 3 passed in 0.05s"],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        self.assertEqual(out["spawn"]["decision"], "done", out)
+        self.assertEqual(out["spawn"]["reasonCode"], "done_with_evidence", out)
+
+    def test_global_require_types_blocks_when_plot_and_data_missing(self):
+        self._write_acceptance_policy(
+            {
+                "global": {"requireEvidence": True, "requireTypes": ["plot", "data"]},
+                "roles": {"coder": {"requireAny": ["log", "pytest"]}},
+            }
+        )
+        self._create_task("T-682", "coder", "global require types")
+        out = self._dispatch(
+            "T-682",
+            "coder",
+            json.dumps(
+                {
+                    "status": "done",
+                    "summary": "已完成并验证",
+                    "evidence": ["logs/t682.log", "pytest -q => 4 passed in 0.06s"],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        self.assertEqual(out["spawn"]["decision"], "blocked", out)
+        self.assertEqual(out["spawn"]["acceptanceReasonCode"], "missing_required_evidence_types", out)
+
+    def test_role_min_screenshots_blocks_when_insufficient(self):
+        self._write_acceptance_policy(
+            {
+                "global": {"requireEvidence": True},
+                "roles": {
+                    "coder": {
+                        "requireAny": ["log", "pytest"],
+                        "minScreenshots": 2,
+                    }
+                },
+            }
+        )
+        self._create_task("T-683", "coder", "min screenshots")
+        out = self._dispatch(
+            "T-683",
+            "coder",
+            json.dumps(
+                {
+                    "status": "done",
+                    "summary": "已完成并验证，截图见 artifacts/screen-1.png",
+                    "evidence": [
+                        "logs/t683.log",
+                        "pytest -q => 4 passed in 0.06s",
+                        "artifacts/screen-1.png",
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        self.assertEqual(out["spawn"]["decision"], "blocked", out)
+        self.assertEqual(out["spawn"]["acceptanceReasonCode"], "insufficient_screenshots", out)
+
+    def test_require_comparison_blocks_when_missing(self):
+        self._write_acceptance_policy(
+            {
+                "global": {"requireEvidence": True, "requireComparison": True},
+                "roles": {"coder": {"requireAny": ["log", "pytest"]}},
+            }
+        )
+        self._create_task("T-684", "coder", "require comparison")
+        out = self._dispatch(
+            "T-684",
+            "coder",
+            json.dumps(
+                {
+                    "status": "done",
+                    "summary": "已完成并验证",
+                    "evidence": ["logs/t684.log", "pytest -q => 5 passed in 0.07s", "artifacts/figure-1.png"],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        self.assertEqual(out["spawn"]["decision"], "blocked", out)
+        self.assertEqual(out["spawn"]["acceptanceReasonCode"], "missing_comparison_evidence", out)
+
+    def test_min_plots_blocks_when_insufficient(self):
+        self._write_acceptance_policy(
+            {
+                "global": {"requireEvidence": True},
+                "roles": {
+                    "coder": {
+                        "requireAny": ["log", "pytest"],
+                        "requireTypes": ["plot"],
+                        "minPlots": 2,
+                    }
+                },
+            }
+        )
+        self._create_task("T-685", "coder", "min plots")
+        out = self._dispatch(
+            "T-685",
+            "coder",
+            json.dumps(
+                {
+                    "status": "done",
+                    "summary": "已完成并验证；plot 结果见 artifacts/plot-1.png",
+                    "evidence": [
+                        "logs/t685.log",
+                        "pytest -q => 5 passed in 0.07s",
+                        "artifacts/plot-1.png",
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        self.assertEqual(out["spawn"]["decision"], "blocked", out)
+        self.assertEqual(out["spawn"]["acceptanceReasonCode"], "insufficient_plot_evidence", out)
+
+    def test_visual_evidence_rules_allow_done_when_all_requirements_met(self):
+        self._write_acceptance_policy(
+            {
+                "global": {
+                    "requireEvidence": True,
+                    "requireComparison": True,
+                },
+                "roles": {
+                    "coder": {
+                        "requireAny": ["log", "pytest"],
+                        "requireTypes": ["plot", "data"],
+                        "minScreenshots": 1,
+                        "minPlots": 1,
+                    }
+                },
+            }
+        )
+        self._create_task("T-686", "coder", "visual evidence all pass")
+        out = self._dispatch(
+            "T-686",
+            "coder",
+            json.dumps(
+                {
+                    "status": "done",
+                    "summary": "已完成并验证；compare baseline vs new model，截图见 artifacts/screen-1.png",
+                    "evidence": [
+                        "logs/t686.log",
+                        "pytest -q => 6 passed in 0.08s",
+                        "artifacts/screen-1.png",
+                        "artifacts/plot-1.png",
+                        "outputs/results.csv",
+                        "comparison-report.md",
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        self.assertEqual(out["spawn"]["decision"], "done", out)
+        self.assertEqual(out["spawn"]["reasonCode"], "done_with_evidence", out)
+
     def test_multi_reviewer_policy_disabled_keeps_done_behavior(self):
         self._write_multi_reviewer_policy({"enabled": False, "dryRun": True})
         self._create_task("T-701", "coder", "multi reviewer disabled")

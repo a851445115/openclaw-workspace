@@ -86,3 +86,9 @@
 - Integrated classifier fields into `scripts/lib/milestones.py` blocked output, `retryContext`, and recovery ops events.
 - Added regression coverage in `tests/test_failure_classifier.py`, `tests/test_recovery_loop.py`, and `tests/test_orchestrator_runtime.py`.
 - Verification passed (targeted): `python3 -m unittest tests/test_failure_classifier.py tests/test_recovery_loop.py -q` and `python3 -m unittest tests.test_orchestrator_runtime.RuntimeTests.test_dispatch_blocked_output_includes_failure_classifier_fields tests.test_orchestrator_runtime.RuntimeTests.test_dispatch_prompt_injects_retry_context_pack -q`.
+
+- Started P3-3 visual evidence requirement minimum closure.
+- Added acceptance-policy knobs: `requireTypes`, `minScreenshots`, `requireComparison`, `minPlots` with backward-compatible defaults.
+- Added acceptance helper logic in `scripts/lib/milestones.py` so done-gate can block missing visual evidence without affecting existing `requireAny` / verify-command / multi-reviewer flow.
+- Added regression coverage in `tests/test_quality_gate_v2.py` for legacy-compatible done, required plot/data evidence, screenshot thresholds, comparison requirement, plot thresholds, and all-rules-pass.
+- Verified with `python3 -m unittest tests/test_quality_gate_v2.py tests/test_orchestrator_runtime.py -q` (132 tests, OK).
