@@ -77,3 +77,9 @@ Close the gaps from `docs/plans/2026-03-05-elvis-architecture-integration-plan.m
 ### P3-1 Subtask - Cost dashboard partial closure
 - Scope: add `dailyCost` / `costPerCommit` / `agentBreakdown` aggregation, wire dispatch ops events with `executor` + `tokenUsage`, and surface cost summaries in manager report plus `status full`.
 - Acceptance target: aggregate JSON exposes cost fields, text summaries show at least one cost metric, and old events without token usage safely fall back to zero cost.
+
+### P3-2 Subtask - 智能失败分类最小闭环
+- Scope: 新增规则型 `failure_classifier`，在 `recovery_loop.py` 做 failureType-aware 恢复分流，并把分类结果挂入 `milestones.py` 的 blocked / retryContext / ops event 输出。
+- Constraints: 不改变旧 `reasonCode` 语义，不重写整个 recovery policy，只做最小可验证接入。
+- Current status: partial — 已覆盖 `context_overflow` / `wrong_direction` / `missing_info` / `executor_failure` / `budget_exceeded` / `incomplete_output` / `continuation_stall` / `unknown`，并完成 recovery/runtime 回归；剩余工作是更高精度分类与看板级消费。
+- Verification target: `python3 -m unittest tests/test_failure_classifier.py tests/test_recovery_loop.py tests/test_orchestrator_runtime.py -q`.

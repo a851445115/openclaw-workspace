@@ -46,6 +46,7 @@ import config_runtime
 import proactive_scanner
 import multi_reviewer
 import context_store
+import failure_classifier
 
 LOGGER = logging.getLogger(__name__)
 
@@ -2961,6 +2962,24 @@ def classify_spawn_result(
     }
 
 
+def annotate_failure_classification(spawn: Dict[str, Any], current_assignee: str) -> Dict[str, Any]:
+    if not isinstance(spawn, dict):
+        return {}
+    classified = failure_classifier.classify_failure(
+        str(spawn.get("reasonCode") or ""),
+        detail=str(spawn.get("detail") or ""),
+        output_text=str(spawn.get("stdout") or spawn.get("detail") or ""),
+        stderr=str(spawn.get("stderr") or ""),
+        current_assignee=current_assignee,
+        executor=str(spawn.get("executor") or ""),
+    )
+    spawn["failureType"] = str(classified.get("failureType") or "unknown")
+    spawn["normalizedReason"] = str(classified.get("normalizedReason") or "")
+    spawn["recoveryStrategy"] = str(classified.get("recoveryStrategy") or "")
+    spawn["signals"] = [str(item) for item in (classified.get("signals") or []) if str(item or "").strip()]
+    return classified
+
+
 def nonneg_int(value: Any, default: int = 0) -> int:
     try:
         out = int(value)
@@ -4018,14 +4037,20 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
 
             decision = spawn.get("decision") or "blocked"
             detail = clip(spawn.get("detail") or f"{args.task_id} 子代理执行结果未明确", 200)
+            spawn["detail"] = detail
             recovery_decision: Optional[Dict[str, Any]] = None
             reason_code = str(spawn.get("reasonCode") or "").strip()
+            classified_failure = annotate_failure_classification(spawn, args.agent) if decision == "blocked" else {}
             if decision == "blocked" and recovery_loop.should_trigger_recovery(reason_code):
                 recovery_decision = recovery_loop.decide_recovery(
                     args.root,
                     args.task_id,
                     args.agent,
                     reason_code,
+                    detail=detail,
+                    output_text=str(spawn.get("stdout") or detail),
+                    stderr=str(spawn.get("stderr") or ""),
+                    executor=str(spawn.get("executor") or ""),
                 )
                 spawn["attempt"] = int(recovery_decision.get("attempt") or 0)
                 spawn["nextAssignee"] = str(recovery_decision.get("nextAssignee") or "human")
@@ -4033,6 +4058,10 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                 spawn["recoveryState"] = str(recovery_decision.get("recoveryState") or "")
                 spawn["cooldownActive"] = bool(recovery_decision.get("cooldownActive"))
                 spawn["cooldownUntil"] = str(recovery_decision.get("cooldownUntil") or "")
+                spawn["failureType"] = str(recovery_decision.get("failureType") or spawn.get("failureType") or "unknown")
+                spawn["normalizedReason"] = str(recovery_decision.get("normalizedReason") or spawn.get("normalizedReason") or "")
+                spawn["recoveryStrategy"] = str(recovery_decision.get("recoveryStrategy") or spawn.get("recoveryStrategy") or "")
+                spawn["signals"] = [str(item) for item in (recovery_decision.get("signals") or spawn.get("signals") or []) if str(item or "").strip()]
             if decision == "done":
                 close_apply = board_apply(args.root, "orchestrator", f"mark done {args.task_id}: {detail}")
             elif decision == "continue":
@@ -4112,6 +4141,11 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                     retry_context_pack = dict(recorded) if isinstance(recorded, dict) else context_pack.build_retry_context(args.root, args.task_id)
                 except Exception:
                     retry_context_pack = context_pack.build_retry_context(args.root, args.task_id)
+                if isinstance(retry_context_pack, dict):
+                    retry_context_pack["failureType"] = str(spawn.get("failureType") or retry_context_pack.get("failureType") or "unknown")
+                    retry_context_pack["normalizedReason"] = str(spawn.get("normalizedReason") or retry_context_pack.get("normalizedReason") or "")
+                    retry_context_pack["recoveryStrategy"] = str(spawn.get("recoveryStrategy") or retry_context_pack.get("recoveryStrategy") or "")
+                    retry_context_pack["signals"] = [str(item) for item in (spawn.get("signals") or retry_context_pack.get("signals") or []) if str(item or "").strip()]
                 try:
                     final_executor = str(spawn.get("executor") or session_executor or "unknown")
                     session_record = session_registry.mark_failed(
@@ -4305,6 +4339,9 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
             "tokenUsage": nonneg_int(spawn_metrics.get("tokenUsage"), 0),
             "decision": decision,
             "reasonCode": str(spawn.get("reasonCode") or ""),
+            "failureType": str(spawn.get("failureType") or "unknown"),
+            "normalizedReason": str(spawn.get("normalizedReason") or ""),
+            "recoveryStrategy": str(spawn.get("recoveryStrategy") or ""),
             "cycleMs": cycle_ms,
             "autoClose": auto_close,
             "dispatchMode": "spawn",
@@ -4322,6 +4359,9 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                 "taskId": args.task_id,
                 "agent": args.agent,
                 "reasonCode": str(spawn.get("reasonCode") or ""),
+                "failureType": str(spawn.get("failureType") or "unknown"),
+                "normalizedReason": str(spawn.get("normalizedReason") or ""),
+                "recoveryStrategy": str(spawn.get("recoveryStrategy") or ""),
                 "recoveryAction": recovery_action,
                 "recoveryState": str(spawn.get("recoveryState") or ""),
                 "nextAssignee": str(spawn.get("nextAssignee") or ""),

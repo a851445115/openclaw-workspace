@@ -79,3 +79,10 @@
 - Surfaced cost summary in `build_manager_report()` markdown, `build_manager_report_summary_text()`, and `status full` via `ops_metrics.format_core_summary()`.
 - Extended `tests/test_observability_metrics.py` and `tests/test_orchestrator_runtime.py` for cost aggregation and status visibility coverage.
 - Verification passed: `python3 -m unittest tests/test_observability_metrics.py tests/test_orchestrator_runtime.py -q` (112 tests, OK).
+
+- Started P3-2 intelligent failure classification minimum closure.
+- Added `scripts/lib/failure_classifier.py` with rule-based outputs: `failureType`, `normalizedReason`, `recoveryStrategy`, `signals`.
+- Integrated classifier into `scripts/lib/recovery_loop.py` without removing legacy `reasonCode`; recovery now diverges for context overflow, wrong direction, missing info, budget exceed, and continuation stall.
+- Integrated classifier fields into `scripts/lib/milestones.py` blocked output, `retryContext`, and recovery ops events.
+- Added regression coverage in `tests/test_failure_classifier.py`, `tests/test_recovery_loop.py`, and `tests/test_orchestrator_runtime.py`.
+- Verification passed (targeted): `python3 -m unittest tests/test_failure_classifier.py tests/test_recovery_loop.py -q` and `python3 -m unittest tests.test_orchestrator_runtime.RuntimeTests.test_dispatch_blocked_output_includes_failure_classifier_fields tests.test_orchestrator_runtime.RuntimeTests.test_dispatch_prompt_injects_retry_context_pack -q`.

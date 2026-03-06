@@ -5,8 +5,8 @@
 ## 结论
 
 - 已完成：0 / 9
-- 部分完成：7 / 9
-- 未开始：2 / 9
+- 部分完成：8 / 9
+- 未开始：1 / 9
 
 > 说明：这里按原路线图中的“文件 + 集成 + 验收标准”口径统计；只有模块骨架、测试桩、未接主流程的任务，一律记为“部分完成”。
 
@@ -76,13 +76,16 @@
 - [ ] 当前仍是内置估算价目表，不代表真实账单成本
 - [ ] 尚未提供独立成本看板或更细粒度账单归因
 
-## 未开始
-
 ### P3-2 智能失败分类
-- [ ] 新增 `scripts/lib/failure_classifier.py`
-- [ ] 在 `scripts/lib/recovery_loop.py` 接入失败类型识别
-- [ ] 为不同失败类型选择不同恢复策略
-- [ ] 增加对应单元测试与回归样例
+- [x] 已新增 `scripts/lib/failure_classifier.py`
+- [x] 已在 `scripts/lib/recovery_loop.py` 接入失败类型识别
+- [x] 已让 `context_overflow` / `wrong_direction` / `missing_info` / `budget_exceeded` / `continuation_stall` 导向不同恢复动作
+- [x] 已在 `scripts/lib/milestones.py` 的 blocked / retryContext / ops events 挂出分类字段
+- [x] 已增加 `tests/test_failure_classifier.py` 与 recovery/runtime 回归样例
+- [ ] 当前仍是规则分类，尚未引入更细粒度的模型辅助判别
+- [ ] 尚未把分类结果接入更高层 failure analytics / dashboard 看板
+
+## 未开始
 
 ### P3-3 可视化证据要求
 - [ ] 在 `config/acceptance-policy.json` 增加 `requireTypes`

@@ -33,3 +33,8 @@
 - P3-1 采用内置 executor 价目表而不是新增配置文件：这轮只做低风险最小闭环，后续如果要接真实账单再把价目表外移。
 - `agentBreakdown` 实际按 executor 聚合更稳定，因为 dispatch ops event 已稳定持有 `executor`，而 agent 名称可能跨模型复用。
 - 对无 `tokenUsage` 的旧事件统一回落到 0 成本，但仍保留在 `agentBreakdown` 的 `count` 中，便于观察执行量与成本视角并存。
+
+- P3-2 finding: 直接用旧 `reasonCode` 做恢复会把“缺上下文”“方向跑偏”“上下文溢出”都压成同一种 blocked 语义，恢复动作不够精细。
+- P3-2 finding: 低风险方案是保留旧 `reasonCode` 作为兼容主键，再额外挂 `failureType` / `normalizedReason` / `recoveryStrategy` / `signals`，让现有 JSON 消费方不被破坏。
+- P3-2 finding: `no_completion_signal` 不能一刀切视作 `continuation_stall`，否则会破坏既有自动重试链；更稳妥的是只在文本显式出现 stalled/continue-midway 信号时再升级为 `continuation_stall`。
+- P3-2 finding: `blocked_signal` 也不能默认归类为 `missing_info`，否则会把原本的人类升级分支误降级成自动重试；需要更具体的 secret/schema/clarify 信号再触发。

@@ -4,11 +4,17 @@ import errno
 import json
 import logging
 import os
+import sys
 import tempfile
 import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List
+
+SCRIPT_LIB_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_LIB_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_LIB_DIR)
+import failure_classifier
 
 try:
     import fcntl
@@ -22,7 +28,7 @@ RECOVERY_POLICY_CONFIG_CANDIDATES = (
 )
 RECOVERY_STATE_FILE = os.path.join("state", "recovery.state.json")
 RECOVERY_STATE_LOCK_FILE = os.path.join("state", "recovery.state.lock")
-RECOVERY_REASON_CODES = {"spawn_failed", "incomplete_output", "blocked_signal", "no_completion_signal"}
+RECOVERY_REASON_CODES = {"spawn_failed", "incomplete_output", "blocked_signal", "no_completion_signal", "budget_exceeded"}
 DEFAULT_RECOVERY_POLICY: Dict[str, Any] = {
     "recoveryChain": ["coder", "debugger", "invest-analyst", "human"],
     "default": {"maxAttempts": 2, "cooldownSec": 180},
@@ -369,6 +375,16 @@ def should_trigger_recovery(reason_code: str) -> bool:
     return normalize_reason(reason_code) in RECOVERY_REASON_CODES
 
 
+def _classification_fields(payload: Dict[str, Any]) -> Dict[str, Any]:
+    signals = payload.get("signals") if isinstance(payload.get("signals"), list) else []
+    return {
+        "failureType": str(payload.get("failureType") or "unknown"),
+        "normalizedReason": str(payload.get("normalizedReason") or ""),
+        "recoveryStrategy": str(payload.get("recoveryStrategy") or ""),
+        "signals": [str(item) for item in signals if str(item or "").strip()],
+    }
+
+
 def next_assignee_for(chain: List[str], current_assignee: str) -> str:
     current = str(current_assignee or "").strip().lower()
     if not chain:
@@ -428,6 +444,8 @@ def get_active_cooldown(root: str, task_id: str, reason_code: str = "", now_ts: 
             "cooldownUntilTs": cooldown_until_ts,
             "cooldownUntil": str(raw.get("cooldownUntil") or ts_to_iso(cooldown_until_ts)),
             "recoverable": action in {"retry", "human"},
+            "maxAttempts": max(1, safe_int(raw.get("maxAttempts"), 2)),
+            **_classification_fields(raw),
         }
         if not best or cooldown_until_ts > int(best.get("cooldownUntilTs") or 0):
             best = candidate
@@ -435,9 +453,29 @@ def get_active_cooldown(root: str, task_id: str, reason_code: str = "", now_ts: 
     return best
 
 
-def decide_recovery(root: str, task_id: str, current_assignee: str, reason_code: str, now_ts: int = None) -> Dict[str, Any]:
+def decide_recovery(
+    root: str,
+    task_id: str,
+    current_assignee: str,
+    reason_code: str,
+    detail: str = "",
+    output_text: str = "",
+    stderr: str = "",
+    executor: str = "",
+    now_ts: int = None,
+) -> Dict[str, Any]:
     reason = normalize_reason(reason_code)
-    if not should_trigger_recovery(reason):
+    classified = failure_classifier.classify_failure(
+        reason,
+        detail=detail,
+        output_text=output_text,
+        stderr=stderr,
+        current_assignee=current_assignee,
+        executor=executor,
+    )
+    classification_fields = _classification_fields(classified)
+
+    if not should_trigger_recovery(reason) and str(classification_fields.get("failureType") or "") != "budget_exceeded":
         return {
             "reasonCode": reason,
             "attempt": 0,
@@ -448,14 +486,45 @@ def decide_recovery(root: str, task_id: str, current_assignee: str, reason_code:
             "cooldownUntilTs": 0,
             "cooldownUntil": ts_to_iso(0),
             "recoverable": False,
+            **classification_fields,
         }
 
     now_unix = int(now_ts if now_ts is not None else time.time())
     policy = load_recovery_policy(root)
     chain = normalize_chain(policy.get("recoveryChain"))
     reason_conf = (policy.get("reasonPolicies") or {}).get(reason) or {}
-    max_attempts = max(1, safe_int(reason_conf.get("maxAttempts"), 2))
-    cooldown_sec = max(0, safe_int(reason_conf.get("cooldownSec"), 180))
+    max_attempts = max(1, safe_int(reason_conf.get("maxAttempts"), safe_int((policy.get("default") or {}).get("maxAttempts"), 2)))
+    cooldown_sec = max(0, safe_int(reason_conf.get("cooldownSec"), safe_int((policy.get("default") or {}).get("cooldownSec"), 180)))
+
+    failure_type = str(classification_fields.get("failureType") or "unknown")
+    retry_same_assignee = False
+    forced_action = ""
+    forced_next = ""
+    if failure_type == "context_overflow":
+        retry_same_assignee = True
+        forced_action = "retry"
+        max_attempts = 1
+        cooldown_sec = 60
+    elif failure_type == "wrong_direction":
+        forced_action = "escalate"
+        forced_next = "human"
+        max_attempts = 1
+        cooldown_sec = 0
+    elif failure_type == "missing_info":
+        retry_same_assignee = True
+        forced_action = "retry"
+        max_attempts = 1
+        cooldown_sec = 60
+    elif failure_type == "budget_exceeded":
+        forced_action = "escalate"
+        forced_next = "human"
+        max_attempts = 1
+        cooldown_sec = 0
+    elif failure_type == "continuation_stall":
+        forced_action = "escalate"
+        forced_next = "human"
+        max_attempts = 1
+        cooldown_sec = 0
 
     with _recovery_state_guard(root, require_lock=True):
         state = _load_recovery_state_unlocked_strict(root, caller="decide_recovery")
@@ -477,6 +546,7 @@ def decide_recovery(root: str, task_id: str, current_assignee: str, reason_code:
             chosen_state = prev_state or (
                 "human_handoff" if chosen_action == "human" else "recovery_scheduled"
             )
+            prev_fields = _classification_fields(prev)
             return {
                 "reasonCode": reason,
                 "attempt": prev_attempt,
@@ -488,14 +558,15 @@ def decide_recovery(root: str, task_id: str, current_assignee: str, reason_code:
                 "cooldownUntil": ts_to_iso(prev_cooldown_ts),
                 "recoverable": chosen_action in {"retry", "human"},
                 "maxAttempts": max_attempts,
+                **(prev_fields if str(prev_fields.get("failureType") or "") != "unknown" else classification_fields),
             }
 
         attempt = prev_attempt + 1
         next_assignee = next_assignee_for(chain, current_assignee)
+        if retry_same_assignee:
+            current = str(current_assignee or "").strip().lower()
+            next_assignee = current or next_assignee
 
-        # For formatting/evidence incompleteness, avoid immediate human handoff when
-        # the current assignee sits at the tail of the chain (e.g. invest-analyst).
-        # Rotate back to the chain head and keep retry automated.
         if reason == "incomplete_output" and next_assignee == "human" and attempt <= max_attempts:
             non_human_chain = [role for role in chain if role != "human"]
             if non_human_chain:
@@ -505,6 +576,14 @@ def decide_recovery(root: str, task_id: str, current_assignee: str, reason_code:
             action = "escalate"
             next_assignee = "human"
             recovery_state = "escalated_to_human"
+        elif forced_action == "escalate":
+            action = "escalate"
+            next_assignee = forced_next or "human"
+            recovery_state = "escalated_to_human"
+        elif forced_action == "retry":
+            action = "retry"
+            next_assignee = forced_next or next_assignee
+            recovery_state = "recovery_scheduled"
         elif next_assignee == "human":
             action = "human"
             recovery_state = "human_handoff"
@@ -523,6 +602,8 @@ def decide_recovery(root: str, task_id: str, current_assignee: str, reason_code:
             "cooldownUntilTs": cooldown_until_ts,
             "cooldownUntil": ts_to_iso(cooldown_until_ts),
             "updatedAt": now_iso(),
+            "maxAttempts": max_attempts,
+            **classification_fields,
         }
         _save_recovery_state_unlocked(root, state)
 
@@ -537,6 +618,7 @@ def decide_recovery(root: str, task_id: str, current_assignee: str, reason_code:
             "cooldownUntil": ts_to_iso(cooldown_until_ts),
             "recoverable": action in {"retry", "human"},
             "maxAttempts": max_attempts,
+            **classification_fields,
         }
 
 

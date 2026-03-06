@@ -2219,6 +2219,43 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("Test Paper", prompt)
         self.assertIn("use smaller batch", prompt)
 
+    def test_dispatch_blocked_output_includes_failure_classifier_fields(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-040FC1: failure classifier wiring",
+        ])
+
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-040FC1",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"failed","message":"maximum context length exceeded while processing the prompt"}',
+        ])
+
+        spawn = out.get("spawn") or {}
+        self.assertEqual(spawn.get("failureType"), "context_overflow", out)
+        self.assertEqual(spawn.get("normalizedReason"), "context_length_exceeded", out)
+        self.assertEqual(spawn.get("recoveryStrategy"), "retry_same_assignee_shrink_scope", out)
+        retry_context = spawn.get("retryContext") or {}
+        self.assertEqual(retry_context.get("failureType"), "context_overflow", out)
+
     def test_dispatch_prompt_includes_snapshot_history_and_schema(self):
         run_json([
             "python3",

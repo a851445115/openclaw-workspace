@@ -357,6 +357,71 @@ class RecoveryLoopTests(unittest.TestCase):
         self.assertEqual(out["spawn"]["action"], "retry", out)
         self.assertEqual(out["spawn"]["nextAssignee"], "coder", out)
 
+    def test_context_overflow_retries_same_assignee_with_shrink_scope_strategy(self):
+        out = self.recovery_mod.decide_recovery(
+            self.root.as_posix(),
+            "T-142",
+            "coder",
+            "spawn_failed",
+            detail="context length exceeded while building prompt",
+            output_text="maximum context length exceeded",
+            executor="codex_cli",
+            now_ts=1_700_200_300,
+        )
+        self.assertEqual(out.get("failureType"), "context_overflow", out)
+        self.assertEqual(out.get("normalizedReason"), "context_length_exceeded", out)
+        self.assertEqual(out.get("recoveryStrategy"), "retry_same_assignee_shrink_scope", out)
+        self.assertEqual(out.get("action"), "retry", out)
+        self.assertEqual(out.get("nextAssignee"), "coder", out)
+
+    def test_wrong_direction_escalates_to_human(self):
+        out = self.recovery_mod.decide_recovery(
+            self.root.as_posix(),
+            "T-143",
+            "coder",
+            "blocked_signal",
+            detail="not what task asked: changed README instead of implementing API",
+            output_text="This result is not aligned with the requested deliverable.",
+            executor="claude_code",
+            now_ts=1_700_200_301,
+        )
+        self.assertEqual(out.get("failureType"), "wrong_direction", out)
+        self.assertEqual(out.get("recoveryStrategy"), "escalate_for_replan", out)
+        self.assertEqual(out.get("action"), "escalate", out)
+        self.assertEqual(out.get("nextAssignee"), "human", out)
+
+    def test_missing_info_retries_same_assignee_with_clarify_strategy(self):
+        out = self.recovery_mod.decide_recovery(
+            self.root.as_posix(),
+            "T-144",
+            "debugger",
+            "blocked_signal",
+            detail="blocked waiting for upstream SECRET_KEY and API schema",
+            output_text="Need missing env and schema before continuing.",
+            executor="codex_cli",
+            now_ts=1_700_200_302,
+        )
+        self.assertEqual(out.get("failureType"), "missing_info", out)
+        self.assertEqual(out.get("recoveryStrategy"), "retry_with_clarification", out)
+        self.assertEqual(out.get("action"), "retry", out)
+        self.assertEqual(out.get("nextAssignee"), "debugger", out)
+
+    def test_budget_exceeded_immediately_escalates(self):
+        out = self.recovery_mod.decide_recovery(
+            self.root.as_posix(),
+            "T-145",
+            "coder",
+            "budget_exceeded",
+            detail="token budget exceeded",
+            output_text="",
+            executor="claude_code",
+            now_ts=1_700_200_303,
+        )
+        self.assertEqual(out.get("failureType"), "budget_exceeded", out)
+        self.assertEqual(out.get("recoveryStrategy"), "escalate_budget_review", out)
+        self.assertEqual(out.get("action"), "escalate", out)
+        self.assertEqual(out.get("nextAssignee"), "human", out)
+
     def test_clear_task_removes_only_target_entries(self):
         now_ts = int(time.time())
         self.recovery_mod.decide_recovery(self.root.as_posix(), "T-150", "coder", "spawn_failed", now_ts=now_ts)
