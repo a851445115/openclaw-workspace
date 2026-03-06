@@ -90,3 +90,19 @@ Close the gaps from `docs/plans/2026-03-05-elvis-architecture-integration-plan.m
 - Current status: partial — global / role override 已接通，done 验收会阻断缺截图 / 缺 plot / 缺 data / 缺 comparison 的交付；仍属于启发式识别，尚未接入更强的文件元数据或图像内容校验。
 - Verification target: `python3 -m unittest tests/test_quality_gate_v2.py tests/test_orchestrator_runtime.py -q`.
 
+
+
+## 2026-03-06 - Gemini/Codex 执行器切换 + 真实知识图库验收
+### Goal
+- 停用 `claude_cli`，改为：文字工作 → `gemini_cli`；其余任务（含规划/高智能/代码/调试）→ `codex_cli`。
+- 为 `codex_cli` 增加显式模型配置，目标 `gpt-4.5`，优先尝试 `xhigh` 推理强度；若本机/提供商不支持，则降级到可用配置并记录证据。
+- 完成一次真实项目验收：创建“文献复现代码知识图谱库”主题项目，验证 orchestrator 在新路由下真实可用。
+
+### Phases
+| Phase | Status | Notes |
+|---|---|---|
+| A. 审计当前路由与 bridge 能力 | complete | 确认 `milestones.py` 仍会把规划类任务改送 `claude_cli`，`codex_worker_bridge.py` 尚未显式传模型 |
+| B. 路由与 bridge 改造 | in_progress | 子代理并行：路由/运行时/文档/测试 与 codex bridge/测试 |
+| C. 主会话审计与定向验证 | pending | 运行 bridge + runtime 定向测试，确保旧行为兼容且新路由生效 |
+| D. 真实项目 smoke run | pending | 用“文献复现代码知识图谱库”项目实际触发一轮多任务执行并核对 executor / 产物 |
+| E. git 备份 | pending | 验证通过后提交并推送 |
