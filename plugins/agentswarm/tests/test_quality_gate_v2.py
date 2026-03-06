@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -12,8 +13,8 @@ MILE = SCRIPTS / "lib" / "milestones.py"
 INIT = SCRIPTS / "init-task-board"
 
 
-def run_json(cmd, cwd=REPO):
-    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
+def run_json(cmd, cwd=REPO, env=None):
+    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False, env=env)
     if proc.returncode != 0:
         raise AssertionError(f"command failed: {cmd}\nstdout={proc.stdout}\nstderr={proc.stderr}")
     try:
@@ -46,7 +47,7 @@ class QualityGateV2Tests(unittest.TestCase):
             ]
         )
 
-    def _dispatch(self, task_id: str, agent: str, spawn_output: str):
+    def _dispatch(self, task_id: str, agent: str, spawn_output: str, env=None):
         return run_json(
             [
                 "python3",
@@ -63,13 +64,24 @@ class QualityGateV2Tests(unittest.TestCase):
                 "--spawn",
                 "--spawn-output",
                 spawn_output,
-            ]
+            ],
+            env=env,
         )
 
     def _write_acceptance_policy(self, payload):
         path = self.root / "config" / "acceptance-policy.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+
+    def _write_multi_reviewer_policy(self, payload):
+        path = self.root / "config" / "multi-reviewer-policy.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+
+    def _fake_reviewer_env(self, payload):
+        env = dict(os.environ)
+        env["AGENTSWARM_MULTI_REVIEW_FAKE_OUTPUT"] = json.dumps(payload, ensure_ascii=True)
+        return env
 
     def test_done_without_hard_evidence_is_blocked(self):
         self._create_task("T-501", "coder", "missing hard evidence")
@@ -235,6 +247,136 @@ class QualityGateV2Tests(unittest.TestCase):
         )
         self.assertEqual(out["spawn"]["decision"], "done", out)
         self.assertEqual(out["spawn"]["reasonCode"], "done_with_evidence", out)
+
+    def test_multi_reviewer_policy_disabled_keeps_done_behavior(self):
+        self._write_multi_reviewer_policy({"enabled": False, "dryRun": True})
+        self._create_task("T-701", "coder", "multi reviewer disabled")
+        out = self._dispatch(
+            "T-701",
+            "coder",
+            json.dumps(
+                {
+                    "status": "done",
+                    "summary": "已完成并验证",
+                    "evidence": ["logs/t701.log", "pytest -q => 3 passed in 0.05s"],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        self.assertEqual(out["spawn"]["decision"], "done", out)
+        self.assertEqual(out["spawn"]["reasonCode"], "done_with_evidence", out)
+        acceptance = out["spawn"].get("acceptance") or {}
+        reviewer = acceptance.get("multiReviewer") or {}
+        self.assertEqual(str(reviewer.get("conclusion", {}).get("decision") or ""), "skipped_disabled", reviewer)
+
+    def test_multi_reviewer_dry_run_attaches_summary_without_blocking_done(self):
+        self._write_multi_reviewer_policy({"enabled": True, "dryRun": True})
+        self._create_task("T-702", "coder", "multi reviewer dry run")
+        out = self._dispatch(
+            "T-702",
+            "coder",
+            json.dumps(
+                {
+                    "status": "done",
+                    "summary": "已完成并验证",
+                    "evidence": ["logs/t702.log", "pytest -q => 4 passed in 0.06s"],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        self.assertEqual(out["spawn"]["decision"], "done", out)
+        acceptance = out["spawn"].get("acceptance") or {}
+        reviewer = acceptance.get("multiReviewer") or {}
+        self.assertEqual(str(reviewer.get("conclusion", {}).get("decision") or ""), "skipped_dry_run", reviewer)
+        self.assertIn("review", str(acceptance.get("reason") or "").lower(), acceptance)
+
+    def test_multi_reviewer_enabled_all_pass_allows_done(self):
+        self._write_multi_reviewer_policy({"enabled": True, "dryRun": False, "passThreshold": 0.7})
+        self._create_task("T-703", "coder", "multi reviewer all pass")
+        out = self._dispatch(
+            "T-703",
+            "coder",
+            json.dumps(
+                {
+                    "status": "done",
+                    "summary": "已完成并验证",
+                    "evidence": ["logs/t703.log", "pytest -q => 5 passed in 0.07s"],
+                },
+                ensure_ascii=False,
+            ),
+            env=self._fake_reviewer_env(
+                {
+                    "codex": {"score": 0.9, "notes": "ok"},
+                    "claude": {"score": 0.8, "notes": "ok"},
+                    "gemini": {"score": 0.75, "notes": "ok"},
+                }
+            ),
+        )
+        self.assertEqual(out["spawn"]["decision"], "done", out)
+        acceptance = out["spawn"].get("acceptance") or {}
+        reviewer = acceptance.get("multiReviewer") or {}
+        self.assertTrue(reviewer.get("conclusion", {}).get("pass"), reviewer)
+        self.assertGreaterEqual(float(reviewer.get("totalScore") or 0.0), 0.7, reviewer)
+
+    def test_multi_reviewer_below_threshold_blocks_done(self):
+        self._write_multi_reviewer_policy({"enabled": True, "dryRun": False, "passThreshold": 0.7})
+        self._create_task("T-704", "coder", "multi reviewer threshold block")
+        out = self._dispatch(
+            "T-704",
+            "coder",
+            json.dumps(
+                {
+                    "status": "done",
+                    "summary": "已完成并验证",
+                    "evidence": ["logs/t704.log", "pytest -q => 6 passed in 0.08s"],
+                },
+                ensure_ascii=False,
+            ),
+            env=self._fake_reviewer_env(
+                {
+                    "codex": {"score": 0.4, "notes": "risk"},
+                    "claude": {"score": 0.5, "notes": "risk"},
+                    "gemini": {"score": 0.6, "notes": "risk"},
+                }
+            ),
+        )
+        self.assertEqual(out["spawn"]["decision"], "blocked", out)
+        self.assertEqual(out["spawn"]["acceptanceReasonCode"], "multi_reviewer_score_below_threshold", out)
+        self.assertIn("review", str(out["spawn"].get("detail") or "").lower(), out)
+
+    def test_multi_reviewer_missing_fake_output_blocks_when_degraded_not_allowed(self):
+        self._write_multi_reviewer_policy(
+            {
+                "enabled": True,
+                "dryRun": False,
+                "passThreshold": 0.7,
+                "allowDegradedPass": False,
+            }
+        )
+        self._create_task("T-705", "coder", "multi reviewer degraded block")
+        out = self._dispatch(
+            "T-705",
+            "coder",
+            json.dumps(
+                {
+                    "status": "done",
+                    "summary": "已完成并验证",
+                    "evidence": ["logs/t705.log", "pytest -q => 7 passed in 0.09s"],
+                },
+                ensure_ascii=False,
+            ),
+            env=self._fake_reviewer_env(
+                {
+                    "codex": {"score": 0.9, "notes": "ok"},
+                    "claude": {"score": 0.8, "notes": "ok"},
+                }
+            ),
+        )
+        self.assertEqual(out["spawn"]["decision"], "blocked", out)
+        self.assertEqual(out["spawn"]["acceptanceReasonCode"], "multi_reviewer_degraded_blocked", out)
+        acceptance = out["spawn"].get("acceptance") or {}
+        reviewer = acceptance.get("multiReviewer") or {}
+        self.assertTrue(reviewer.get("degraded"), reviewer)
 
 
 if __name__ == "__main__":

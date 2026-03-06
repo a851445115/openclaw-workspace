@@ -1,0 +1,5 @@
+{
+  "heartbeatTimeoutSec": 300,
+  "stalePidStatus": "blocked",
+  "heartbeatTimeoutStatus": "blocked"
+}

@@ -1,7 +1,7 @@
 {
-  "enabled": false,
+  "enabled": true,
   "rootDir": "",
   "branchPrefix": "task",
-  "cleanupOnDone": false,
+  "cleanupOnDone": true,
   "bootstrapCommands": []
 }

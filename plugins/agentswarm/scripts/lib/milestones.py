@@ -43,6 +43,8 @@ import context_pack
 import collaboration_hub
 import expert_group
 import config_runtime
+import proactive_scanner
+import multi_reviewer
 
 LOGGER = logging.getLogger(__name__)
 
@@ -86,6 +88,17 @@ ACCEPTANCE_POLICY_CONFIG_CANDIDATES = (
     os.path.join("config", "acceptance-policy.json"),
     os.path.join("state", "acceptance-policy.json"),
 )
+SCANNER_POLICY_CONFIG_CANDIDATES = (
+    os.path.join("config", "scanner-policy.json"),
+    os.path.join("state", "scanner-policy.json"),
+)
+MULTI_REVIEWER_POLICY_CONFIG_CANDIDATES = (
+    os.path.join("config", "multi-reviewer-policy.json"),
+    os.path.join("state", "multi-reviewer-policy.json"),
+)
+MULTI_REVIEW_FAKE_OUTPUT_ENV = "AGENTSWARM_MULTI_REVIEW_FAKE_OUTPUT"
+MULTI_REVIEW_TIMEOUT_SEC = 45
+SCANNER_REGISTRY_FILE = os.path.join("state", "scanner.registry.json")
 DEFAULT_ACCEPTANCE_POLICY: Dict[str, Any] = {
     "global": {
         "requireEvidence": True,
@@ -114,6 +127,28 @@ DEFAULT_ACCEPTANCE_POLICY: Dict[str, Any] = {
         },
     },
 }
+DEFAULT_SCANNER_POLICY: Dict[str, Any] = {
+    "enabled": False,
+    "dryRun": True,
+    "todoComments": {
+        "enabled": True,
+        "paths": ["scripts", "tests"],
+    },
+    "pytestFailures": {
+        "enabled": True,
+        "logPath": os.path.join("state", "pytest.latest.log"),
+    },
+    "feishuMessages": {
+        "enabled": True,
+        "messagesPath": os.path.join("state", "feishu.messages.json"),
+    },
+    "arxivRss": {
+        "enabled": False,
+        "feedUrl": "https://export.arxiv.org/rss/cs.AI",
+        "timeoutSec": 2,
+    },
+}
+SCANNER_REQUIREMENT_OWNER = "invest-analyst"
 AUTO_PROGRESS_STATE_FILE = "user-friendly.autopilot.json"
 AUTO_PROGRESS_DEFAULT_MAX_STEPS = 2
 AUTO_PROGRESS_MAX_STEPS_LIMIT = 10
@@ -2340,6 +2375,54 @@ def cleanup_done_state(root: str, task_id: str, session_agent: str = "", session
     return out
 
 
+def maybe_cleanup_dispatch_worktree(root: str, task_id: str, decision: str, worktree_info: Any) -> Dict[str, Any]:
+    terminal_decision = str(decision or "").strip().lower()
+    info = worktree_info if isinstance(worktree_info, dict) else {}
+    policy = info.get("policy") if isinstance(info.get("policy"), dict) else {}
+    skipped = {
+        "ok": True,
+        "removed": False,
+        "skipped": True,
+        "reason": "not_applicable",
+        "path": str(info.get("path") or ""),
+        "branch": str(info.get("branch") or ""),
+        "policy": dict(policy),
+    }
+    if terminal_decision not in {"done", "blocked"}:
+        skipped["reason"] = "non_terminal_decision"
+        return skipped
+    if not bool(policy.get("enabled")):
+        skipped["reason"] = "policy_disabled"
+        return skipped
+    if not bool(policy.get("cleanupOnDone")):
+        skipped["reason"] = "cleanup_disabled"
+        return skipped
+    if not bool(info.get("ok")) or bool(info.get("skipped")):
+        skipped["reason"] = str(info.get("reason") or "worktree_unavailable")
+        return skipped
+    if not str(info.get("path") or "").strip():
+        skipped["reason"] = "missing_path"
+        return skipped
+    try:
+        return worktree_manager.cleanup_task_worktree(
+            root,
+            task_id,
+            policy_override=dict(policy),
+        )
+    except Exception as err:
+        LOGGER.warning("cleanup_task_worktree failed: taskId=%s decision=%s", task_id, terminal_decision, exc_info=True)
+        return {
+            "ok": False,
+            "removed": False,
+            "skipped": False,
+            "reason": "cleanup_exception",
+            "error": clip(str(err), 200),
+            "path": str(info.get("path") or ""),
+            "branch": str(info.get("branch") or ""),
+            "policy": dict(policy),
+        }
+
+
 def extract_text_for_judgement(obj: Any) -> str:
     chunks: List[str] = []
 
@@ -2769,6 +2852,7 @@ def classify_spawn_result(
                 "detail": clip(detail or text or f"{task_id} 子代理返回完成", 200),
                 "reasonCode": "done_with_evidence",
                 "acceptanceReasonCode": str(accepted.get("reasonCode") or "accepted"),
+                "acceptance": accepted,
                 "report": report,
             }
         _clear_continuation_on_terminal()
@@ -2780,6 +2864,7 @@ def classify_spawn_result(
             ),
             "reasonCode": "incomplete_output",
             "acceptanceReasonCode": str(accepted.get("reasonCode") or "acceptance_failed"),
+            "acceptance": accepted,
             "report": report,
         }
 
@@ -3328,6 +3413,7 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
                 "detail": decision["detail"],
                 "reasonCode": decision.get("reasonCode", "classified"),
                 "acceptanceReasonCode": decision.get("acceptanceReasonCode", ""),
+                "acceptance": decision.get("acceptance"),
                 "normalizedReport": decision.get("report"),
                 "metrics": metrics,
             }
@@ -3451,6 +3537,7 @@ def run_dispatch_spawn(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
         "detail": decision["detail"],
         "reasonCode": decision.get("reasonCode", "classified"),
         "acceptanceReasonCode": decision.get("acceptanceReasonCode", ""),
+        "acceptance": decision.get("acceptance"),
         "normalizedReport": decision.get("report"),
         "metrics": metrics,
     }
@@ -4072,6 +4159,18 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                     exc_info=True,
                 )
 
+    worktree_cleanup: Dict[str, Any] = {"ok": True, "removed": False, "skipped": True, "reason": "spawn_not_terminal"}
+    if args.spawn:
+        worktree_cleanup = maybe_cleanup_dispatch_worktree(
+            args.root,
+            args.task_id,
+            str(spawn.get("decision") or ""),
+            worktree_info,
+        )
+        if not isinstance(worktree_info, dict):
+            worktree_info = {}
+        worktree_info["cleanup"] = worktree_cleanup
+
     backfill_result: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "spawn_done_or_not_enabled"}
     if args.spawn:
         spawn_decision = str(spawn.get("decision") or "").strip().lower()
@@ -4094,6 +4193,8 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         spawn["activeSession"] = active_session_meta
     if isinstance(worktree_info, dict) and worktree_info:
         spawn["worktree"] = worktree_info
+    if isinstance(worktree_cleanup, dict) and worktree_cleanup:
+        spawn["worktreeCleanup"] = worktree_cleanup
     if isinstance(retry_context_pack, dict) and retry_context_pack:
         spawn["retryContext"] = retry_context_pack
     if args.spawn:
@@ -4457,8 +4558,62 @@ def scheduler_run_once(args: argparse.Namespace) -> Dict[str, Any]:
 
     force = bool(getattr(args, "force", False))
     should_tick = action in {"enable", "tick"}
+    watchdog_result: Dict[str, Any] = {
+        "ok": True,
+        "skipped": not should_tick,
+        "reason": "no_tick" if not should_tick else "",
+        "checked": 0,
+        "updated": 0,
+        "stalePid": 0,
+        "heartbeatTimeout": 0,
+        "events": [],
+    }
+
+    if should_tick:
+        try:
+            watchdog_result = session_registry.run_active_session_watchdog(args.root)
+            watchdog_events = watchdog_result.get("events") if isinstance(watchdog_result.get("events"), list) else []
+            for event in watchdog_events:
+                if not isinstance(event, dict):
+                    continue
+                record_ops_event(
+                    args.root,
+                    "active_session_watchdog",
+                    {
+                        "taskId": str(event.get("taskId") or ""),
+                        "status": str(event.get("status") or ""),
+                        "reason": str(event.get("reason") or ""),
+                        "detail": str(event.get("detail") or ""),
+                        "pid": nonneg_int(event.get("pid"), 0),
+                        "heartbeatAgeSec": nonneg_int(event.get("heartbeatAgeSec"), 0),
+                        "heartbeatTimeoutSec": nonneg_int(event.get("heartbeatTimeoutSec"), 0),
+                        "worktreePath": str(event.get("worktreePath") or ""),
+                    },
+                )
+        except Exception as err:
+            watchdog_result = {
+                "ok": False,
+                "skipped": False,
+                "reason": "exception",
+                "error": f"{type(err).__name__}: {err}",
+                "checked": 0,
+                "updated": 0,
+                "stalePid": 0,
+                "heartbeatTimeout": 0,
+                "events": [],
+            }
+            LOGGER.warning("active session watchdog failed: root=%s action=%s", args.root, action, exc_info=True)
+            record_ops_event(
+                args.root,
+                "active_session_watchdog_error",
+                {
+                    "action": action,
+                    "error": str(watchdog_result.get("error") or ""),
+                },
+            )
 
     run_result: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "status_only"}
+    scanner_result: Dict[str, Any] = _scanner_summary(enabled=False, dry_run=bool(DEFAULT_SCANNER_POLICY.get("dryRun")), reason="no_tick")
     if should_tick:
         gate = governance.checkpoint_scheduler(args.root, args.actor)
         if not bool(gate.get("allowed")):
@@ -4468,11 +4623,33 @@ def scheduler_run_once(args: argparse.Namespace) -> Dict[str, Any]:
                 "reason": str(gate.get("reason") or "governance_blocked"),
                 "governance": gate,
             }
+            scanner_result = _scanner_summary(enabled=False, dry_run=bool(load_scanner_policy(args.root).get("dryRun")), reason=str(run_result.get("reason") or "governance_blocked"))
         elif not state.get("enabled") and not force:
             run_result = {"ok": True, "skipped": True, "reason": "disabled"}
+            scanner_result = _scanner_summary(enabled=False, dry_run=bool(load_scanner_policy(args.root).get("dryRun")), reason="disabled")
         elif not force and int(state.get("nextDueTs") or 0) > now_ts:
             run_result = {"ok": True, "skipped": True, "reason": "not_due"}
+            scanner_result = _scanner_summary(enabled=False, dry_run=bool(load_scanner_policy(args.root).get("dryRun")), reason="not_due")
         else:
+            try:
+                scanner_result = run_proactive_scanner_cycle(args.root, actor="orchestrator")
+            except Exception as err:
+                scanner_result = _scanner_summary(
+                    enabled=True,
+                    dry_run=bool(load_scanner_policy(args.root).get("dryRun")),
+                    reason=f"{type(err).__name__}: {err}",
+                )
+                scanner_result["ok"] = False
+                scanner_result["degraded"] = True
+                LOGGER.warning("proactive scanner failed: root=%s action=%s", args.root, action, exc_info=True)
+                record_ops_event(
+                    args.root,
+                    "scheduler_scanner_error",
+                    {
+                        "action": action,
+                        "error": str(scanner_result.get("reason") or ""),
+                    },
+                )
             a_args = argparse.Namespace(
                 root=args.root,
                 actor="orchestrator",
@@ -4504,11 +4681,30 @@ def scheduler_run_once(args: argparse.Namespace) -> Dict[str, Any]:
         "action": action,
         "state": state,
         "run": run_result,
+        "scanner": scanner_result,
+        "watchdog": watchdog_result,
         "skipped": bool(run_result.get("skipped")),
         "reason": str(run_result.get("reason") or ""),
     }
     if should_tick:
         run_obj = run_result if isinstance(run_result, dict) else {}
+        scanner_obj = scanner_result if isinstance(scanner_result, dict) else {}
+        record_ops_event(
+            args.root,
+            "scheduler_scanner",
+            {
+                "action": action,
+                "enabled": bool(scanner_obj.get("enabled")),
+                "dryRun": bool(scanner_obj.get("dryRun")),
+                "checked": int(scanner_obj.get("checked") or 0),
+                "findings": int(scanner_obj.get("findings") or 0),
+                "created": int(scanner_obj.get("created") or 0),
+                "skipped": int(scanner_obj.get("skipped") or 0),
+                "duplicates": int(scanner_obj.get("duplicates") or 0),
+                "degraded": bool(scanner_obj.get("degraded")),
+                "reason": str(scanner_obj.get("reason") or ""),
+            },
+        )
         record_ops_event(
             args.root,
             "scheduler_tick",
@@ -4520,6 +4716,9 @@ def scheduler_run_once(args: argparse.Namespace) -> Dict[str, Any]:
                 "stepsRun": int(run_obj.get("stepsRun") or 0),
                 "enabled": bool(state.get("enabled")),
                 "maxSteps": int(state.get("maxSteps") or SCHEDULER_DEFAULT_MAX_STEPS),
+                "scannerCreated": int(scanner_obj.get("created") or 0),
+                "scannerFindings": int(scanner_obj.get("findings") or 0),
+                "scannerDegraded": bool(scanner_obj.get("degraded")),
             },
         )
     return out
@@ -6483,6 +6682,477 @@ def load_acceptance_policy(root: str) -> Dict[str, Any]:
     return policy
 
 
+def merge_scanner_policy(base: Dict[str, Any], override: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {
+        "enabled": bool(base.get("enabled")),
+        "dryRun": bool(base.get("dryRun")),
+        "todoComments": dict(base.get("todoComments") or {}),
+        "pytestFailures": dict(base.get("pytestFailures") or {}),
+        "feishuMessages": dict(base.get("feishuMessages") or {}),
+        "arxivRss": dict(base.get("arxivRss") or {}),
+    }
+    if not isinstance(override, dict):
+        return merged
+
+    for key in ("enabled", "dryRun"):
+        if key in override:
+            merged[key] = bool(override.get(key))
+
+    for section in ("todoComments", "pytestFailures", "feishuMessages", "arxivRss"):
+        extra = override.get(section)
+        if isinstance(extra, dict):
+            merged[section].update(extra)
+
+    return merged
+
+
+def load_scanner_policy(root: str) -> Dict[str, Any]:
+    script_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    policy = DEFAULT_SCANNER_POLICY
+    for base in [script_root, root]:
+        for rel in SCANNER_POLICY_CONFIG_CANDIDATES:
+            path = os.path.join(base, rel)
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    policy = merge_scanner_policy(policy, loaded)
+            except Exception:
+                continue
+    return policy
+
+
+def load_multi_reviewer_policy(root: str) -> Dict[str, Any]:
+    script_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    raw_policy: Dict[str, Any] = {}
+    for base in [script_root, root]:
+        for rel in MULTI_REVIEWER_POLICY_CONFIG_CANDIDATES:
+            path = os.path.join(base, rel)
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    raw_policy.update(loaded)
+            except Exception:
+                continue
+    return multi_reviewer.normalize_reviewer_policy(raw_policy)
+
+
+def scanner_registry_path(root: str) -> str:
+    return os.path.join(root, SCANNER_REGISTRY_FILE)
+
+
+def load_scanner_registry(root: str) -> Dict[str, Any]:
+    data = load_json_file(scanner_registry_path(root), {"records": {}})
+    records = data.get("records") if isinstance(data.get("records"), dict) else {}
+    return {"records": records}
+
+
+def save_scanner_registry(root: str, state: Dict[str, Any]) -> Dict[str, Any]:
+    records = state.get("records") if isinstance(state.get("records"), dict) else {}
+    normalized = {"records": records, "updatedAt": now_iso()}
+    save_json_file(scanner_registry_path(root), normalized)
+    return normalized
+
+
+def _scanner_summary(enabled: bool, dry_run: bool, reason: str = "") -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "enabled": bool(enabled),
+        "dryRun": bool(dry_run),
+        "checked": 0,
+        "findings": 0,
+        "created": 0,
+        "skipped": 0,
+        "duplicates": 0,
+        "degraded": False,
+        "reason": str(reason or ""),
+        "createdTasks": [],
+        "advisories": [],
+        "results": [],
+    }
+
+
+def _resolve_scanner_path(root: str, value: Any) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    if os.path.isabs(candidate):
+        return candidate
+    return os.path.join(root, candidate)
+
+
+def _scanner_normalize_title(title: str) -> str:
+    return " ".join(str(title or "").strip().lower().split())
+
+
+def _scanner_rel_path(root: str, path: Any) -> str:
+    raw = str(path or "").strip()
+    if not raw:
+        return ""
+    try:
+        rel = os.path.relpath(raw, root)
+        if not rel.startswith(".."):
+            return rel
+    except Exception:
+        pass
+    return raw
+
+
+def _scanner_fingerprint(root: str, finding: Dict[str, Any]) -> str:
+    source = str(finding.get("source") or "unknown").strip().lower()
+    token = source
+    if source == "pytest_failure":
+        token = f"pytest_failure|{str(finding.get('nodeid') or '').strip().lower()}"
+    elif source == "todo_comment":
+        token = "|".join(
+            [
+                "todo_comment",
+                _scanner_rel_path(root, finding.get("path")).lower(),
+                str(nonneg_int(finding.get("line"), 0)),
+                str(finding.get("tag") or "").strip().lower(),
+                " ".join(str(finding.get("text") or "").strip().lower().split()),
+            ]
+        )
+    elif source == "feishu_message":
+        token = "|".join(
+            [
+                "feishu_message",
+                str(finding.get("signal") or "").strip().lower(),
+                " ".join(str(finding.get("text") or "").strip().lower().split()),
+            ]
+        )
+    elif source == "arxiv_rss":
+        token = "|".join(
+            [
+                "arxiv_rss",
+                str(finding.get("link") or "").strip().lower(),
+                " ".join(str(finding.get("title") or "").strip().lower().split()),
+            ]
+        )
+    return hashlib.sha1(token.encode("utf-8")).hexdigest()
+
+
+def _scanner_task_spec(root: str, finding: Dict[str, Any]) -> Dict[str, Any]:
+    source = str(finding.get("source") or "").strip().lower()
+    if source == "pytest_failure":
+        nodeid = clip(str(finding.get("nodeid") or "unknown"), 90)
+        return {
+            "title": f"Pytest failure: {nodeid}",
+            "assignee": "debugger",
+            "kind": "task",
+            "summary": nodeid,
+        }
+    if source == "todo_comment":
+        rel = clip(_scanner_rel_path(root, finding.get("path")), 60)
+        line = nonneg_int(finding.get("line"), 0)
+        tag = str(finding.get("tag") or "TODO").strip().upper() or "TODO"
+        return {
+            "title": f"{tag} debt: {rel}:{line}",
+            "assignee": "coder",
+            "kind": "task",
+            "summary": clip(str(finding.get("text") or ""), 100),
+        }
+    if source == "feishu_message":
+        signal = str(finding.get("signal") or "").strip().lower()
+        text = clip(str(finding.get("text") or ""), 72)
+        if signal == "requirement_change":
+            return {
+                "title": f"Req change: {text}",
+                "assignee": SCANNER_REQUIREMENT_OWNER,
+                "kind": "task",
+                "summary": text,
+            }
+        if signal == "progress_push":
+            return {
+                "title": f"Progress push: {text}",
+                "assignee": "",
+                "kind": "advisory",
+                "summary": text,
+            }
+    if source == "arxiv_rss":
+        title = clip(str(finding.get("title") or "Untitled paper"), 72)
+        return {
+            "title": f"Paper triage: {title}",
+            "assignee": "paper-ingestor",
+            "kind": "task",
+            "summary": clip(str(finding.get("link") or ""), 120),
+        }
+    return {"title": "", "assignee": "", "kind": "ignore", "summary": ""}
+
+
+def _scanner_message_from_row(row: Any) -> Any:
+    if isinstance(row, str):
+        return row
+    if not isinstance(row, dict):
+        return row
+    if any(str(row.get(key) or "").strip() for key in ("text", "content", "message", "body", "title")):
+        return row
+    text = str(row.get("summary") or row.get("request") or row.get("decision") or "").strip()
+    if not text:
+        return row
+    converted = dict(row)
+    converted["text"] = text
+    return converted
+
+
+def _load_scanner_messages(root: str, conf: Dict[str, Any]) -> Dict[str, Any]:
+    inline_messages = conf.get("messages")
+    if isinstance(inline_messages, list):
+        return {"ok": True, "messages": [_scanner_message_from_row(item) for item in inline_messages], "degraded": False, "reason": ""}
+
+    raw_candidates: List[str] = []
+    for key in ("messagesPath", "path", "file"):
+        value = str(conf.get(key) or "").strip()
+        if value:
+            raw_candidates.append(value)
+    if not raw_candidates:
+        raw_candidates.extend(
+            [
+                os.path.join("state", "feishu.messages.json"),
+                os.path.join("state", "feishu.messages.jsonl"),
+                os.path.join("state", "collab.messages.jsonl"),
+            ]
+        )
+
+    for raw in raw_candidates:
+        path = _resolve_scanner_path(root, raw)
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            if path.endswith(".jsonl"):
+                rows = []
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        text = line.strip()
+                        if not text:
+                            continue
+                        try:
+                            rows.append(_scanner_message_from_row(json.loads(text)))
+                        except Exception:
+                            rows.append(text)
+                return {"ok": True, "messages": rows, "degraded": False, "reason": ""}
+            with open(path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, list):
+                messages = [_scanner_message_from_row(item) for item in loaded]
+            elif isinstance(loaded, dict):
+                if isinstance(loaded.get("messages"), list):
+                    messages = [_scanner_message_from_row(item) for item in loaded.get("messages") or []]
+                else:
+                    messages = [_scanner_message_from_row(loaded)]
+            else:
+                messages = []
+            return {"ok": True, "messages": messages, "degraded": False, "reason": ""}
+        except Exception as err:
+            return {"ok": True, "messages": [], "degraded": True, "reason": f"messages_read_failed:{type(err).__name__}"}
+
+    return {"ok": True, "messages": [], "degraded": False, "reason": "no_message_source"}
+
+
+def _run_scanner_method(method_name: str, fn, summary: Dict[str, Any]) -> Dict[str, Any]:
+    result = fn()
+    if not isinstance(result, dict):
+        raise ValueError(f"{method_name} returned non-dict result")
+    summary["checked"] = int(summary.get("checked") or 0) + 1
+    summary["results"].append(
+        {
+            "scanner": method_name,
+            "findings": len(result.get("findings") or []),
+            "degraded": bool(result.get("degraded")),
+            "reason": str(result.get("reason") or ""),
+        }
+    )
+    if bool(result.get("degraded")):
+        summary["degraded"] = True
+    return result
+
+
+def run_proactive_scanner_cycle(root: str, actor: str = "orchestrator") -> Dict[str, Any]:
+    policy = load_scanner_policy(root)
+    enabled = bool(policy.get("enabled"))
+    dry_run = bool(policy.get("dryRun"))
+    summary = _scanner_summary(enabled=enabled, dry_run=dry_run, reason="disabled" if not enabled else "")
+    if not enabled:
+        summary["skipped"] = 1
+        return summary
+
+    registry = load_scanner_registry(root)
+    registry_records = registry.get("records") if isinstance(registry.get("records"), dict) else {}
+    existing_tasks = load_snapshot(root).get("tasks") if isinstance(load_snapshot(root).get("tasks"), dict) else {}
+    existing_titles = {
+        _scanner_normalize_title(str(task.get("title") or ""))
+        for task in existing_tasks.values()
+        if isinstance(task, dict) and str(task.get("title") or "").strip()
+    }
+    tick_seen: set = set()
+    reasons: List[str] = []
+    registry_dirty = False
+    scanner = proactive_scanner.ProactiveScanner(policy)
+
+    todo_conf = policy.get("todoComments") if isinstance(policy.get("todoComments"), dict) else {}
+    if bool(todo_conf.get("enabled")):
+        todo_paths = todo_conf.get("paths") if isinstance(todo_conf.get("paths"), list) else ["scripts", "tests"]
+        resolved_paths = [_resolve_scanner_path(root, item) for item in todo_paths if str(item or "").strip()]
+        todo_result = _run_scanner_method("todoComments", lambda: scanner.scan_todo_comments(resolved_paths), summary)
+        findings = todo_result.get("findings") if isinstance(todo_result.get("findings"), list) else []
+    else:
+        findings = []
+        summary["skipped"] = int(summary.get("skipped") or 0) + 1
+    all_findings: List[Dict[str, Any]] = list(findings)
+
+    pytest_conf = policy.get("pytestFailures") if isinstance(policy.get("pytestFailures"), dict) else {}
+    if bool(pytest_conf.get("enabled")):
+        log_path = _resolve_scanner_path(root, pytest_conf.get("logPath") or pytest_conf.get("path") or os.path.join("state", "pytest.latest.log"))
+        pytest_result = _run_scanner_method("pytestFailures", lambda: scanner.scan_pytest_failures(log_path), summary)
+        all_findings.extend(pytest_result.get("findings") if isinstance(pytest_result.get("findings"), list) else [])
+    else:
+        summary["skipped"] = int(summary.get("skipped") or 0) + 1
+
+    feishu_conf = policy.get("feishuMessages") if isinstance(policy.get("feishuMessages"), dict) else {}
+    if bool(feishu_conf.get("enabled")):
+        message_payload = _load_scanner_messages(root, feishu_conf)
+        if bool(message_payload.get("degraded")):
+            summary["degraded"] = True
+        if str(message_payload.get("reason") or ""):
+            reasons.append(str(message_payload.get("reason") or ""))
+        feishu_result = _run_scanner_method(
+            "feishuMessages",
+            lambda: scanner.scan_feishu_messages(message_payload.get("messages") or []),
+            summary,
+        )
+        all_findings.extend(feishu_result.get("findings") if isinstance(feishu_result.get("findings"), list) else [])
+    else:
+        summary["skipped"] = int(summary.get("skipped") or 0) + 1
+
+    arxiv_conf = policy.get("arxivRss") if isinstance(policy.get("arxivRss"), dict) else {}
+    if bool(arxiv_conf.get("enabled")):
+        arxiv_result = _run_scanner_method(
+            "arxivRss",
+            lambda: scanner.scan_arxiv_rss(
+                feed_url=str(arxiv_conf.get("feedUrl") or DEFAULT_SCANNER_POLICY["arxivRss"]["feedUrl"]),
+                timeout_sec=float(arxiv_conf.get("timeoutSec") or DEFAULT_SCANNER_POLICY["arxivRss"]["timeoutSec"]),
+            ),
+            summary,
+        )
+        all_findings.extend(arxiv_result.get("findings") if isinstance(arxiv_result.get("findings"), list) else [])
+    else:
+        summary["skipped"] = int(summary.get("skipped") or 0) + 1
+
+    for finding in all_findings:
+        if not isinstance(finding, dict):
+            continue
+        fingerprint = _scanner_fingerprint(root, finding)
+        title_spec = _scanner_task_spec(root, finding)
+        title = str(title_spec.get("title") or "").strip()
+        normalized_title = _scanner_normalize_title(title)
+        summary["findings"] = int(summary.get("findings") or 0) + 1
+
+        if fingerprint in tick_seen:
+            summary["skipped"] = int(summary.get("skipped") or 0) + 1
+            summary["duplicates"] = int(summary.get("duplicates") or 0) + 1
+            continue
+        tick_seen.add(fingerprint)
+
+        if fingerprint in registry_records or (normalized_title and normalized_title in existing_titles):
+            summary["skipped"] = int(summary.get("skipped") or 0) + 1
+            summary["duplicates"] = int(summary.get("duplicates") or 0) + 1
+            continue
+
+        source = str(finding.get("source") or "")
+        kind = str(title_spec.get("kind") or "ignore")
+        assignee = str(title_spec.get("assignee") or "").strip()
+        advisory = {
+            "source": source,
+            "fingerprint": fingerprint,
+            "title": title,
+            "kind": kind,
+            "summary": str(title_spec.get("summary") or ""),
+        }
+
+        if not title or kind == "ignore":
+            summary["skipped"] = int(summary.get("skipped") or 0) + 1
+            continue
+
+        if dry_run:
+            summary["skipped"] = int(summary.get("skipped") or 0) + 1
+            continue
+
+        if kind == "advisory":
+            summary["advisories"].append(advisory)
+            registry_records[fingerprint] = {
+                "title": title,
+                "source": source,
+                "kind": kind,
+                "createdAt": now_iso(),
+            }
+            registry_dirty = True
+            record_ops_event(
+                root,
+                "scanner_advisory",
+                {
+                    "source": source,
+                    "title": title,
+                    "fingerprint": fingerprint,
+                    "summary": str(title_spec.get("summary") or ""),
+                },
+            )
+            summary["skipped"] = int(summary.get("skipped") or 0) + 1
+            continue
+
+        apply_text = f"@{assignee} create task: {title}"
+        apply_obj = board_apply(root, actor, apply_text)
+        if not bool(apply_obj.get("ok")):
+            summary["degraded"] = True
+            reasons.append(f"board_apply_failed:{source}:{clip(str(apply_obj.get('error') or ''), 120)}")
+            summary["skipped"] = int(summary.get("skipped") or 0) + 1
+            continue
+
+        task_row = {
+            "taskId": str(apply_obj.get("taskId") or ""),
+            "title": title,
+            "assignee": assignee,
+            "source": source,
+            "fingerprint": fingerprint,
+        }
+        summary["createdTasks"].append(task_row)
+        summary["created"] = int(summary.get("created") or 0) + 1
+        existing_titles.add(normalized_title)
+        registry_records[fingerprint] = {
+            "title": title,
+            "source": source,
+            "kind": kind,
+            "taskId": str(apply_obj.get("taskId") or ""),
+            "createdAt": now_iso(),
+        }
+        registry_dirty = True
+        record_ops_event(
+            root,
+            "scanner_task_created",
+            {
+                "taskId": str(apply_obj.get("taskId") or ""),
+                "source": source,
+                "assignee": assignee,
+                "title": title,
+                "fingerprint": fingerprint,
+            },
+        )
+
+    if registry_dirty:
+        save_scanner_registry(root, {"records": registry_records})
+
+    if dry_run and int(summary.get("findings") or 0) > 0:
+        reasons.append("dry_run")
+    if not reasons and int(summary.get("findings") or 0) == 0:
+        reasons.append("no_findings")
+    summary["reason"] = "; ".join([item for item in reasons if item]).strip()
+    return summary
+
+
 def _to_int(value: Any, default: int) -> int:
     try:
         return int(value)
@@ -6583,6 +7253,226 @@ def _run_verify_commands(root: str, commands: List[Dict[str, Any]]) -> Dict[str,
     return {"ok": True, "reason": "verify commands passed", "results": results}
 
 
+def _normalize_multi_reviewer_output(raw: Any) -> Dict[str, Any]:
+    candidate = raw
+    if isinstance(raw, str):
+        candidate = parse_json_loose(raw)
+    if isinstance(candidate, (int, float)):
+        return {"score": min(1.0, max(0.0, float(candidate))), "notes": ""}
+    if not isinstance(candidate, dict):
+        raise ValueError("reviewer output must be a JSON object")
+    score = candidate.get("score", candidate.get("overallScore", candidate.get("totalScore")))
+    if score is None:
+        raise ValueError("reviewer output missing score")
+    notes = str(candidate.get("notes") or candidate.get("reason") or "").strip()
+    return {
+        "score": min(1.0, max(0.0, float(score))),
+        "notes": clip(notes, 200),
+    }
+
+
+def _load_multi_reviewer_fake_outputs() -> Dict[str, Any]:
+    raw = str(os.environ.get(MULTI_REVIEW_FAKE_OUTPUT_ENV) or "").strip()
+    if not raw:
+        return {}
+    parsed = parse_json_loose(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{MULTI_REVIEW_FAKE_OUTPUT_ENV} must be a JSON object")
+    return {str(key).strip().lower(): value for key, value in parsed.items() if str(key).strip()}
+
+
+def _build_multi_reviewer_prompt(reviewer: Dict[str, Any], changes: Any, context: Optional[Dict[str, Any]]) -> str:
+    reviewer_model = str(reviewer.get("model") or "").strip().lower()
+    ctx = context if isinstance(context, dict) else {}
+    report = ctx.get("structuredReport") if isinstance(ctx.get("structuredReport"), dict) else {}
+    compact_report = {
+        "status": str(report.get("status") or ""),
+        "summary": str(report.get("summary") or ""),
+        "evidence": normalize_string_list(report.get("evidence"), limit=6, item_limit=180),
+    }
+    payload = {
+        "taskId": str(ctx.get("taskId") or ""),
+        "role": str(ctx.get("role") or ""),
+        "reviewerModel": reviewer_model,
+        "acceptanceText": str(ctx.get("text") or ""),
+        "normalizedText": str(ctx.get("normalizedText") or ""),
+        "hardEvidence": normalize_string_list(ctx.get("hardEvidence"), limit=6, item_limit=180),
+        "softEvidence": normalize_string_list(ctx.get("softEvidence"), limit=6, item_limit=160),
+        "report": compact_report,
+        "changes": changes,
+    }
+    return "\n".join(
+        [
+            "You are an independent acceptance reviewer.",
+            "Assess whether the provided completion evidence should be accepted as done.",
+            'Return ONLY one JSON object: {"score":0-1,"notes":"..."}.',
+            "A lower score means done should be blocked. Keep notes concise and audit-friendly.",
+            "CONTEXT:",
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        ]
+    )
+
+
+def _run_multi_reviewer_cli(root: str, reviewer: Dict[str, Any], changes: Any, context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    model = str(reviewer.get("model") or "").strip().lower()
+    fake_outputs = _load_multi_reviewer_fake_outputs()
+    if fake_outputs:
+        if model not in fake_outputs:
+            raise KeyError(f"missing_fake_output:{model}")
+        return _normalize_multi_reviewer_output(fake_outputs.get(model))
+
+    cwd = root if os.path.isdir(root) else os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    prompt = _build_multi_reviewer_prompt(reviewer, changes, context)
+    output_path = ""
+    if model == "codex":
+        fd, output_path = tempfile.mkstemp(prefix="agentswarm-multi-review-", suffix=".txt")
+        os.close(fd)
+        cmd = [
+            "codex",
+            "exec",
+            "--skip-git-repo-check",
+            "--sandbox",
+            "read-only",
+            "--color",
+            "never",
+            "-C",
+            cwd,
+            "-o",
+            output_path,
+            prompt,
+        ]
+    elif model == "claude":
+        cmd = ["claude", "-p", "--dangerously-skip-permissions", "--no-session-persistence", prompt]
+    elif model == "gemini":
+        cmd = ["gemini", "-p", prompt, "--approval-mode", "plan", "--output-format", "text"]
+    else:
+        raise ValueError(f"unsupported reviewer model: {model}")
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=MULTI_REVIEW_TIMEOUT_SEC,
+        )
+    except FileNotFoundError as err:
+        raise RuntimeError(f"reviewer_cli_not_found:{model}") from err
+    except subprocess.TimeoutExpired as err:
+        raise RuntimeError(f"reviewer_timeout:{model}") from err
+
+    raw_output = ""
+    if output_path and os.path.exists(output_path):
+        try:
+            with open(output_path, "r", encoding="utf-8") as f:
+                raw_output = f.read().strip()
+        except Exception:
+            raw_output = ""
+        finally:
+            try:
+                os.unlink(output_path)
+            except Exception:
+                pass
+    if not raw_output:
+        raw_output = (proc.stdout or "").strip()
+    if proc.returncode != 0:
+        detail = clip(raw_output or proc.stderr or f"exit={proc.returncode}", 200)
+        raise RuntimeError(f"reviewer_exit:{model}:{detail}")
+    return _normalize_multi_reviewer_output(raw_output)
+
+
+def _format_multi_reviewer_summary(review_result: Dict[str, Any]) -> str:
+    conclusion = review_result.get("conclusion") if isinstance(review_result.get("conclusion"), dict) else {}
+    policy = review_result.get("policy") if isinstance(review_result.get("policy"), dict) else {}
+    decision = str(conclusion.get("decision") or "unknown").strip() or "unknown"
+    threshold = float(conclusion.get("threshold") or policy.get("passThreshold") or 0.0)
+    total_score = float(review_result.get("totalScore") or 0.0)
+    parts = [f"multi reviewer {decision}"]
+    if bool(review_result.get("executed")):
+        parts.append(f"score={total_score:.2f}/{threshold:.2f}")
+    if bool(review_result.get("degraded")):
+        parts.append("degraded")
+    breakdown_tokens: List[str] = []
+    for item in review_result.get("breakdown") or []:
+        if not isinstance(item, dict):
+            continue
+        model = str(item.get("model") or "").strip().lower()
+        score = item.get("score")
+        if score is None:
+            reason = str(item.get("reason") or "n/a").strip()
+            breakdown_tokens.append(f"{model}:n/a({reason})")
+        else:
+            breakdown_tokens.append(f"{model}:{float(score):.2f}")
+    if breakdown_tokens:
+        parts.append("[" + "; ".join(breakdown_tokens[:3]) + "]")
+    review_reason = str(review_result.get("reason") or "").strip()
+    if review_reason and review_reason not in {"review_disabled_by_policy", "review_dry_run"}:
+        parts.append(review_reason)
+    return clip(" ".join([part for part in parts if part]), 240)
+
+
+def _map_multi_reviewer_reason_code(review_result: Dict[str, Any]) -> str:
+    conclusion = review_result.get("conclusion") if isinstance(review_result.get("conclusion"), dict) else {}
+    decision = str(conclusion.get("decision") or "").strip().lower()
+    reason = str(review_result.get("reason") or "").strip().lower()
+    conclusion_reason = str(conclusion.get("reason") or "").strip().lower()
+    if reason == "runner_unavailable" or reason.startswith("runner_unavailable;"):
+        return "multi_reviewer_runner_unavailable"
+    if decision == "blocked_threshold" or conclusion_reason == "score_below_threshold":
+        return "multi_reviewer_score_below_threshold"
+    return "multi_reviewer_degraded_blocked"
+
+
+def _evaluate_multi_reviewer_gate(
+    root: str,
+    role: str,
+    text: str,
+    normalized_text: str,
+    hard_evidence: List[str],
+    soft_evidence: List[str],
+    structured_report: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    policy = load_multi_reviewer_policy(root)
+    review_context = {
+        "taskId": find_task_id(text) or find_task_id(normalized_text),
+        "role": role,
+        "text": text,
+        "normalizedText": normalized_text,
+        "hardEvidence": hard_evidence,
+        "softEvidence": soft_evidence,
+        "structuredReport": structured_report if isinstance(structured_report, dict) else {},
+    }
+    review_changes = {
+        "normalizedText": normalized_text,
+        "hardEvidence": hard_evidence,
+        "softEvidence": soft_evidence,
+    }
+    try:
+        out = multi_reviewer.run_multi_review(
+            changes=review_changes,
+            policy=policy,
+            runner=lambda reviewer, changes, context: _run_multi_reviewer_cli(root, reviewer, changes, context),
+            context=review_context,
+        )
+    except Exception as err:
+        out = multi_reviewer.run_multi_review(
+            changes=review_changes,
+            policy=policy,
+            runner=None,
+            context=review_context,
+        )
+        reason = str(out.get("reason") or "").strip()
+        fallback_reason = f"wrapper_exception:{err.__class__.__name__}"
+        out["reason"] = f"{reason}; {fallback_reason}".strip("; ")
+    summary = _format_multi_reviewer_summary(out)
+    enriched = dict(out)
+    enriched["enabled"] = bool(policy.get("enabled"))
+    enriched["dryRun"] = bool(policy.get("dryRun"))
+    enriched["summary"] = summary
+    return enriched
+
+
 def evaluate_acceptance(
     root: str,
     role: str,
@@ -6662,14 +7552,40 @@ def evaluate_acceptance(
             "verify": verify_result,
         }
 
+    review_result = _evaluate_multi_reviewer_gate(
+        root,
+        role,
+        note,
+        normalized_note,
+        hard_evidence,
+        soft_evidence,
+        structured_report=structured_report,
+    )
+    review_summary = str(review_result.get("summary") or "").strip()
+    if not bool((review_result.get("conclusion") or {}).get("pass")):
+        return {
+            "ok": False,
+            "reasonCode": _map_multi_reviewer_reason_code(review_result),
+            "reason": clip(f"多评审未通过：{review_summary or 'multi reviewer blocked'}", 240),
+            "hardEvidence": hard_evidence,
+            "softEvidence": soft_evidence,
+            "normalizedText": normalized_note,
+            "verify": verify_result,
+            "multiReviewer": review_result,
+        }
+
+    accepted_reason = "通过验收策略"
+    if review_summary:
+        accepted_reason = clip(f"通过验收策略；{review_summary}", 240)
     return {
         "ok": True,
         "reasonCode": "accepted",
-        "reason": "通过验收策略",
+        "reason": accepted_reason,
         "hardEvidence": hard_evidence,
         "softEvidence": soft_evidence,
         "normalizedText": normalized_note,
         "verify": verify_result,
+        "multiReviewer": review_result,
     }
 
 

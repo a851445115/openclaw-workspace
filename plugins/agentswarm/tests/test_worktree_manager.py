@@ -26,6 +26,13 @@ class WorktreeManagerTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_load_worktree_policy_defaults_enabled_for_runtime(self):
+        policy = self.mod.load_worktree_policy(self.root.as_posix())
+        self.assertTrue(policy.get("enabled"), policy)
+        self.assertTrue(policy.get("cleanupOnDone"), policy)
+        self.assertEqual(policy.get("branchPrefix"), "task", policy)
+        self.assertEqual(policy.get("bootstrapCommands"), [], policy)
+
     def test_ensure_task_worktree_skips_when_disabled(self):
         out = self.mod.ensure_task_worktree(
             self.root.as_posix(),

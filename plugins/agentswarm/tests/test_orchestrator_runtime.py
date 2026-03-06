@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest import mock
 import importlib.util
 from pathlib import Path
 
@@ -122,6 +123,29 @@ class RuntimeTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return path
+
+    def _scheduler_args(self, *, action: str = "tick", force: bool = True):
+        return argparse.Namespace(
+            root=str(self.root),
+            actor="orchestrator",
+            action=action,
+            interval_sec=None,
+            max_steps=None,
+            force=force,
+            group_id="oc_test",
+            account_id="orchestrator",
+            mode="dry-run",
+            timeout_sec=0,
+            spawn=False,
+            spawn_cmd="",
+            spawn_output="",
+            visibility_mode="handoff_visible",
+            session_id="",
+        )
+
+    def _read_task_snapshot(self):
+        path = self.root / "state" / "tasks.snapshot.json"
+        return json.loads(path.read_text(encoding="utf-8") or "{}")
 
     def test_dispatch_spawn_closes_task_done(self):
         run_json([
@@ -4163,6 +4187,309 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(int(after.get("lastRunTs") or 0), before_last_run, skipped)
         self.assertEqual(int(after.get("nextDueTs") or 0), before_next_due, skipped)
 
+    def test_scheduler_run_reclaims_stale_active_session_before_tick(self):
+        module = load_milestone_module()
+        module.session_registry.upsert_active_session(
+            self.root.as_posix(),
+            "T-SCHED-WD-1",
+            worktree_path=(self.root / "task-worktrees" / "task-T-SCHED-WD-1").as_posix(),
+            pid=987654,
+            tmux_session="agent-T-SCHED-WD-1",
+            status="running",
+        )
+        args = argparse.Namespace(
+            root=str(self.root),
+            actor="orchestrator",
+            action="tick",
+            interval_sec=None,
+            max_steps=None,
+            force=True,
+            group_id="oc_test",
+            account_id="orchestrator",
+            mode="dry-run",
+            timeout_sec=0,
+            spawn=False,
+            spawn_cmd="",
+            spawn_output="",
+            visibility_mode="handoff_visible",
+            session_id="",
+        )
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(module.session_registry, "_pid_exists", return_value=False))
+            out = module.scheduler_run_once(args)
+
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(out.get("intent"), "scheduler_run", out)
+        watchdog = out.get("watchdog") or {}
+        self.assertTrue(watchdog.get("ok"), out)
+        self.assertEqual(watchdog.get("updated"), 1, out)
+        self.assertEqual(watchdog.get("stalePid"), 1, out)
+        events = watchdog.get("events") or []
+        self.assertEqual(len(events), 1, out)
+        self.assertEqual(events[0].get("taskId"), "T-SCHED-WD-1", out)
+        self.assertEqual(events[0].get("reason"), "stale_pid", out)
+
+        active_state = module.session_registry.load_active_sessions(self.root.as_posix())
+        active_row = ((active_state.get("sessions") or {}).get("T-SCHED-WD-1")) or {}
+        self.assertEqual(active_row.get("status"), "blocked", active_state)
+        self.assertEqual(active_row.get("stopReason"), "stale_pid", active_state)
+
+        metrics_path = self.root / "state" / "ops.metrics.jsonl"
+        self.assertTrue(metrics_path.exists(), out)
+        metric_rows = [
+            json.loads(line)
+            for line in metrics_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        matched = [
+            row
+            for row in metric_rows
+            if row.get("event") == "active_session_watchdog" and row.get("taskId") == "T-SCHED-WD-1"
+        ]
+        self.assertEqual(len(matched), 1, metric_rows)
+        self.assertEqual(matched[0].get("reason"), "stale_pid", matched)
+
+    def test_scheduler_run_watchdog_exception_does_not_break_main_flow(self):
+        module = load_milestone_module()
+        args = argparse.Namespace(
+            root=str(self.root),
+            actor="orchestrator",
+            action="tick",
+            interval_sec=None,
+            max_steps=None,
+            force=True,
+            group_id="oc_test",
+            account_id="orchestrator",
+            mode="dry-run",
+            timeout_sec=0,
+            spawn=False,
+            spawn_cmd="",
+            spawn_output="",
+            visibility_mode="handoff_visible",
+            session_id="",
+        )
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("watchdog exploded")
+
+        real_watchdog = module.session_registry.run_active_session_watchdog
+        try:
+            module.session_registry.run_active_session_watchdog = boom
+            out = module.scheduler_run_once(args)
+        finally:
+            module.session_registry.run_active_session_watchdog = real_watchdog
+
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(out.get("intent"), "scheduler_run", out)
+        watchdog = out.get("watchdog") or {}
+        self.assertFalse(watchdog.get("ok"), out)
+        self.assertEqual(watchdog.get("reason"), "exception", out)
+        self.assertIn("watchdog exploded", str(watchdog.get("error") or ""), out)
+
+    def test_scheduler_run_scanner_disabled_returns_skip_summary(self):
+        module = load_milestone_module()
+        self._write_json_file(
+            "config/scanner-policy.json",
+            {
+                "enabled": False,
+                "dryRun": False,
+                "todoComments": {"enabled": True, "paths": ["scripts"]},
+                "pytestFailures": {"enabled": True, "logPath": "state/pytest.latest.log"},
+                "feishuMessages": {"enabled": True, "messagesPath": "state/feishu.messages.json"},
+                "arxivRss": {"enabled": False},
+            },
+        )
+
+        with mock.patch.object(
+            module,
+            "autopilot_once",
+            return_value={"ok": True, "skipped": True, "reason": "scanner_test", "stepsRun": 0},
+        ):
+            out = module.scheduler_run_once(self._scheduler_args(action="enable"))
+
+        self.assertTrue(out.get("ok"), out)
+        scanner = out.get("scanner") or {}
+        self.assertEqual(scanner.get("checked"), 0, out)
+        self.assertEqual(scanner.get("findings"), 0, out)
+        self.assertEqual(scanner.get("created"), 0, out)
+        self.assertEqual(scanner.get("reason"), "disabled", out)
+
+    def test_scheduler_run_scanner_dry_run_reports_findings_without_creating_tasks(self):
+        module = load_milestone_module()
+        src = self.root / "scripts" / "demo.py"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("def f():\n    pass  # TODO: add retry\n", encoding="utf-8")
+        (self.root / "state" / "pytest.latest.log").write_text(
+            "FAILED tests/test_demo.py::test_abc - AssertionError: expected x\n",
+            encoding="utf-8",
+        )
+        self._write_json_file(
+            "state/feishu.messages.json",
+            [{"text": "这个需求有变更，接口要改成批量版本"}],
+        )
+        self._write_json_file(
+            "config/scanner-policy.json",
+            {
+                "enabled": True,
+                "dryRun": True,
+                "todoComments": {"enabled": True, "paths": ["scripts"]},
+                "pytestFailures": {"enabled": True, "logPath": "state/pytest.latest.log"},
+                "feishuMessages": {"enabled": True, "messagesPath": "state/feishu.messages.json"},
+                "arxivRss": {"enabled": False},
+            },
+        )
+
+        with mock.patch.object(
+            module,
+            "autopilot_once",
+            return_value={"ok": True, "skipped": True, "reason": "scanner_test", "stepsRun": 0},
+        ):
+            out = module.scheduler_run_once(self._scheduler_args())
+
+        scanner = out.get("scanner") or {}
+        self.assertTrue(out.get("ok"), out)
+        self.assertGreaterEqual(int(scanner.get("findings") or 0), 3, out)
+        self.assertEqual(scanner.get("created"), 0, out)
+        self.assertTrue(scanner.get("dryRun"), out)
+        snapshot = self._read_task_snapshot()
+        self.assertEqual(len((snapshot.get("tasks") or {})), 0, snapshot)
+
+    def test_scheduler_run_scanner_creates_tasks_for_multiple_sources(self):
+        module = load_milestone_module()
+        src = self.root / "scripts" / "demo.py"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("def f():\n    pass  # TODO: add retry\n", encoding="utf-8")
+        (self.root / "state" / "pytest.latest.log").write_text(
+            "FAILED tests/test_demo.py::test_abc - AssertionError: expected x\n",
+            encoding="utf-8",
+        )
+        self._write_json_file(
+            "state/feishu.messages.json",
+            [{"text": "这个需求有变更，接口要改成批量版本"}],
+        )
+        self._write_json_file(
+            "config/scanner-policy.json",
+            {
+                "enabled": True,
+                "dryRun": False,
+                "todoComments": {"enabled": True, "paths": ["scripts"]},
+                "pytestFailures": {"enabled": True, "logPath": "state/pytest.latest.log"},
+                "feishuMessages": {"enabled": True, "messagesPath": "state/feishu.messages.json"},
+                "arxivRss": {"enabled": True, "feedUrl": "https://example.invalid/rss", "timeoutSec": 0.1},
+            },
+        )
+
+        with mock.patch.object(
+            module.proactive_scanner.ProactiveScanner,
+            "scan_arxiv_rss",
+            return_value={
+                "ok": True,
+                "findings": [{"source": "arxiv_rss", "title": "Fresh paper", "link": "https://arxiv.org/abs/1234.5678"}],
+                "degraded": False,
+                "reason": "",
+            },
+        ):
+            with mock.patch.object(
+                module,
+                "autopilot_once",
+                return_value={"ok": True, "skipped": True, "reason": "scanner_test", "stepsRun": 0},
+            ):
+                out = module.scheduler_run_once(self._scheduler_args())
+
+        self.assertTrue(out.get("ok"), out)
+        scanner = out.get("scanner") or {}
+        self.assertGreaterEqual(int(scanner.get("created") or 0), 4, out)
+        snapshot = self._read_task_snapshot()
+        tasks = list((snapshot.get("tasks") or {}).values())
+        self.assertEqual(len(tasks), 4, snapshot)
+        assignees = {str(task.get("assigneeHint") or "") for task in tasks}
+        self.assertIn("debugger", assignees, tasks)
+        self.assertIn("coder", assignees, tasks)
+        self.assertIn("invest-analyst", assignees, tasks)
+        self.assertIn("paper-ingestor", assignees, tasks)
+        metrics_path = self.root / "state" / "ops.metrics.jsonl"
+        metric_rows = [json.loads(line) for line in metrics_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        scanner_ticks = [row for row in metric_rows if row.get("event") == "scheduler_scanner"]
+        created_rows = [row for row in metric_rows if row.get("event") == "scanner_task_created"]
+        self.assertEqual(len(scanner_ticks), 1, metric_rows)
+        self.assertGreaterEqual(int(scanner_ticks[0].get("created") or 0), 4, scanner_ticks)
+        self.assertEqual(len(created_rows), 4, metric_rows)
+
+    def test_scheduler_run_scanner_dedupes_existing_findings_across_ticks(self):
+        module = load_milestone_module()
+        src = self.root / "scripts" / "demo.py"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("def f():\n    pass  # TODO: add retry\n", encoding="utf-8")
+        (self.root / "state" / "pytest.latest.log").write_text(
+            "FAILED tests/test_demo.py::test_abc - AssertionError: expected x\n",
+            encoding="utf-8",
+        )
+        self._write_json_file(
+            "state/feishu.messages.json",
+            [{"text": "这个需求有变更，接口要改成批量版本"}],
+        )
+        self._write_json_file(
+            "config/scanner-policy.json",
+            {
+                "enabled": True,
+                "dryRun": False,
+                "todoComments": {"enabled": True, "paths": ["scripts"]},
+                "pytestFailures": {"enabled": True, "logPath": "state/pytest.latest.log"},
+                "feishuMessages": {"enabled": True, "messagesPath": "state/feishu.messages.json"},
+                "arxivRss": {"enabled": False},
+            },
+        )
+
+        with mock.patch.object(
+            module,
+            "autopilot_once",
+            return_value={"ok": True, "skipped": True, "reason": "scanner_test", "stepsRun": 0},
+        ):
+            first = module.scheduler_run_once(self._scheduler_args())
+            second = module.scheduler_run_once(self._scheduler_args())
+
+        self.assertTrue(first.get("ok"), first)
+        self.assertEqual(int((first.get("scanner") or {}).get("created") or 0), 3, first)
+        self.assertTrue(second.get("ok"), second)
+        self.assertEqual(int((second.get("scanner") or {}).get("created") or 0), 0, second)
+        self.assertGreaterEqual(int((second.get("scanner") or {}).get("skipped") or 0), 3, second)
+        snapshot = self._read_task_snapshot()
+        self.assertEqual(len((snapshot.get("tasks") or {})), 3, snapshot)
+        self.assertTrue((self.root / "state" / "scanner.registry.json").exists(), snapshot)
+
+    def test_scheduler_run_scanner_exception_does_not_break_main_flow(self):
+        module = load_milestone_module()
+        self._write_json_file(
+            "config/scanner-policy.json",
+            {
+                "enabled": True,
+                "dryRun": False,
+                "todoComments": {"enabled": True, "paths": ["scripts"]},
+                "pytestFailures": {"enabled": False},
+                "feishuMessages": {"enabled": False},
+                "arxivRss": {"enabled": False},
+            },
+        )
+
+        def scanner_boom(*_args, **_kwargs):
+            raise RuntimeError("scanner exploded")
+
+        with mock.patch.object(module, "run_proactive_scanner_cycle", side_effect=scanner_boom):
+            with mock.patch.object(
+                module,
+                "autopilot_once",
+                return_value={"ok": True, "skipped": True, "reason": "scanner_test", "stepsRun": 0},
+            ):
+                out = module.scheduler_run_once(self._scheduler_args())
+
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(out.get("intent"), "scheduler_run", out)
+        scanner = out.get("scanner") or {}
+        self.assertTrue(scanner.get("degraded"), out)
+        self.assertIn("scanner exploded", str(scanner.get("reason") or ""), out)
+        self.assertEqual((out.get("run") or {}).get("reason"), "scanner_test", out)
+
     def test_feishu_router_scheduler_control_commands(self):
         enabled = run_json([
             "python3",
@@ -4792,6 +5119,331 @@ class RuntimeTests(unittest.TestCase):
         active_row = ((active_state.get("sessions") or {}).get("T-WT1")) or {}
         self.assertEqual(active_row.get("worktreePath"), worktree_path, active_state)
         self.assertEqual(active_row.get("status"), "done", active_state)
+
+    def test_dispatch_spawn_done_triggers_worktree_cleanup(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-WTC2: done cleanup",
+        ])
+
+        module = load_milestone_module()
+        real_run_dispatch_spawn = module.run_dispatch_spawn
+        real_ensure_task_worktree = module.worktree_manager.ensure_task_worktree
+        real_cleanup_task_worktree = module.worktree_manager.cleanup_task_worktree
+        cleanup_calls = []
+        worktree_path = (self.root / "task-worktrees" / "task-T-WTC2").as_posix()
+
+        def fake_ensure_task_worktree(_root, task_id, base_ref="HEAD", **_kwargs):
+            self.assertEqual(task_id, "T-WTC2")
+            self.assertEqual(base_ref, "HEAD")
+            return {
+                "ok": True,
+                "created": True,
+                "skipped": False,
+                "reason": "created",
+                "path": worktree_path,
+                "branch": "task/T-WTC2",
+                "policy": {
+                    "enabled": True,
+                    "cleanupOnDone": True,
+                    "rootDir": (self.root / "task-worktrees").as_posix(),
+                    "branchPrefix": "task",
+                },
+            }
+
+        def fake_cleanup_task_worktree(_root, task_id, force=False, policy_override=None, **_kwargs):
+            cleanup_calls.append(
+                {
+                    "taskId": task_id,
+                    "force": force,
+                    "policy": dict(policy_override or {}),
+                }
+            )
+            return {
+                "ok": True,
+                "removed": True,
+                "skipped": False,
+                "reason": "removed",
+                "path": worktree_path,
+                "branch": "task/T-WTC2",
+                "policy": dict(policy_override or {}),
+            }
+
+        def fake_run_dispatch_spawn(_args, _task_prompt):
+            return {
+                "ok": True,
+                "skipped": False,
+                "stdout": '{"status":"done","message":"done with test log"}',
+                "stderr": "",
+                "command": ["python3", "bridge.py"],
+                "executor": "claude_cli",
+                "plannedCommand": ["python3", "bridge.py", "--workspace", worktree_path],
+                "spawnResult": {"status": "done", "message": "done with test log"},
+                "decision": "done",
+                "detail": "done with test log",
+                "reasonCode": "done_with_evidence",
+                "acceptanceReasonCode": "accepted",
+                "normalizedReport": {
+                    "status": "done",
+                    "summary": "done with test log",
+                    "evidence": ["test log output"],
+                },
+                "metrics": {"elapsedMs": 7, "tokenUsage": 11},
+            }
+
+        try:
+            module.worktree_manager.ensure_task_worktree = fake_ensure_task_worktree
+            module.worktree_manager.cleanup_task_worktree = fake_cleanup_task_worktree
+            module.run_dispatch_spawn = fake_run_dispatch_spawn
+            args = argparse.Namespace(
+                root=self.root.as_posix(),
+                task_id="T-WTC2",
+                agent="coder",
+                task="done cleanup",
+                actor="orchestrator",
+                session_id="",
+                group_id="oc_test",
+                account_id="orchestrator",
+                mode="dry-run",
+                timeout_sec=0,
+                spawn=True,
+                spawn_cmd="",
+                spawn_output="",
+                visibility_mode="handoff_visible",
+                selection={},
+            )
+            out = module.dispatch_once(args)
+        finally:
+            module.run_dispatch_spawn = real_run_dispatch_spawn
+            module.worktree_manager.ensure_task_worktree = real_ensure_task_worktree
+            module.worktree_manager.cleanup_task_worktree = real_cleanup_task_worktree
+
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(len(cleanup_calls), 1, cleanup_calls)
+        self.assertEqual(cleanup_calls[0]["taskId"], "T-WTC2", cleanup_calls)
+        self.assertFalse(cleanup_calls[0]["force"], cleanup_calls)
+        cleanup = ((out.get("worktree") or {}).get("cleanup") or {})
+        self.assertEqual(cleanup.get("reason"), "removed", out)
+        spawn_cleanup = ((((out.get("spawn") or {}).get("worktree") or {}).get("cleanup")) or {})
+        self.assertEqual(spawn_cleanup.get("reason"), "removed", out)
+
+    def test_dispatch_spawn_blocked_triggers_worktree_cleanup(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-WTC3: blocked cleanup",
+        ])
+
+        module = load_milestone_module()
+        real_run_dispatch_spawn = module.run_dispatch_spawn
+        real_ensure_task_worktree = module.worktree_manager.ensure_task_worktree
+        real_cleanup_task_worktree = module.worktree_manager.cleanup_task_worktree
+        cleanup_calls = []
+        worktree_path = (self.root / "task-worktrees" / "task-T-WTC3").as_posix()
+
+        def fake_ensure_task_worktree(_root, task_id, base_ref="HEAD", **_kwargs):
+            self.assertEqual(task_id, "T-WTC3")
+            self.assertEqual(base_ref, "HEAD")
+            return {
+                "ok": True,
+                "created": True,
+                "skipped": False,
+                "reason": "created",
+                "path": worktree_path,
+                "branch": "task/T-WTC3",
+                "policy": {
+                    "enabled": True,
+                    "cleanupOnDone": True,
+                    "rootDir": (self.root / "task-worktrees").as_posix(),
+                    "branchPrefix": "task",
+                },
+            }
+
+        def fake_cleanup_task_worktree(_root, task_id, force=False, policy_override=None, **_kwargs):
+            cleanup_calls.append(
+                {
+                    "taskId": task_id,
+                    "force": force,
+                    "policy": dict(policy_override or {}),
+                }
+            )
+            return {
+                "ok": True,
+                "removed": True,
+                "skipped": False,
+                "reason": "removed",
+                "path": worktree_path,
+                "branch": "task/T-WTC3",
+                "policy": dict(policy_override or {}),
+            }
+
+        def fake_run_dispatch_spawn(_args, _task_prompt):
+            return {
+                "ok": True,
+                "skipped": False,
+                "stdout": '{"status":"blocked","message":"waiting upstream"}',
+                "stderr": "",
+                "command": ["python3", "bridge.py"],
+                "executor": "claude_cli",
+                "plannedCommand": ["python3", "bridge.py", "--workspace", worktree_path],
+                "spawnResult": {"status": "blocked", "message": "waiting upstream"},
+                "decision": "blocked",
+                "detail": "waiting upstream",
+                "reasonCode": "external_dependency",
+                "metrics": {"elapsedMs": 5, "tokenUsage": 3},
+            }
+
+        try:
+            module.worktree_manager.ensure_task_worktree = fake_ensure_task_worktree
+            module.worktree_manager.cleanup_task_worktree = fake_cleanup_task_worktree
+            module.run_dispatch_spawn = fake_run_dispatch_spawn
+            args = argparse.Namespace(
+                root=self.root.as_posix(),
+                task_id="T-WTC3",
+                agent="coder",
+                task="blocked cleanup",
+                actor="orchestrator",
+                session_id="",
+                group_id="oc_test",
+                account_id="orchestrator",
+                mode="dry-run",
+                timeout_sec=0,
+                spawn=True,
+                spawn_cmd="",
+                spawn_output="",
+                visibility_mode="handoff_visible",
+                selection={},
+            )
+            out = module.dispatch_once(args)
+        finally:
+            module.run_dispatch_spawn = real_run_dispatch_spawn
+            module.worktree_manager.ensure_task_worktree = real_ensure_task_worktree
+            module.worktree_manager.cleanup_task_worktree = real_cleanup_task_worktree
+
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual((out.get("spawn") or {}).get("decision"), "blocked", out)
+        self.assertEqual(len(cleanup_calls), 1, cleanup_calls)
+        cleanup = ((out.get("worktree") or {}).get("cleanup") or {})
+        self.assertEqual(cleanup.get("reason"), "removed", out)
+
+    def test_dispatch_spawn_cleanup_failure_is_metadata_only(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-WTC4: cleanup failure",
+        ])
+
+        module = load_milestone_module()
+        real_run_dispatch_spawn = module.run_dispatch_spawn
+        real_ensure_task_worktree = module.worktree_manager.ensure_task_worktree
+        real_cleanup_task_worktree = module.worktree_manager.cleanup_task_worktree
+        worktree_path = (self.root / "task-worktrees" / "task-T-WTC4").as_posix()
+
+        def fake_ensure_task_worktree(_root, task_id, base_ref="HEAD", **_kwargs):
+            self.assertEqual(task_id, "T-WTC4")
+            self.assertEqual(base_ref, "HEAD")
+            return {
+                "ok": True,
+                "created": True,
+                "skipped": False,
+                "reason": "created",
+                "path": worktree_path,
+                "branch": "task/T-WTC4",
+                "policy": {
+                    "enabled": True,
+                    "cleanupOnDone": True,
+                    "rootDir": (self.root / "task-worktrees").as_posix(),
+                    "branchPrefix": "task",
+                },
+            }
+
+        def fake_cleanup_task_worktree(_root, _task_id, force=False, policy_override=None, **_kwargs):
+            self.assertFalse(force)
+            self.assertTrue((policy_override or {}).get("cleanupOnDone"))
+            return {
+                "ok": False,
+                "removed": False,
+                "skipped": False,
+                "reason": "remove_failed",
+                "error": "worktree busy",
+                "path": worktree_path,
+                "branch": "task/T-WTC4",
+                "policy": dict(policy_override or {}),
+            }
+
+        def fake_run_dispatch_spawn(_args, _task_prompt):
+            return {
+                "ok": True,
+                "skipped": False,
+                "stdout": '{"status":"done","message":"done with test log"}',
+                "stderr": "",
+                "command": ["python3", "bridge.py"],
+                "executor": "claude_cli",
+                "plannedCommand": ["python3", "bridge.py", "--workspace", worktree_path],
+                "spawnResult": {"status": "done", "message": "done with test log"},
+                "decision": "done",
+                "detail": "done with test log",
+                "reasonCode": "done_with_evidence",
+                "acceptanceReasonCode": "accepted",
+                "normalizedReport": {
+                    "status": "done",
+                    "summary": "done with test log",
+                    "evidence": ["test log output"],
+                },
+                "metrics": {"elapsedMs": 7, "tokenUsage": 11},
+            }
+
+        try:
+            module.worktree_manager.ensure_task_worktree = fake_ensure_task_worktree
+            module.worktree_manager.cleanup_task_worktree = fake_cleanup_task_worktree
+            module.run_dispatch_spawn = fake_run_dispatch_spawn
+            args = argparse.Namespace(
+                root=self.root.as_posix(),
+                task_id="T-WTC4",
+                agent="coder",
+                task="cleanup failure",
+                actor="orchestrator",
+                session_id="",
+                group_id="oc_test",
+                account_id="orchestrator",
+                mode="dry-run",
+                timeout_sec=0,
+                spawn=True,
+                spawn_cmd="",
+                spawn_output="",
+                visibility_mode="handoff_visible",
+                selection={},
+            )
+            out = module.dispatch_once(args)
+        finally:
+            module.run_dispatch_spawn = real_run_dispatch_spawn
+            module.worktree_manager.ensure_task_worktree = real_ensure_task_worktree
+            module.worktree_manager.cleanup_task_worktree = real_cleanup_task_worktree
+
+        self.assertTrue(out.get("ok"), out)
+        cleanup = ((out.get("worktree") or {}).get("cleanup") or {})
+        self.assertFalse(cleanup.get("ok"), out)
+        self.assertEqual(cleanup.get("reason"), "remove_failed", out)
+        self.assertEqual(cleanup.get("error"), "worktree busy", out)
 
 
 if __name__ == "__main__":

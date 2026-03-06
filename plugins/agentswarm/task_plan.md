@@ -25,3 +25,42 @@ Complete the remaining Milestone C work for multi-agent-orchestrator with minima
 ## Errors Encountered
 - `edit` tool could not modify files outside agent workspace path; switched to direct file patching via shell/python edits.
 - `dry-run-mvp` failed after first dispatch-loop implementation because dry-run without spawn output auto-blocked task; fixed by treating skipped spawn as manual wait-for-report (no auto close).
+
+## 2026-03-06 - Elvis Roadmap Closure
+### P0-1 Subtask - Worktree lifecycle partial closure
+- Scope: wire `cleanup_task_worktree` into dispatch spawn auto-close for `done` / `blocked` decisions only.
+- Constraints: cleanup is policy-gated, failures must not flip dispatch success, and result must be surfaced in return metadata.
+- Current status: partial — dispatch spawn `done` / `blocked` now runs policy-gated cleanup and default worktree policy is enabled, but 5+ agents concurrency smoke and bootstrap/dependency isolation validation are still pending.
+- Verification target: `python3 -m unittest tests/test_worktree_manager.py tests/test_orchestrator_runtime.py -q`.
+
+### P0-2 Subtask - Active session watchdog partial closure
+- Scope: close stale pid + heartbeat timeout handling through the active-session watchdog path.
+- Constraints: watchdog checks must stay non-fatal to scheduler tick, and current heuristics still depend on scheduler cadence plus heartbeat quality.
+- Current status: partial but key loop landed — stale pid detection, heartbeat timeout, and scheduler-tick integration are in place; remaining work is robustness verification and tuning.
+- Verification basis: main-session retest confirmed the current watchdog loop; this doc-sync pass does not add a new standalone command log.
+
+
+### Goal
+Close the gaps from `docs/plans/2026-03-05-elvis-architecture-integration-plan.md` in roadmap order, starting with P0 production-hardening items.
+
+### Phases
+| Phase | Status | Notes |
+|---|---|---|
+| 1. Audit roadmap completion | complete | Verified 0 fully complete, 4 partially complete, 5 not started |
+| 2. Write executable checklist | complete | Added `docs/plans/2026-03-06-elvis-architecture-progress-checklist.md` |
+| 3. Close P0-1 worktree lifecycle | in_progress | Cleanup-on-done/blocked + enabled default policy landed; still missing 5+ agents / bootstrap validation |
+| 4. Close P0-2 active session watchdog | in_progress | Stale pid + heartbeat timeout are wired into scheduler tick; still needs robustness verification |
+| 5. Integrate P1 scanner/reviewer | in_progress | Scheduler scanner + acceptance reviewer landed; still missing feed hardening and full-diff review |
+| 6. Commit + push | pending | Out of scope for this doc-sync pass; only after remaining rollout validation and explicit approval |
+
+### P1-1 Subtask - proactive scanner runtime glue
+- Scope: wire `proactive_scanner` into `scheduler_run_once()` with policy load, per-tick dedupe, task-board creation, and audit summary.
+- Constraints: keep glue thin inside `scripts/lib/milestones.py`, respect `dryRun`, avoid duplicate/noisy task creation, and keep scanner failures non-fatal to scheduler.
+- Current status: partial — scheduler tick glue, findings → task-board creation, dedupe, and advisory events are landed; upstream `pytest` / `feishu` file feeds and priority-closure quality still need hardening.
+- Verification target: `python3 -m unittest tests/test_proactive_scanner.py tests/test_orchestrator_runtime.py -q`.
+
+### P1-2 Subtask - multi reviewer done-gate integration
+- Scope: wire `multi-reviewer-policy.json` into `evaluate_acceptance()` and dispatch done classification with auditable reviewer summaries.
+- Constraints: keep default policy conservative, preserve existing acceptance gates, and degrade gracefully on reviewer runner failures.
+- Current status: partial — acceptance done-gate integration, `disabled` / `dryRun` / `enabled`, and fake-output tests are landed; reviewer input is still acceptance payload summary rather than full code diff.
+- Verification target: `python3 -m unittest tests/test_multi_reviewer.py tests/test_quality_gate_v2.py -q`.

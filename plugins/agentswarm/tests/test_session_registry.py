@@ -1,3 +1,4 @@
+import json
 import importlib.util
 import tempfile
 import threading
@@ -156,6 +157,99 @@ class SessionRegistryTests(unittest.TestCase):
         loaded = self.mod.load_active_sessions(self.root.as_posix())
         self.assertEqual(loaded.get("sessions"), {}, loaded)
         self.assertEqual(loaded.get("updatedAt"), "", loaded)
+
+    def test_load_active_session_policy_defaults_and_override(self):
+        default_policy = self.mod.load_active_session_policy(self.root.as_posix())
+        self.assertEqual(default_policy.get("heartbeatTimeoutSec"), 300, default_policy)
+        self.assertEqual(default_policy.get("stalePidStatus"), "blocked", default_policy)
+        self.assertEqual(default_policy.get("heartbeatTimeoutStatus"), "blocked", default_policy)
+
+        policy_path = self.root / "config" / "active-session-policy.json"
+        policy_path.parent.mkdir(parents=True, exist_ok=True)
+        policy_path.write_text(
+            json.dumps(
+                {
+                    "heartbeatTimeoutSec": 45,
+                    "stalePidStatus": "failed",
+                    "heartbeatTimeoutStatus": "failed",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        overridden = self.mod.load_active_session_policy(self.root.as_posix())
+        self.assertEqual(overridden.get("heartbeatTimeoutSec"), 45, overridden)
+        self.assertEqual(overridden.get("stalePidStatus"), "failed", overridden)
+        self.assertEqual(overridden.get("heartbeatTimeoutStatus"), "failed", overridden)
+
+    def test_watchdog_reclaims_stale_pid_running_session(self):
+        self.mod.upsert_active_session(
+            self.root.as_posix(),
+            "T-ACT-STALE",
+            worktree_path="/tmp/task-T-ACT-STALE",
+            pid=321321,
+            tmux_session="agent-T-ACT-STALE",
+            status="running",
+        )
+
+        with mock.patch.object(self.mod, "_pid_exists", return_value=False):
+            result = self.mod.run_active_session_watchdog(self.root.as_posix(), now_ts=1_700_000_123)
+
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual(result.get("updated"), 1, result)
+        self.assertEqual(result.get("stalePid"), 1, result)
+        self.assertEqual(result.get("heartbeatTimeout"), 0, result)
+        events = result.get("events") or []
+        self.assertEqual(len(events), 1, result)
+        self.assertEqual(events[0].get("taskId"), "T-ACT-STALE", result)
+        self.assertEqual(events[0].get("reason"), "stale_pid", result)
+        self.assertEqual(events[0].get("status"), "blocked", result)
+
+        loaded = self.mod.load_active_sessions(self.root.as_posix())
+        row = ((loaded.get("sessions") or {}).get("T-ACT-STALE")) or {}
+        self.assertEqual(row.get("status"), "blocked", loaded)
+        self.assertEqual(row.get("stopReason"), "stale_pid", loaded)
+        self.assertIn("321321", str(row.get("stopDetail") or ""), loaded)
+        self.assertTrue(str(row.get("endedAt") or "").strip(), loaded)
+        self.assertTrue(str(row.get("watchdogAt") or "").strip(), loaded)
+
+    def test_watchdog_reclaims_heartbeat_timeout_running_session(self):
+        self.mod.upsert_active_session(
+            self.root.as_posix(),
+            "T-ACT-TIMEOUT",
+            worktree_path="/tmp/task-T-ACT-TIMEOUT",
+            pid=0,
+            tmux_session="",
+            status="running",
+        )
+        state = self.mod.load_active_sessions(self.root.as_posix())
+        sessions = state.get("sessions") or {}
+        row = dict((sessions.get("T-ACT-TIMEOUT") or {}))
+        row["lastHeartbeat"] = self.mod.ts_to_iso(1_700_000_000)
+        sessions["T-ACT-TIMEOUT"] = row
+        self.mod.save_active_sessions(self.root.as_posix(), state)
+
+        result = self.mod.run_active_session_watchdog(self.root.as_posix(), now_ts=1_700_000_301)
+
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual(result.get("updated"), 1, result)
+        self.assertEqual(result.get("stalePid"), 0, result)
+        self.assertEqual(result.get("heartbeatTimeout"), 1, result)
+        events = result.get("events") or []
+        self.assertEqual(len(events), 1, result)
+        self.assertEqual(events[0].get("taskId"), "T-ACT-TIMEOUT", result)
+        self.assertEqual(events[0].get("reason"), "heartbeat_timeout", result)
+        self.assertEqual(events[0].get("status"), "blocked", result)
+        self.assertEqual(events[0].get("heartbeatAgeSec"), 301, result)
+
+        loaded = self.mod.load_active_sessions(self.root.as_posix())
+        final_row = ((loaded.get("sessions") or {}).get("T-ACT-TIMEOUT")) or {}
+        self.assertEqual(final_row.get("status"), "blocked", loaded)
+        self.assertEqual(final_row.get("stopReason"), "heartbeat_timeout", loaded)
+        self.assertIn("300", str(final_row.get("stopDetail") or ""), loaded)
 
 
 if __name__ == "__main__":

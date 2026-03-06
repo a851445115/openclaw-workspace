@@ -22,3 +22,39 @@
 - Verification passed:
   - `python3 -m unittest discover -s tests -v`
   - `./scripts/dry-run-mvp`
+
+## 2026-03-06
+- Audited `docs/plans/2026-03-05-elvis-architecture-integration-plan.md` against live code on branch `codex/three-enhancements-rollout`.
+- Wrote executable completion checklist to `docs/plans/2026-03-06-elvis-architecture-progress-checklist.md`.
+- Confirmed roadmap status remains: 0 fully complete, 4 partial, 5 not started.
+- Synced rollout docs to the current main-session retest state without upgrading any item to fully complete.
+- Scoped P0-1 closure to dispatch spawn auto-close path; planned metadata-only cleanup reporting so cleanup failure cannot break successful done/blocked returns.
+- Advanced P0-1 worktree lifecycle to partial closure:
+  - dispatch spawn `done` / `blocked` now attempts policy-gated cleanup,
+  - cleanup metadata is recorded without flipping successful dispatch outcomes,
+  - default worktree policy is enabled,
+  - remaining gap is 5+ agents parallel smoke plus bootstrap/dependency-isolation verification.
+- Verification passed: `python3 -m unittest tests/test_worktree_manager.py tests/test_orchestrator_runtime.py -q` (99 tests, OK).
+- Advanced P0-2 active session watchdog to partial closure:
+  - stale pid detection + heartbeat timeout are landed,
+  - watchdog is invoked from scheduler tick,
+  - remaining gap is robustness validation against scheduler cadence / heartbeat quality.
+- Advanced P1-1 proactive scanner to partial closure in `scripts/lib/milestones.py`:
+  - added scanner policy loading from `config/scanner-policy.json`,
+  - executed todo/pytest/feishu/arxiv scanners during scheduler tick,
+  - converted findings into task-board tasks with stable short titles and owner mapping,
+  - recorded advisory-only progress pushes plus `scheduler_scanner` / `scanner_task_created` ops events,
+  - persisted lightweight dedupe state in `state/scanner.registry.json`,
+  - kept scanner failures non-fatal to scheduler,
+  - remaining gap is upstream `pytest` / `feishu` feed strength and priority-closure quality.
+- Extended `tests/test_orchestrator_runtime.py` with scheduler scanner coverage: disabled skip, dry-run no-create, multi-source task creation, cross-tick dedupe, exception isolation, ops-event audit.
+- Verification passed: `python3 -m unittest tests/test_proactive_scanner.py tests/test_orchestrator_runtime.py -q` (105 tests, OK).
+- Advanced P1-2 multi reviewer to partial closure in `scripts/lib/milestones.py`:
+  - added multi-reviewer policy loading from `config/multi-reviewer-policy.json`,
+  - integrated reviewer gate after existing acceptance evidence + verify-command checks,
+  - supports `disabled` / `dryRun` / `enabled` and `AGENTSWARM_MULTI_REVIEW_FAKE_OUTPUT` for deterministic subprocess tests,
+  - surfaced reviewer audit summary under `acceptance.multiReviewer` and `spawn.acceptance`,
+  - blocked `done` with细分 `acceptanceReasonCode` for score/degraded failures,
+  - current limitation is reviewer input = acceptance payload summary, not full code diff.
+- Extended `tests/test_quality_gate_v2.py` with disabled / dry-run / all-pass / threshold-block / degraded-block coverage.
+- Verification passed: `python3 -m unittest tests/test_multi_reviewer.py tests/test_quality_gate_v2.py -q` (23 tests, OK).

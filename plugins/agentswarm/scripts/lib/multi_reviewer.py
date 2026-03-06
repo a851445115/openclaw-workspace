@@ -230,6 +230,36 @@ def decide_review_pass(
     return {"pass": False, "decision": "blocked_threshold", "reason": "score_below_threshold", "threshold": threshold}
 
 
+def _policy_only_review_state(
+    normalized_policy: Dict[str, Any],
+    reason: str,
+    reviewer_ok: bool,
+) -> Dict[str, Any]:
+    breakdown: List[Dict[str, Any]] = []
+    requested = 0
+    for reviewer in normalized_policy.get("reviewers") or []:
+        model = _as_text(reviewer.get("model")).lower()
+        enabled = bool(reviewer.get("enabled"))
+        weight = _safe_float(reviewer.get("weight"), 0.0) if enabled else 0.0
+        if enabled:
+            requested += 1
+        breakdown.append(
+            {
+                "model": model,
+                "enabled": enabled,
+                "weight": weight,
+                "score": None,
+                "ok": True if not enabled else bool(reviewer_ok),
+                "reason": "reviewer_disabled" if not enabled else str(reason or ""),
+            }
+        )
+    return {
+        "breakdown": breakdown,
+        "requestedReviewers": requested,
+        "successfulReviewers": 0,
+    }
+
+
 def run_multi_review(
     changes: Any,
     policy: Any = None,
@@ -245,9 +275,13 @@ def run_multi_review(
         "degraded": False,
         "reason": "",
         "policy": normalized_policy,
+        "requestedReviewers": 0,
+        "successfulReviewers": 0,
+        "executed": False,
     }
 
     if not bool(normalized_policy.get("enabled")):
+        base.update(_policy_only_review_state(normalized_policy, "review_disabled_by_policy", reviewer_ok=True))
         base["degraded"] = True
         base["reason"] = "review_disabled_by_policy"
         base["conclusion"] = {
@@ -258,12 +292,14 @@ def run_multi_review(
         return base
 
     if bool(normalized_policy.get("dryRun")):
+        base.update(_policy_only_review_state(normalized_policy, "review_dry_run", reviewer_ok=True))
         base["degraded"] = True
         base["reason"] = "review_dry_run"
         base["conclusion"] = {"pass": True, "decision": "skipped_dry_run", "reason": "review_dry_run"}
         return base
 
     if runner is None:
+        base.update(_policy_only_review_state(normalized_policy, "runner_unavailable", reviewer_ok=False))
         base["degraded"] = True
         base["reason"] = "runner_unavailable"
         base["conclusion"] = decide_review_pass(0.0, normalized_policy, degraded=True, successful_reviewers=0)
@@ -303,4 +339,7 @@ def run_multi_review(
         "degraded": degraded,
         "reason": reason,
         "policy": normalized_policy,
+        "requestedReviewers": aggregate.get("requestedReviewers"),
+        "successfulReviewers": aggregate.get("successfulReviewers"),
+        "executed": True,
     }
