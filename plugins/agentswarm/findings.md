@@ -21,3 +21,8 @@
 - P1-2 的当前接线点在 `evaluate_acceptance()` 的 verify-commands 之后：这样 reviewer 只给“基础 done 证据已满足”的候选结果做二次判定，不会放大现有误报面。
 - 将 reviewer 摘要挂到 `acceptance.multiReviewer`，并再透传到 `spawn.acceptance`，比直接改动主 `spawn.detail` 语义更稳妥，同时满足审计可见性。
 - `AGENTSWARM_MULTI_REVIEW_FAKE_OUTPUT` 走真实 `dispatch` 子进程即可稳定复现 reviewer 分数/缺席场景，无需 monkeypatch runner。
+- P2-1 intervention 方案选择：采用 `state/interventions.json` 单文件，而不是按任务分文件；原因是这轮更容易做原子写、dry-run 拷贝、脚本测试与统一审计。
+- P2-1 生命周期策略：任务 `done` / `blocked` 时默认保留 intervention，直到显式 `clear`；这样最利于审计，也避免 retry / reopen / continuation 丢失人为纠偏信息。
+- P2-1 prompt 消费语义：不做“一次性消费”，而是在每次构造真实 agent prompt 时递增 `applyCount` 并更新时间，满足后续升级到更复杂消费策略的兼容性。
+- `orchestrator-router` 无需额外专门分支即可支持 intervention：其现有 fallback 会把未知 orchestrator 指令交给 `feishu-router`，而后者现在已识别 `intervene` / `intervention` / `clear intervention`。
+- 为保持审计可读性，本次额外记录 `lastAppliedAt`，从而不需要复用 `updatedAt` 表达“最后一次 prompt 注入”。

@@ -5,8 +5,8 @@
 ## 结论
 
 - 已完成：0 / 9
-- 部分完成：4 / 9
-- 未开始：5 / 9
+- 部分完成：5 / 9
+- 未开始：4 / 9
 
 > 说明：这里按原路线图中的“文件 + 集成 + 验收标准”口径统计；只有模块骨架、测试桩、未接主流程的任务，一律记为“部分完成”。
 
@@ -52,13 +52,15 @@
 - [x] 支持 `disabled` / `dryRun` / `enabled` 与 fake outputs 测试通道
 - [ ] 让 reviewer 评估完整代码 diff，而不是仅评估 acceptance payload 摘要
 
-## 未开始
-
 ### P2-1 实时干预能力
-- [ ] 新增 `scripts/intervene-task`
-- [ ] 选择并实现 tmux 或文件注入方案
-- [ ] 将干预信号接入 worker 运行时
-- [ ] 验证中途纠偏与消息回执
+- [x] 已新增 `scripts/intervene-task`
+- [x] 已选择并实现文件注入方案（state + prompt injection）
+- [x] 已将干预信号接入 worker prompt 运行时
+- [x] 已支持 `intervene` / `intervention` / `clear intervention` 指令与消息回执
+- [ ] 尚未实现 tmux/长会话内的在线中断式干预
+- [ ] 尚未完成真实 worker 执行中的中途纠偏验收
+
+## 未开始
 
 ### P2-2 业务上下文存储
 - [ ] 新增 `scripts/lib/context_store.py`
@@ -90,4 +92,5 @@
 2. 收口 P0-2：active session 存活检测与无输出超时闭环
 3. 接入 P1-1：scanner → task board 自动建任务
 4. 接入 P1-2：multi reviewer → acceptance gate
-5. 再推进 P2 / P3 能力型增强
+5. 推进 P2-1：file-backed intervention → prompt/runtime 闭环
+6. 再推进 P2-2 / P3 能力型增强

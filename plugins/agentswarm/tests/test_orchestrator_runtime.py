@@ -21,6 +21,7 @@ INIT = SCRIPTS / "init-task-board"
 REBUILD = SCRIPTS / "rebuild-snapshot"
 RECOVER = SCRIPTS / "recover-stale-locks"
 INBOUND = SCRIPTS / "feishu-inbound-router"
+INTERVENE = SCRIPTS / "intervene-task"
 
 
 def load_milestone_module():
@@ -145,6 +146,12 @@ class RuntimeTests(unittest.TestCase):
 
     def _read_task_snapshot(self):
         path = self.root / "state" / "tasks.snapshot.json"
+        return json.loads(path.read_text(encoding="utf-8") or "{}")
+
+    def _read_interventions_state(self):
+        path = self.root / "state" / "interventions.json"
+        if not path.exists():
+            return {"tasks": {}, "updatedAt": ""}
         return json.loads(path.read_text(encoding="utf-8") or "{}")
 
     def test_dispatch_spawn_closes_task_done(self):
@@ -1877,6 +1884,249 @@ class RuntimeTests(unittest.TestCase):
             out["workerReport"]["send"]["payload"]["text"],
             out,
         )
+
+    def test_intervene_task_script_set_show_clear(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-040I0: intervention script coverage",
+        ])
+
+        set_out = run_json([
+            "python3",
+            str(INTERVENE),
+            "set",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-040I0",
+            "--message",
+            "Focus on API first.",
+            "--actor",
+            "orchestrator",
+        ])
+        self.assertTrue(set_out.get("ok"), set_out)
+        intervention = set_out.get("intervention") or {}
+        self.assertEqual(intervention.get("taskId"), "T-040I0", set_out)
+        self.assertEqual(intervention.get("message"), "Focus on API first.", set_out)
+        self.assertEqual(intervention.get("actor"), "orchestrator", set_out)
+        self.assertEqual(intervention.get("applyCount"), 0, set_out)
+
+        show_out = run_json([
+            "python3",
+            str(INTERVENE),
+            "show",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-040I0",
+        ])
+        self.assertTrue(show_out.get("ok"), show_out)
+        self.assertTrue(show_out.get("active"), show_out)
+        self.assertEqual((show_out.get("intervention") or {}).get("message"), "Focus on API first.", show_out)
+
+        clear_out = run_json([
+            "python3",
+            str(INTERVENE),
+            "clear",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-040I0",
+            "--actor",
+            "orchestrator",
+        ])
+        self.assertTrue(clear_out.get("ok"), clear_out)
+        self.assertTrue(clear_out.get("cleared"), clear_out)
+
+        empty_out = run_json([
+            "python3",
+            str(INTERVENE),
+            "show",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-040I0",
+        ])
+        self.assertTrue(empty_out.get("ok"), empty_out)
+        self.assertFalse(empty_out.get("active"), empty_out)
+
+    def test_build_agent_prompt_injects_intervention_context(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-040I1: intervention prompt injection",
+        ])
+
+        module = load_milestone_module()
+        module.set_task_intervention(
+            self.root.as_posix(),
+            "T-040I1",
+            "Focus on API first.",
+            actor="orchestrator",
+        )
+        task = module.get_task(self.root.as_posix(), "T-040I1")
+        prompt = module.build_agent_prompt(
+            self.root.as_posix(),
+            task,
+            "coder",
+            "T-040I1: intervention prompt injection",
+        )
+        self.assertIn("INTERVENTION_CONTEXT", prompt)
+        self.assertIn("Focus on API first.", prompt)
+        self.assertIn('"applyCount": 1', prompt)
+
+        state = self._read_interventions_state()
+        entry = ((state.get("tasks") or {}).get("T-040I1") or {})
+        self.assertEqual(entry.get("applyCount"), 1, state)
+
+    def test_build_agent_prompt_omits_intervention_context_when_missing(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-040I2: no intervention prompt compatibility",
+        ])
+
+        module = load_milestone_module()
+        task = module.get_task(self.root.as_posix(), "T-040I2")
+        prompt = module.build_agent_prompt(
+            self.root.as_posix(),
+            task,
+            "coder",
+            "T-040I2: no intervention prompt compatibility",
+        )
+        self.assertNotIn("INTERVENTION_CONTEXT", prompt)
+
+    def test_dispatch_prompt_injects_intervention_and_updates_apply_count(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-040I3: dispatch intervention apply count",
+        ])
+
+        module = load_milestone_module()
+        module.set_task_intervention(
+            self.root.as_posix(),
+            "T-040I3",
+            "Focus on API first.",
+            actor="orchestrator",
+        )
+
+        out = run_json([
+            "python3",
+            str(MILE),
+            "dispatch",
+            "--root",
+            str(self.root),
+            "--task-id",
+            "T-040I3",
+            "--agent",
+            "coder",
+            "--mode",
+            "dry-run",
+            "--spawn",
+            "--spawn-output",
+            '{"status":"done","summary":"已完成并验证","evidence":["logs/t040i3.log","pytest passed"]}',
+        ])
+        self.assertTrue(out.get("ok"), out)
+        self.assertIn("INTERVENTION_CONTEXT", out.get("agentPrompt", ""), out)
+
+        state = self._read_interventions_state()
+        entry = ((state.get("tasks") or {}).get("T-040I3") or {})
+        self.assertEqual(entry.get("applyCount"), 1, state)
+
+    def test_feishu_router_supports_intervention_commands(self):
+        run_json([
+            "python3",
+            str(BOARD),
+            "apply",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@coder create task T-040I4: intervention command routing",
+        ])
+
+        set_out = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@orchestrator intervene T-040I4: Focus on API first.",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(set_out.get("ok"), set_out)
+        self.assertEqual(set_out.get("intent"), "intervene", set_out)
+        self.assertEqual((set_out.get("intervention") or {}).get("message"), "Focus on API first.", set_out)
+        self.assertTrue(((set_out.get("send") or {}).get("payload") or {}).get("text"), set_out)
+
+        show_out = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@orchestrator intervention T-040I4",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(show_out.get("ok"), show_out)
+        self.assertEqual(show_out.get("intent"), "intervention", show_out)
+        self.assertTrue(show_out.get("active"), show_out)
+        self.assertIn("Focus on API first.", ((show_out.get("send") or {}).get("payload") or {}).get("text", ""), show_out)
+
+        clear_out = run_json([
+            "python3",
+            str(MILE),
+            "feishu-router",
+            "--root",
+            str(self.root),
+            "--actor",
+            "orchestrator",
+            "--text",
+            "@orchestrator clear intervention T-040I4",
+            "--mode",
+            "dry-run",
+        ])
+        self.assertTrue(clear_out.get("ok"), clear_out)
+        self.assertEqual(clear_out.get("intent"), "clear_intervention", clear_out)
+        self.assertTrue(clear_out.get("cleared"), clear_out)
+
+        state = self._read_interventions_state()
+        self.assertNotIn("T-040I4", state.get("tasks") or {}, state)
 
     def test_dispatch_prompt_includes_snapshot_history_and_schema(self):
         run_json([

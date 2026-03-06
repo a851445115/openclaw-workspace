@@ -58,3 +58,12 @@
   - current limitation is reviewer input = acceptance payload summary, not full code diff.
 - Extended `tests/test_quality_gate_v2.py` with disabled / dry-run / all-pass / threshold-block / degraded-block coverage.
 - Verification passed: `python3 -m unittest tests/test_multi_reviewer.py tests/test_quality_gate_v2.py -q` (23 tests, OK).
+- Started P2-1 real-time intervention implementation on branch `codex/three-enhancements-rollout`.
+- Confirmed implementation path: standalone `scripts/intervene-task` + `milestones.py` helpers + prompt injection + orchestrator routing, with state stored in `state/interventions.json`.
+- Decided to preserve intervention records on terminal task states and rely on explicit `clear` for cleanup.
+- Landed P2-1 intervention runtime in `scripts/lib/milestones.py` and new `scripts/intervene-task` script.
+- Added file-backed intervention state in `state/interventions.json` with `message` / `actor` / `createdAt` / `updatedAt` / `lastAppliedAt` / `applyCount` fields.
+- `build_agent_prompt()` now injects `INTERVENTION_CONTEXT` when active and increments `applyCount` on each prompt build.
+- `feishu-router` now handles `intervene`, `intervention`, and `clear intervention` with structured dry-run/send acknowledgements.
+- Verified direct CLI smoke: `./scripts/orchestrator-router --root <tmp> --text 'intervene T-ROUTER: Focus on API first.' --milestones dry-run` returned `intent=intervene` with dry-run payload.
+- Verification passed: `python3 -m unittest tests/test_orchestrator_runtime.py -q` (106 tests, OK).

@@ -64,3 +64,8 @@ Close the gaps from `docs/plans/2026-03-05-elvis-architecture-integration-plan.m
 - Constraints: keep default policy conservative, preserve existing acceptance gates, and degrade gracefully on reviewer runner failures.
 - Current status: partial — acceptance done-gate integration, `disabled` / `dryRun` / `enabled`, and fake-output tests are landed; reviewer input is still acceptance payload summary rather than full code diff.
 - Verification target: `python3 -m unittest tests/test_multi_reviewer.py tests/test_quality_gate_v2.py -q`.
+
+### P2-1 Subtask - 实时干预能力
+- Scope: add file-backed task interventions with CLI/script management, prompt injection, orchestrator command routing, and auditable apply-count updates.
+- Constraints: no tmux refactor, keep the current one-shot CLI bridge, prefer a single stable state file, and avoid clearing intervention automatically on terminal task states.
+- Planned verification: `python3 -m unittest tests/test_orchestrator_runtime.py -q`.

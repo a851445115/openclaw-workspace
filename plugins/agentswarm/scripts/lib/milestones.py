@@ -159,6 +159,7 @@ DEFAULT_PROJECT_BOOTSTRAP_TASKS = (
     "启动首个最小可交付任务并回传证据",
 )
 TASK_CONTEXT_STATE_FILE = "task-context-map.json"
+INTERVENTION_STATE_FILE = "interventions.json"
 DEFAULT_CODER_WORKSPACE = os.path.expanduser("~/.openclaw/agents/coder/workspace")
 RUNTIME_POLICY_CONFIG_CANDIDATES = (
     os.path.join("config", "runtime-policy.json"),
@@ -175,6 +176,7 @@ DEFAULT_CONTINUATION_POLICY: Dict[str, Any] = {
     "maxContinuationWallTimeSec": 1800,
 }
 _CONTINUATION_STATE_LOCK = threading.RLock()
+_INTERVENTION_STATE_LOCK = threading.RLock()
 STRICT_FILE_LOCK_ENV = "STRICT_FILE_LOCK"
 CONTINUATION_LOCK_TIMEOUT_ENV = "CONTINUATION_STATE_LOCK_TIMEOUT_SEC"
 CONTINUATION_LOCK_RETRY_ENV = "CONTINUATION_STATE_LOCK_RETRY_SEC"
@@ -1670,6 +1672,7 @@ def build_agent_prompt(
     hints = normalize_knowledge_hints(knowledge_hints)
     retry_pack = retry_context if isinstance(retry_context, dict) else {}
     collab_summary = collab_thread_summary if isinstance(collab_thread_summary, dict) else {}
+    intervention = get_task_intervention(root, task_id, mark_applied=True)
 
     task_context = {
         "taskId": task_id,
@@ -1705,6 +1708,13 @@ def build_agent_prompt(
             [
                 "RETRY_CONTEXT_PACK:",
                 json.dumps(retry_pack, ensure_ascii=False, indent=2),
+            ]
+        )
+    if intervention:
+        lines.extend(
+            [
+                "INTERVENTION_CONTEXT:",
+                json.dumps(intervention, ensure_ascii=False, indent=2),
             ]
         )
     if hints:
@@ -4197,6 +4207,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         spawn["worktreeCleanup"] = worktree_cleanup
     if isinstance(retry_context_pack, dict) and retry_context_pack:
         spawn["retryContext"] = retry_context_pack
+    dispatch_intervention = get_task_intervention(args.root, args.task_id)
     if args.spawn:
         expert_group_out = evaluate_dispatch_expert_group(
             args.root,
@@ -4238,6 +4249,7 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
         "autoClose": auto_close,
         "reportTemplate": report_template,
         "agentPrompt": agent_prompt,
+        "intervention": dispatch_intervention,
         "objectiveSource": objective_source,
         "knowledge": knowledge_meta,
         "collaboration": collab_summary_state,
@@ -5814,6 +5826,139 @@ def lookup_task_dispatch_prompt(root: str, task_id: str) -> str:
     if not isinstance(entry, dict):
         return ""
     return str(entry.get("dispatchPrompt") or "").strip()
+
+
+def intervention_state_path(root: str) -> str:
+    return os.path.join(root, "state", INTERVENTION_STATE_FILE)
+
+
+def _normalize_intervention_entry(task_id: str, raw: Any) -> Dict[str, Any]:
+    if not task_id or not isinstance(raw, dict):
+        return {}
+    message = clip(str(raw.get("message") or "").strip(), 1000)
+    if not message:
+        return {}
+    actor = clip(str(raw.get("actor") or "orchestrator").strip(), 80) or "orchestrator"
+    created_at = str(raw.get("createdAt") or "").strip()
+    updated_at = str(raw.get("updatedAt") or created_at).strip()
+    last_applied_at = str(raw.get("lastAppliedAt") or "").strip()
+    if not created_at:
+        created_at = updated_at or now_iso()
+    if not updated_at:
+        updated_at = created_at
+    return {
+        "taskId": str(task_id),
+        "message": message,
+        "actor": actor,
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+        "lastAppliedAt": last_applied_at,
+        "applyCount": nonneg_int(raw.get("applyCount"), 0),
+    }
+
+
+def load_intervention_state(root: str) -> Dict[str, Any]:
+    default_state: Dict[str, Any] = {"tasks": {}, "updatedAt": ""}
+    path = intervention_state_path(root)
+    try:
+        state = load_json_file(path, default_state)
+    except Exception:
+        LOGGER.warning("failed to load intervention state: path=%s", path, exc_info=True)
+        return dict(default_state)
+    tasks = state.get("tasks") if isinstance(state.get("tasks"), dict) else {}
+    normalized: Dict[str, Any] = {}
+    for task_id, raw in tasks.items():
+        key = str(task_id or "").strip()
+        entry = _normalize_intervention_entry(key, raw)
+        if entry:
+            normalized[key] = entry
+    return {"tasks": normalized, "updatedAt": str(state.get("updatedAt") or "")}
+
+
+def save_intervention_state(root: str, state: Dict[str, Any]) -> None:
+    tasks = state.get("tasks") if isinstance(state.get("tasks"), dict) else {}
+    payload: Dict[str, Any] = {"tasks": {}, "updatedAt": now_iso()}
+    for task_id, raw in tasks.items():
+        key = str(task_id or "").strip()
+        entry = _normalize_intervention_entry(key, raw)
+        if entry:
+            payload["tasks"][key] = entry
+    save_json_file(intervention_state_path(root), payload)
+
+
+def set_task_intervention(root: str, task_id: str, message: str, actor: str = "orchestrator") -> Dict[str, Any]:
+    task_key = str(task_id or "").strip()
+    note = clip(str(message or "").strip(), 1000)
+    if not task_key or not note:
+        return {}
+    with _INTERVENTION_STATE_LOCK:
+        state = load_intervention_state(root)
+        tasks = state.setdefault("tasks", {})
+        existing = _normalize_intervention_entry(task_key, tasks.get(task_key))
+        entry = {
+            "taskId": task_key,
+            "message": note,
+            "actor": clip(str(actor or "orchestrator").strip(), 80) or "orchestrator",
+            "createdAt": str(existing.get("createdAt") or now_iso()),
+            "updatedAt": now_iso(),
+            "lastAppliedAt": str(existing.get("lastAppliedAt") or ""),
+            "applyCount": nonneg_int(existing.get("applyCount"), 0),
+        }
+        tasks[task_key] = entry
+        save_intervention_state(root, state)
+        return dict(entry)
+
+
+def get_task_intervention(root: str, task_id: str, mark_applied: bool = False) -> Dict[str, Any]:
+    task_key = str(task_id or "").strip()
+    if not task_key:
+        return {}
+    with _INTERVENTION_STATE_LOCK:
+        state = load_intervention_state(root)
+        tasks = state.get("tasks") if isinstance(state.get("tasks"), dict) else {}
+        entry = _normalize_intervention_entry(task_key, tasks.get(task_key))
+        if not entry:
+            return {}
+        if mark_applied:
+            entry["applyCount"] = nonneg_int(entry.get("applyCount"), 0) + 1
+            entry["lastAppliedAt"] = now_iso()
+            tasks[task_key] = entry
+            save_intervention_state(root, state)
+        return dict(entry)
+
+
+def clear_task_intervention(root: str, task_id: str) -> Dict[str, Any]:
+    task_key = str(task_id or "").strip()
+    if not task_key:
+        return {"taskId": "", "cleared": False, "intervention": {}}
+    with _INTERVENTION_STATE_LOCK:
+        state = load_intervention_state(root)
+        tasks = state.get("tasks") if isinstance(state.get("tasks"), dict) else {}
+        previous = _normalize_intervention_entry(task_key, tasks.get(task_key))
+        existed = task_key in tasks
+        tasks.pop(task_key, None)
+        if existed:
+            save_intervention_state(root, state)
+        return {"taskId": task_key, "cleared": existed, "intervention": previous}
+
+
+def format_intervention_summary(task_id: str, intervention: Dict[str, Any]) -> str:
+    task_key = str(task_id or "").strip()
+    if not isinstance(intervention, dict) or not intervention:
+        return f"[TASK] {task_key} | 当前无 active intervention"
+    parts = [
+        f"[TASK] {task_key} | intervention 已激活",
+        f"actor: {intervention.get('actor') or '-'}",
+        f"message: {clip(str(intervention.get('message') or ''), 240)}",
+        (
+            f"applyCount: {nonneg_int(intervention.get('applyCount'), 0)}"
+            f" | createdAt: {intervention.get('createdAt') or '-'}"
+        ),
+        f"updatedAt: {intervention.get('updatedAt') or '-'}",
+    ]
+    if str(intervention.get("lastAppliedAt") or "").strip():
+        parts.append(f"lastAppliedAt: {intervention.get('lastAppliedAt')}")
+    return "\n".join(parts)
 
 
 def _load_json_dict_or_empty(path: str) -> Dict[str, Any]:
@@ -8788,6 +8933,85 @@ def cmd_feishu_router(args: argparse.Namespace) -> int:
             force=False,
         )
         return cmd_clarify(c_args)
+
+    m = re.match(r"^intervene\s+([A-Za-z0-9_-]+)\s*:\s*(.+)$", cmd_body, flags=re.IGNORECASE)
+    if m:
+        task_id = str(m.group(1) or "").strip()
+        message = clip(str(m.group(2) or "").strip(), 1000)
+        if not message:
+            print(json.dumps({"ok": False, "handled": True, "intent": "intervene", "error": "message cannot be empty"}))
+            return 1
+        intervention = set_task_intervention(args.root, task_id, message, actor="orchestrator")
+        if not intervention:
+            print(json.dumps({"ok": False, "handled": True, "intent": "intervene", "error": "failed to persist intervention"}))
+            return 1
+        text = format_intervention_summary(task_id, intervention)
+        out = send_group_message(args.group_id, args.account_id, text, args.mode)
+        ok = bool(out.get("ok"))
+        print(
+            json.dumps(
+                {
+                    "ok": ok,
+                    "handled": True,
+                    "intent": "intervene",
+                    "taskId": task_id,
+                    "intervention": intervention,
+                    "send": out,
+                }
+            )
+        )
+        return 0 if ok else 1
+
+    m = re.match(r"^intervention\s+([A-Za-z0-9_-]+)$", cmd_body, flags=re.IGNORECASE)
+    if m:
+        task_id = str(m.group(1) or "").strip()
+        intervention = get_task_intervention(args.root, task_id)
+        text = format_intervention_summary(task_id, intervention)
+        out = send_group_message(args.group_id, args.account_id, text, args.mode)
+        ok = bool(out.get("ok"))
+        print(
+            json.dumps(
+                {
+                    "ok": ok,
+                    "handled": True,
+                    "intent": "intervention",
+                    "taskId": task_id,
+                    "active": bool(intervention),
+                    "intervention": intervention,
+                    "send": out,
+                }
+            )
+        )
+        return 0 if ok else 1
+
+    m = re.match(r"^clear\s+intervention\s+([A-Za-z0-9_-]+)$", cmd_body, flags=re.IGNORECASE)
+    if m:
+        task_id = str(m.group(1) or "").strip()
+        cleared = clear_task_intervention(args.root, task_id)
+        previous = cleared.get("intervention") if isinstance(cleared.get("intervention"), dict) else {}
+        text = (
+            f"[TASK] {task_id} | intervention 已清除"
+            if bool(cleared.get("cleared"))
+            else f"[TASK] {task_id} | 当前无 active intervention"
+        )
+        if previous:
+            text = text + "\n" + f"lastMessage: {clip(str(previous.get('message') or ''), 240)}"
+        out = send_group_message(args.group_id, args.account_id, text, args.mode)
+        ok = bool(out.get("ok"))
+        print(
+            json.dumps(
+                {
+                    "ok": ok,
+                    "handled": True,
+                    "intent": "clear_intervention",
+                    "taskId": task_id,
+                    "cleared": bool(cleared.get("cleared")),
+                    "intervention": previous,
+                    "send": out,
+                }
+            )
+        )
+        return 0 if ok else 1
 
     # Explicit board commands via orchestrator entrance.
     normalized = maybe_normalize_board_command(cmd_body)
