@@ -46,3 +46,8 @@
 - Fixed two counting pitfalls during audit: ignored synthetic `test:` evidence wrappers for visual classification, and prevented `截图` from being miscounted as generic plot evidence.
 - Extended `tests/test_quality_gate_v2.py` with compatibility, require-types, min-screenshots, require-comparison, min-plots, and all-green coverage.
 - Verification passed: `python3 -m unittest tests/test_quality_gate_v2.py tests/test_orchestrator_runtime.py -q` (132 tests, OK).
+- Gemini/Codex 路由切换 finding: 现有 `runtime-policy.json` 默认值本身已经是 `codex_cli`，真正还会把规划类任务送去 `claude_cli` 的点在 `scripts/lib/milestones.py::resolve_spawn_plan()` 的高智能覆盖逻辑。
+- Gemini/Codex 路由切换 finding: 写作/文字任务的 `gemini_cli` override 应继续保留，因为这是用户新策略里唯一的非 codex 特例。
+- Codex bridge finding: `codex exec --help` 能明确确认 `--model` 与 `-c key=value` 配置覆盖路径，因此可以安全显式传 `--model gpt-4.5` 与 `-c model_reasoning_effort=...`。
+- Main-session verification finding: `codex exec --model gpt-4.5 -c 'model_reasoning_effort="xhigh"'` 在本机可真实运行，并显示 `reasoning effort: xhigh`，因此默认值可以直接使用 `xhigh`，无需保守降级到 `high`。
+- Host blocker finding: 本轮后续验证与真实 smoke run 并非被插件逻辑阻塞，而是被宿主机全局进程 / `fork` 资源耗尽阻塞；错误表现为 `fork: Resource temporarily unavailable` 与 `Failed to create unified exec process: Resource temporarily unavailable (os error 35)`。

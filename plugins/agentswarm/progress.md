@@ -92,3 +92,11 @@
 - Added acceptance helper logic in `scripts/lib/milestones.py` so done-gate can block missing visual evidence without affecting existing `requireAny` / verify-command / multi-reviewer flow.
 - Added regression coverage in `tests/test_quality_gate_v2.py` for legacy-compatible done, required plot/data evidence, screenshot thresholds, comparison requirement, plot thresholds, and all-rules-pass.
 - Verified with `python3 -m unittest tests/test_quality_gate_v2.py tests/test_orchestrator_runtime.py -q` (132 tests, OK).
+- Started Gemini/Codex executor policy switch on branch `codex/three-enhancements-rollout` using subagent-owned slices.
+- Landed routing change in `scripts/lib/milestones.py`: writing/text tasks still force `gemini_cli`, but planning/high-intelligence tasks no longer force `claude_cli`; they now remain on `codex_cli`.
+- Updated routing regression in `tests/test_orchestrator_runtime.py` so planning tasks expect `codex_cli`, and refreshed active-routing docs in `docs/config.md` + `docs/protocol.md`.
+- Landed explicit Codex bridge model configuration in `scripts/lib/codex_worker_bridge.py` with env overrides `CODEX_WORKER_MODEL` / `CODEX_WORKER_REASONING_EFFORT` and default `gpt-4.5 + xhigh`.
+- Extended `tests/test_codex_worker_bridge.py` to cover explicit `--model` plus `-c model_reasoning_effort=...` command construction.
+- Main-session verification confirmed `codex exec --model gpt-4.5 -c 'model_reasoning_effort="xhigh"'` runs successfully and reports `reasoning effort: xhigh`.
+- Subagent verification passed: `python3 -m unittest tests/test_codex_worker_bridge.py -q` (4 tests, OK) and `python3 -m unittest tests/test_orchestrator_runtime.py -q` (108 tests, OK) in the worker environment.
+- Main-session full runtime recheck was blocked by host-level `fork` exhaustion (`fork: Resource temporarily unavailable` / `os error 35`), which also blocked the requested real smoke run for the temporary “文献复现代码知识图谱库” project.

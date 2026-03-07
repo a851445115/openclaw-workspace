@@ -4277,7 +4277,7 @@ class RuntimeTests(unittest.TestCase):
         planned = spawn.get("plannedCommand") or []
         self.assertTrue(any("gemini_worker_bridge.py" in str(x) for x in planned), out)
 
-    def test_planning_task_forces_claude_executor(self):
+    def test_planning_task_prefers_codex_executor(self):
         run_json([
             "python3",
             str(BOARD),
@@ -4309,9 +4309,9 @@ class RuntimeTests(unittest.TestCase):
         ])
         self.assertTrue(out["ok"], out)
         spawn = out.get("spawn") or {}
-        self.assertEqual(spawn.get("executor"), "claude_cli", out)
+        self.assertEqual(spawn.get("executor"), "codex_cli", out)
         planned = spawn.get("plannedCommand") or []
-        self.assertTrue(any("claude_worker_bridge.py" in str(x) for x in planned), out)
+        self.assertTrue(any("codex_worker_bridge.py" in str(x) for x in planned), out)
 
     def test_scheme_b_other_roles_default_to_codex_executor(self):
         run_json([

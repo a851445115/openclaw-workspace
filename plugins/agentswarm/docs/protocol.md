@@ -166,12 +166,12 @@ bot->bot 派发模板会带 Feishu API mention 标签（如 `<at user_id="...">o
 
 - orchestrator 继续负责任务看板、派发、验收和里程碑广播。
 - 当 `dispatch/autopilot` 开启 spawn 闭环时，默认执行器路由：
-  - `coder -> claude_cli`（bridge: `scripts/lib/claude_worker_bridge.py`，`claude --print --json-schema`）
-  - `debugger -> codex_cli`（bridge: `scripts/lib/codex_worker_bridge.py`，`codex exec --output-schema --output-last-message`）
-  - 其他角色 -> `openclaw_agent`
+  - 默认走 `codex_cli`（bridge: `scripts/lib/codex_worker_bridge.py`，`codex exec --output-schema --output-last-message`）
+  - 写作/文字类任务会强制切到 `gemini_cli`（bridge: `scripts/lib/gemini_worker_bridge.py`）
+  - `--spawn-cmd` 自定义命令仍优先于上述路由
 - 可通过 `config/runtime-policy.json` 的 `orchestrator.executorRouting` 在运行时覆盖默认路由（`--spawn-cmd` 仍优先于路由策略）。
 - 调度结果中 `spawn` 包含：
-  - `executor`: `claude_cli|codex_cli|openclaw_agent|custom`
+  - `executor`: `codex_cli|gemini_cli|openclaw_agent|custom`
   - `plannedCommand`: 计划执行命令（用于审计与排障）
 
 Inbound wrapper parsing helper: `scripts/feishu-inbound-router` (used by orchestrator agent runtime).

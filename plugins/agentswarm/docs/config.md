@@ -9,7 +9,7 @@ Runtime config schema v2 is defined in `openclaw.plugin.json`, with load/normali
 - `channel.groupId`: visible control group.
 - `channel.milestoneOnly`: whether only milestone messages are posted.
 - `orchestrator.maxConcurrentSpawns`: cap for subagent fanout.
-- `orchestrator.executorRouting`: role -> executor map for spawn dispatch (`claude_cli` / `codex_cli` / `openclaw_agent`).
+- `orchestrator.executorRouting`: role -> executor map for spawn dispatch (`codex_cli` / `gemini_cli` / `openclaw_agent`).
 - `orchestrator.retryPolicy.maxAttempts`: retry budget per execution path.
 - `orchestrator.retryPolicy.backoff`: retry backoff model (`fixed` / `linear` / `exponential`) and timing controls.
 - `orchestrator.budgetPolicy.guardrails`: budget guardrails (`maxTaskTokens` / `maxTaskWallTimeSec` / `maxTaskRetries`).
@@ -74,7 +74,7 @@ Minimal template:
   "orchestrator": {
     "maxConcurrentSpawns": 3,
     "executorRouting": {
-      "coder": "claude_cli",
+      "coder": "codex_cli",
       "debugger": "codex_cli"
     },
     "retryPolicy": {
@@ -110,9 +110,10 @@ Minimal template:
 
 Executor routing defaults (when `orchestrator.executorRouting` is absent):
 
-- `coder -> claude_cli`
+- `coder -> codex_cli`
 - `debugger -> codex_cli`
 - all other roles -> `openclaw_agent`
+- writing/text tasks -> `gemini_cli` override
 
 Compatibility strategy (`config_runtime.load_runtime_config`):
 

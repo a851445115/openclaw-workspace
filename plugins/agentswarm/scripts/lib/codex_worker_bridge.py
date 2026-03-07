@@ -11,6 +11,11 @@ TASK_CONTEXT_STATE_FILE = "task-context-map.json"
 DEFAULT_CODER_WORKSPACE = os.path.expanduser("~/.openclaw/agents/coder/workspace")
 CHECKPOINT_HINTS = {"continue", "need_input", "handoff_suggested"}
 CHECKPOINT_STALL_SIGNALS = {"none", "soft_stall", "hard_block"}
+DEFAULT_CODEX_MODEL = "gpt-4.5"
+DEFAULT_CODEX_REASONING_EFFORT = "xhigh"
+CODEX_WORKER_MODEL_ENV = "CODEX_WORKER_MODEL"
+CODEX_WORKER_REASONING_EFFORT_ENV = "CODEX_WORKER_REASONING_EFFORT"
+SUPPORTED_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 
 
 def clip(text: str, limit: int = 300) -> str:
@@ -170,6 +175,37 @@ def safe_int(value: Any, default: int = -1) -> int:
 def normalize_timeout_sec(value: Any, default: int = 0) -> int:
     parsed = safe_int(value, default)
     return max(0, parsed)
+
+
+def resolve_codex_model() -> str:
+    return os.environ.get(CODEX_WORKER_MODEL_ENV, "").strip() or DEFAULT_CODEX_MODEL
+
+
+def resolve_reasoning_effort() -> str:
+    effort = os.environ.get(CODEX_WORKER_REASONING_EFFORT_ENV, "").strip().lower()
+    if effort in SUPPORTED_REASONING_EFFORTS:
+        return effort
+    return DEFAULT_CODEX_REASONING_EFFORT
+
+
+def build_codex_exec_command(args: argparse.Namespace, workspace: str, schema_path: str, out_path: str) -> List[str]:
+    return [
+        "codex",
+        "exec",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--skip-git-repo-check",
+        "--model",
+        resolve_codex_model(),
+        "-c",
+        f'model_reasoning_effort="{resolve_reasoning_effort()}"',
+        "--cd",
+        workspace,
+        "--output-schema",
+        schema_path,
+        "--output-last-message",
+        out_path,
+        "-",
+    ]
 
 
 def extract_usage_pair(usage: Dict[str, Any]) -> int:
@@ -338,19 +374,7 @@ def main() -> int:
             json.dump(build_schema(), f, ensure_ascii=False, indent=2)
             f.write("\n")
 
-        cmd = [
-            "codex",
-            "exec",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "--skip-git-repo-check",
-            "--cd",
-            workspace,
-            "--output-schema",
-            schema_path,
-            "--output-last-message",
-            out_path,
-            "-",
-        ]
+        cmd = build_codex_exec_command(args, workspace, schema_path, out_path)
 
         try:
             timeout_sec = normalize_timeout_sec(args.timeout_sec, default=0)

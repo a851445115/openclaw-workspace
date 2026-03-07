@@ -1,6 +1,10 @@
+import argparse
 import importlib.util
+import os
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -76,6 +80,28 @@ class CodexWorkerBridgeTests(unittest.TestCase):
         self.assertEqual(checkpoint.get("continueHint"), "continue", result)
         self.assertEqual(checkpoint.get("stallSignal"), "none", result)
         self.assertEqual(checkpoint.get("evidenceDelta"), ["traceback signature collected"], result)
+
+    def test_build_codex_exec_command_uses_explicit_model_and_reasoning_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = argparse.Namespace(root=tmp, task_id="T-CMD", agent="coder", task="hello", timeout_sec=0, workspace=tmp)
+            cmd = self.bridge.build_codex_exec_command(args, tmp, os.path.join(tmp, "schema.json"), os.path.join(tmp, "output.json"))
+        self.assertEqual(cmd[0:2], ["codex", "exec"], cmd)
+        self.assertIn("--model", cmd, cmd)
+        self.assertEqual(cmd[cmd.index("--model") + 1], "gpt-4.5", cmd)
+        self.assertIn("-c", cmd, cmd)
+        self.assertIn('model_reasoning_effort="xhigh"', cmd, cmd)
+
+    def test_build_codex_exec_command_honors_env_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = argparse.Namespace(root=tmp, task_id="T-CMD2", agent="coder", task="hello", timeout_sec=0, workspace=tmp)
+            with mock.patch.dict(os.environ, {
+                "CODEX_WORKER_MODEL": "gpt-4.5",
+                "CODEX_WORKER_REASONING_EFFORT": "xhigh",
+            }, clear=False):
+                cmd = self.bridge.build_codex_exec_command(args, tmp, os.path.join(tmp, "schema.json"), os.path.join(tmp, "output.json"))
+        self.assertIn("--model", cmd, cmd)
+        self.assertEqual(cmd[cmd.index("--model") + 1], "gpt-4.5", cmd)
+        self.assertIn('model_reasoning_effort="xhigh"', cmd, cmd)
 
 
 if __name__ == "__main__":

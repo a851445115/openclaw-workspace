@@ -6546,9 +6546,7 @@ def resolve_spawn_plan(args: argparse.Namespace, task_prompt: str) -> Dict[str, 
     claude_bridge = os.path.join(os.path.dirname(__file__), "claude_worker_bridge.py")
     gemini_bridge = os.path.join(os.path.dirname(__file__), "gemini_worker_bridge.py")
     selected_executor = resolve_spawn_executor(args.root, str(args.agent or ""))
-    if is_planning_or_high_intelligence_task(task_prompt):
-        selected_executor = SPAWN_EXECUTOR_CLAUDE
-    elif is_writing_task(task_prompt):
+    if is_writing_task(task_prompt):
         selected_executor = SPAWN_EXECUTOR_GEMINI
     selected_bridge = {
         SPAWN_EXECUTOR_CODEX: codex_bridge,
