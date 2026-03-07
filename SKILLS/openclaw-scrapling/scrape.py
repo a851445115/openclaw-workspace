@@ -6,8 +6,39 @@ import argparse
 import json
 import sys
 import os
+import io
+import shutil
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from contextlib import redirect_stderr
+from typing import Optional, Dict, Any, List, Callable
+
+REEXEC_ENV_VAR = "OPENCLAW_SCRAPLING_SKIP_VENV_REEXEC"
+
+
+def preferred_venv_python(skill_dir=None):
+    resolved_skill_dir = Path(skill_dir or Path(__file__).resolve().parent).resolve()
+    candidate = resolved_skill_dir / ".venv" / "bin" / "python"
+    return candidate if candidate.exists() else None
+
+
+def maybe_reexec_into_venv() -> None:
+    if os.environ.get(REEXEC_ENV_VAR) == "1":
+        return
+    preferred = preferred_venv_python()
+    if preferred is None:
+        return
+    current = Path(sys.executable).resolve()
+    if current == preferred.resolve():
+        return
+    env = os.environ.copy()
+    venv_bin = str(preferred.parent)
+    current_path = env.get("PATH", "")
+    env["PATH"] = f"{venv_bin}:{current_path}" if current_path else venv_bin
+    env[REEXEC_ENV_VAR] = "1"
+    os.execve(str(preferred), [str(preferred), str(Path(__file__).resolve()), *sys.argv[1:]], env)
+
+
+maybe_reexec_into_venv()
 
 try:
     from scrapling.fetchers import Fetcher, StealthyFetcher, DynamicFetcher
@@ -23,6 +54,109 @@ CACHE_FILE = SKILL_DIR / "selector_cache.json"
 
 # Create directories
 SESSIONS_DIR.mkdir(exist_ok=True)
+
+
+def is_xpath_selector(selector: str) -> bool:
+    """Return True when selector is clearly XPath, otherwise treat it as CSS.
+
+    Plain tag selectors like `title` or `article` are valid CSS and should not
+    be routed to XPath. Only explicit XPath forms should use `page.xpath(...)`.
+    """
+    trimmed = selector.strip()
+    return (
+        trimmed.startswith("/")
+        or trimmed.startswith("./")
+        or trimmed.startswith("../")
+        or trimmed.startswith("(")
+        or trimmed.startswith("ancestor::")
+        or trimmed.startswith("descendant::")
+        or trimmed.startswith("following::")
+        or trimmed.startswith("preceding::")
+        or trimmed.startswith("self::")
+        or trimmed.startswith("child::")
+        or trimmed.startswith("attribute::")
+    )
+
+
+def select_elements(page, selector: str):
+    if is_xpath_selector(selector):
+        return page.xpath(selector)
+    return page.css(selector)
+
+
+def find_runtime_binary(name: str, skill_dir=None, which_fn: Callable[[str], Optional[str]] = shutil.which):
+    resolved_skill_dir = Path(skill_dir or Path(__file__).resolve().parent).resolve()
+    local_candidate = resolved_skill_dir / '.venv' / 'bin' / name
+    if local_candidate.exists():
+        return local_candidate
+    current_dir_candidate = Path(sys.argv[0]).resolve().parent / name if sys.argv else None
+    if current_dir_candidate and current_dir_candidate.exists():
+        return current_dir_candidate
+    resolved = which_fn(name)
+    return Path(resolved).resolve() if resolved else None
+
+
+def resolve_solve_cloudflare(
+    mode: str,
+    solve_cloudflare: bool,
+    which_fn: Callable[[str], Optional[str]] = shutil.which,
+    skill_dir=None,
+) -> bool:
+    if mode != "stealth":
+        return solve_cloudflare
+    if not solve_cloudflare:
+        return False
+    return find_runtime_binary("camoufox", skill_dir=skill_dir, which_fn=which_fn) is not None
+
+
+def build_mode_warnings(
+    mode: str,
+    solve_cloudflare: bool,
+    which_fn: Callable[[str], Optional[str]] = shutil.which,
+    skill_dir=None,
+) -> List[str]:
+    warnings: List[str] = []
+    if mode == "stealth" and solve_cloudflare and find_runtime_binary("camoufox", skill_dir=skill_dir, which_fn=which_fn) is None:
+        warnings.append(
+            "camoufox is not installed; Cloudflare challenge-solving may be limited. "
+            "Install it with `camoufox fetch`."
+        )
+    if mode == "dynamic" and find_runtime_binary("playwright", skill_dir=skill_dir, which_fn=which_fn) is None and find_runtime_binary("patchright", skill_dir=skill_dir, which_fn=which_fn) is None:
+        warnings.append(
+            "Neither `playwright` nor `patchright` CLI is available; dynamic mode may fail "
+            "until browser tooling is installed."
+        )
+    return warnings
+
+
+def filter_fetch_logs(mode: str, stderr_text: str, fetch_succeeded: bool) -> tuple[str, str]:
+    visible: List[str] = []
+    suppressed: List[str] = []
+    for raw_line in stderr_text.splitlines():
+        line = raw_line.rstrip()
+        if not line:
+            continue
+        if fetch_succeeded and mode == "stealth" and "No Cloudflare challenge found" in line:
+            suppressed.append(line)
+            continue
+        visible.append(line)
+    return "\n".join(visible).strip(), "\n".join(suppressed).strip()
+
+
+def run_fetch_with_filtered_logs(mode: str, operation: Callable[[], Any]) -> Any:
+    stderr_buffer = io.StringIO()
+    try:
+        with redirect_stderr(stderr_buffer):
+            result = operation()
+        visible, _suppressed = filter_fetch_logs(mode, stderr_buffer.getvalue(), True)
+        if visible:
+            print(visible, file=sys.stderr)
+        return result
+    except Exception:
+        visible, _suppressed = filter_fetch_logs(mode, stderr_buffer.getvalue(), False)
+        if visible:
+            print(visible, file=sys.stderr)
+        raise
 
 
 def load_selector_cache() -> Dict[str, Any]:
@@ -89,6 +223,11 @@ def scrape(
     
     # Parse headers
     custom_headers = json.loads(headers) if headers else None
+
+    effective_solve_cloudflare = resolve_solve_cloudflare(mode, solve_cloudflare)
+
+    for warning in build_mode_warnings(mode, solve_cloudflare):
+        print(f"Warning: {warning}", file=sys.stderr)
     
     # Load adaptive cache if needed
     cache = load_selector_cache() if (adaptive or adaptive_save) else {}
@@ -101,7 +240,7 @@ def scrape(
         if mode == "stealth":
             session = StealthySession(
                 headless=headless,
-                solve_cloudflare=solve_cloudflare
+                solve_cloudflare=effective_solve_cloudflare
             )
             # TODO: Load saved session if exists
         elif mode == "dynamic":
@@ -115,33 +254,39 @@ def scrape(
         # Login if needed
         if login and username and password:
             print(f"Logging in as {username}...", file=sys.stderr)
-            login_page = session.fetch(url)
+            login_page = run_fetch_with_filtered_logs(mode, lambda: session.fetch(url))
             # This is simplified - real login needs form field detection
             login_page.fill('input[name="username"], input[name="email"], #username, #email', username)
             login_page.fill('input[name="password"], #password', password)
             login_page.click('button[type="submit"], input[type="submit"]')
         
         # Fetch page
-        page = session.fetch(url)
+        page = run_fetch_with_filtered_logs(mode, lambda: session.fetch(url))
         
     else:
         # One-off request
         if mode == "stealth":
-            page = StealthyFetcher.fetch(
-                url,
-                headless=headless,
-                solve_cloudflare=solve_cloudflare,
-                proxy=proxy
+            page = run_fetch_with_filtered_logs(
+                mode,
+                lambda: StealthyFetcher.fetch(
+                    url,
+                    headless=headless,
+                    solve_cloudflare=effective_solve_cloudflare,
+                    proxy=proxy
+                ),
             )
         elif mode == "dynamic":
-            page = DynamicFetcher.fetch(
-                url,
-                headless=headless,
-                network_idle=network_idle,
-                proxy=proxy
+            page = run_fetch_with_filtered_logs(
+                mode,
+                lambda: DynamicFetcher.fetch(
+                    url,
+                    headless=headless,
+                    network_idle=network_idle,
+                    proxy=proxy
+                ),
             )
         else:
-            page = Fetcher.get(url, proxy=proxy, headers=custom_headers)
+            page = run_fetch_with_filtered_logs(mode, lambda: Fetcher.get(url, proxy=proxy, headers=custom_headers))
     
     # Take screenshot if requested
     if screenshot:
@@ -169,8 +314,8 @@ def scrape(
             print(f"Using adaptive selector from cache...", file=sys.stderr)
             elements = page.css(selector, adaptive=True)
         else:
-            # Regular selector
-            elements = page.css(selector) if '::' in selector or '.' in selector or '#' in selector else page.xpath(selector)
+            # Regular selector: default to CSS unless the selector is clearly XPath.
+            elements = select_elements(page, selector)
         
         # Save adaptive pattern if requested
         if adaptive_save:
