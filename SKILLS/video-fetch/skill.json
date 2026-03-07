@@ -1,0 +1,36 @@
+{
+  "name": "video-fetch",
+  "version": "3.1.0",
+  "displayName": "Video Fetch — YouTube & Bilibili",
+  "description": "Fetch, transcribe, and summarize YouTube or Bilibili videos using subtitles, cloud STT, local Whisper, or description fallback.",
+  "author": "LambertAlpha",
+  "tags": ["video", "bilibili", "youtube", "transcript", "summary", "yt-dlp"],
+  "capabilities": [
+    "Fetch video metadata from YouTube and Bilibili",
+    "Use subtitles when available",
+    "Fallback to ElevenLabs STT or local Whisper",
+    "Fallback to description when transcripts are unavailable",
+    "Handle Bilibili cookie auth and proxy settings"
+  ],
+  "dependencies": {
+    "python": ">=3.10",
+    "packages": [
+      "requests",
+      "youtube-transcript-api"
+    ],
+    "bins": [
+      "python3",
+      "yt-dlp"
+    ]
+  },
+  "files": [
+    "SKILL.md",
+    "scripts/youtube_fetch.py"
+  ],
+  "installCommand": "python3 -m pip install requests youtube-transcript-api",
+  "usage": {
+    "basic": "python3 scripts/youtube_fetch.py VIDEO_URL",
+    "bilibili": "python3 scripts/youtube_fetch.py https://www.bilibili.com/video/BVxxxxxxxxxx",
+    "json": "python3 scripts/youtube_fetch.py VIDEO_URL --json"
+  }
+}

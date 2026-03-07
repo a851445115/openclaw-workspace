@@ -12,6 +12,10 @@
     "openclaw-scrapling": {
       "version": "1.0.0",
       "installedAt": 1772881813157
+    },
+    "video-fetch": {
+      "version": "3.1.0",
+      "installedAt": 1772906971677
     }
   }
 }
