@@ -257,12 +257,12 @@ Phase 4 (P3): 测试覆盖
 - [x] P1(旧): dispatch_once stage gate check
 - [x] P2(旧): 审计反馈闭环 (handle_audit_feedback)
 - [x] 桥接测试已更新适配 system prompt 变更
-- [ ] P1-W1: workflow config schema + 加载器
-- [ ] P1-W2: XHS 硬编码提取到 config
-- [ ] P1-W3: build_agent_prompt 去掉 workflow 名称判断
-- [ ] P1-W4: paper_context_injector (workflow-scoped)
-- [ ] P1-W5: 模板占位符扩展
-- [ ] P2-1: LLM task_decomposer 回退
-- [ ] P3: workflow 相关测试
+- [x] P1-W1: workflow config schema + 加载器
+- [x] P1-W2: XHS 硬编码提取到 config (泛化 bootstrap/template/render + 兼容别名)
+- [x] P1-W3: build_agent_prompt 去掉 workflow 名称判断 (detect_workflow_from_project)
+- [x] P1-W4: paper_context_injector (workflow-scoped, stage J-O)
+- [x] P1-W5: 模板占位符扩展 (upstream_output_dir)
+- [x] P2-1: LLM task_decomposer 回退 (llm_decompose_project)
+- [x] P3: workflow 相关测试 (35 tests: test_workflow_registry + test_paper_context_injector)
 
-> 最后更新: 2026-03-09 v2
+> 最后更新: 2026-03-09 v3 — 全部任务完成

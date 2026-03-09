@@ -1,0 +1,122 @@
+{
+  "name": "paper-xhs-3min",
+  "description": "论文 → 小红书发布 + 论文复现 16 阶段 workflow",
+  "defaultWorkflowRoot": "~/.openclaw/projects/paper-xhs-3min-workflow",
+  "defaultOutputRoot": "~/xhs-share",
+  "n8nTriggerScript": "~/.openclaw/n8n/trigger-xhs-workflow.sh",
+  "contextMarkerFile": "orchestrator-bootstrap.json",
+  "placeholders": ["paper_id", "workflow_root", "run_dir", "pdf_path", "upstream_output_dir"],
+  "envRequirements": [
+    "必须使用 conda 环境 'workplace'（包含 python + gurobi 优化求解器）",
+    "对于优化问题（SDP/DRO等），必须调用真实求解器（CVXPY/Gurobi/MOSEK），不允许启发式规则替代",
+    "所有 Python 命令必须在 workplace 环境中执行：conda run -n workplace python ..."
+  ],
+  "contextInjectors": {
+    "paperContext": {
+      "enabled": true,
+      "applyToStages": ["J", "K", "L", "M", "N", "O"],
+      "sources": [
+        "{run_dir}/artifacts/a0-extract/raw-text.md",
+        "{run_dir}/repro/j-scope/method-mapping.md"
+      ]
+    }
+  },
+  "stages": [
+    {
+      "stageId": "A0",
+      "title": "Extract source text and metadata",
+      "ownerHint": "paper-ingestor",
+      "templateFile": "stage-a0-extract.md"
+    },
+    {
+      "stageId": "A",
+      "title": "Ingest findings into run workspace",
+      "ownerHint": "paper-ingestor",
+      "templateFile": "stage-a-ingest.md"
+    },
+    {
+      "stageId": "B",
+      "title": "Draft XHS summary",
+      "ownerHint": "paper-summarizer",
+      "templateFile": "stage-b-summary-draft.md"
+    },
+    {
+      "stageId": "C",
+      "title": "Citation and factual checks",
+      "ownerHint": "invest-analyst",
+      "templateFile": "stage-c-citation-check.md"
+    },
+    {
+      "stageId": "D",
+      "title": "Publish-ready post assembly",
+      "ownerHint": "broadcaster",
+      "templateFile": "stage-d-publish.md"
+    },
+    {
+      "stageId": "E",
+      "title": "Generate image prompts",
+      "ownerHint": "paper-summarizer",
+      "templateFile": "stage-e-image-prompts.md"
+    },
+    {
+      "stageId": "F",
+      "title": "Update knowledge base",
+      "ownerHint": "knowledge-curator",
+      "templateFile": "stage-f-kb.md"
+    },
+    {
+      "stageId": "G",
+      "title": "Quality gate review",
+      "ownerHint": "debugger",
+      "templateFile": "stage-g-quality-gate.md"
+    },
+    {
+      "stageId": "H",
+      "title": "Conversion package export",
+      "ownerHint": "coder",
+      "templateFile": "stage-h-conversion.md"
+    },
+    {
+      "stageId": "I",
+      "title": "Weekly review synthesis",
+      "ownerHint": "invest-analyst",
+      "templateFile": "stage-i-weekly-review.md"
+    },
+    {
+      "stageId": "J",
+      "title": "Reproduction scope and hypothesis mapping",
+      "ownerHint": "invest-analyst",
+      "templateFile": "stage-j-repro-scope.md"
+    },
+    {
+      "stageId": "K",
+      "title": "Reproduction data pipeline with synthetic fallback",
+      "ownerHint": "paper-ingestor",
+      "templateFile": "stage-k-repro-data.md"
+    },
+    {
+      "stageId": "L",
+      "title": "Core model and algorithm implementation",
+      "ownerHint": "coder",
+      "templateFile": "stage-l-repro-impl.md"
+    },
+    {
+      "stageId": "M",
+      "title": "Experiment execution and metric collection",
+      "ownerHint": "coder",
+      "templateFile": "stage-m-repro-run.md"
+    },
+    {
+      "stageId": "N",
+      "title": "Reproduction integrity audit",
+      "ownerHint": "debugger",
+      "templateFile": "stage-n-repro-audit.md"
+    },
+    {
+      "stageId": "O",
+      "title": "Reproduction report and artifact package",
+      "ownerHint": "knowledge-curator",
+      "templateFile": "stage-o-repro-report.md"
+    }
+  ]
+}

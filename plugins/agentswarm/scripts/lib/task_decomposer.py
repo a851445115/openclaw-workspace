@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import json
+import logging
 import os
 import re
+import subprocess
 from typing import Any, Dict, List
 
 
@@ -298,4 +300,98 @@ def decompose_project(project_path: str, project_name: str, doc_text: str) -> Li
 
     if selected:
         return selected
+
+    # LLM fallback when heuristic extraction yields no tasks
+    llm_tasks = llm_decompose_project(doc_text, max_tasks=max_tasks)
+    if llm_tasks:
+        return llm_tasks
+
     return _fallback_tasks(policy)
+
+
+logger = logging.getLogger(__name__)
+
+LLM_DECOMPOSE_PROMPT = """You are a task decomposition engine. Given the following project document,
+extract 3-8 actionable implementation tasks. Return ONLY a JSON array where each element has:
+- "title": short task title (Chinese or English, max 80 chars)
+- "ownerHint": one of coder/debugger/invest-analyst/broadcaster/knowledge-curator/paper-ingestor/paper-summarizer
+- "dependsOn": list of titles this task depends on (empty for first)
+- "confidence": float 0.0-1.0
+
+Return valid JSON ONLY, no markdown fences.
+
+PROJECT DOCUMENT:
+{doc_text}"""
+
+
+def _parse_llm_json(raw: str) -> List[Dict[str, Any]]:
+    """Extract and parse the first JSON array from LLM output."""
+    text = raw.strip()
+    # Strip markdown fences if present
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    # Find first [ ... ] block
+    start = text.find("[")
+    end = text.rfind("]")
+    if start < 0 or end < 0 or end <= start:
+        return []
+    try:
+        data = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict) and item.get("title")]
+
+
+def llm_decompose_project(
+    doc_text: str,
+    max_tasks: int = 8,
+    timeout_sec: int = 60,
+) -> List[Dict[str, Any]]:
+    """Use an LLM CLI to decompose project documentation into tasks.
+
+    Tries ``claude`` first, then ``openai`` CLI.  Returns an empty list
+    on any failure so callers can fall back to heuristic decomposition.
+    """
+    if not doc_text or not doc_text.strip():
+        return []
+
+    prompt = LLM_DECOMPOSE_PROMPT.replace("{doc_text}", doc_text[:6000])
+
+    # Try claude CLI first
+    for cmd_template in [
+        ["claude", "--print", "-p", prompt],
+    ]:
+        try:
+            proc = subprocess.run(
+                cmd_template,
+                capture_output=True,
+                text=True,
+                timeout=timeout_sec,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                tasks = _parse_llm_json(proc.stdout)
+                if tasks:
+                    # Normalise and cap
+                    result: List[Dict[str, Any]] = []
+                    for item in tasks[:max_tasks]:
+                        title = _clip(str(item.get("title") or ""))
+                        if not title:
+                            continue
+                        result.append({
+                            "title": title,
+                            "ownerHint": _canonical_owner(str(item.get("ownerHint") or "coder")),
+                            "dependsOn": list(item.get("dependsOn") or []),
+                            "confidence": round(max(0.0, min(1.0, float(item.get("confidence") or 0.7))), 2),
+                        })
+                    if result:
+                        return result
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+            logger.debug("llm_decompose_project: %s unavailable: %s", cmd_template[0], exc)
+            continue
+        except Exception as exc:
+            logger.warning("llm_decompose_project: unexpected error: %s", exc)
+            continue
+
+    return []

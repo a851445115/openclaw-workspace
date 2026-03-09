@@ -47,6 +47,7 @@ import proactive_scanner
 import multi_reviewer
 import context_store
 import failure_classifier
+import paper_context_injector
 
 LOGGER = logging.getLogger(__name__)
 
@@ -317,6 +318,124 @@ XHS_STAGE_DEFINITIONS: Tuple[Dict[str, str], ...] = (
         "templateFile": "stage-o-repro-report.md",
     },
 )
+WORKFLOW_CONFIG_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "config", "workflows")
+)
+WORKFLOW_TEMPLATE_BASE = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "templates", "workflows")
+)
+WORKFLOW_PLACEHOLDER_RE = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
+WORKFLOW_OUTPUT_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+_workflow_config_cache: Dict[str, Dict[str, Any]] = {}
+
+
+def list_workflows() -> List[str]:
+    """Return names of available workflow configs (without .json extension)."""
+    if not os.path.isdir(WORKFLOW_CONFIG_DIR):
+        return []
+    return sorted(
+        os.path.splitext(f)[0]
+        for f in os.listdir(WORKFLOW_CONFIG_DIR)
+        if f.endswith(".json") and not f.startswith(".")
+    )
+
+
+def load_workflow_config(workflow_name: str) -> Dict[str, Any]:
+    """Load and cache a workflow config by name."""
+    if workflow_name in _workflow_config_cache:
+        return _workflow_config_cache[workflow_name]
+    path = os.path.join(WORKFLOW_CONFIG_DIR, f"{workflow_name}.json")
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"workflow config not found: {path}")
+    with open(path, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    _workflow_config_cache[workflow_name] = cfg
+    return cfg
+
+
+def get_workflow_template_dir(workflow_name: str) -> str:
+    """Return the filesystem path to the template directory for a workflow."""
+    return os.path.join(WORKFLOW_TEMPLATE_BASE, workflow_name)
+
+
+def get_workflow_stages(workflow_name: str) -> Tuple[Dict[str, str], ...]:
+    """Return stage definitions for a workflow, from config or legacy constant."""
+    cfg = load_workflow_config(workflow_name)
+    return tuple(cfg.get("stages", []))
+
+
+def get_workflow_env_requirements(workflow_name: str) -> List[str]:
+    """Return the envRequirements list from a workflow config."""
+    cfg = load_workflow_config(workflow_name)
+    return list(cfg.get("envRequirements", []))
+
+
+def get_workflow_placeholders(workflow_name: str) -> set:
+    """Return the set of allowed placeholders for a workflow."""
+    cfg = load_workflow_config(workflow_name)
+    return set(cfg.get("placeholders", []))
+
+
+def get_workflow_context_injectors(workflow_name: str) -> Dict[str, Any]:
+    """Return the contextInjectors block for a workflow."""
+    cfg = load_workflow_config(workflow_name)
+    return dict(cfg.get("contextInjectors", {}))
+
+
+def read_stage_template(template_dir: str, template_file: str) -> str:
+    """Read a stage template file from the given template directory."""
+    path = os.path.join(template_dir, template_file)
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def render_stage_prompt(
+    template_text: str,
+    allowed_placeholders: set,
+    values: Dict[str, str],
+) -> str:
+    """Render a stage template with validated placeholder substitution."""
+    placeholders = set(WORKFLOW_PLACEHOLDER_RE.findall(template_text or ""))
+    unknown = sorted(key for key in placeholders if key not in allowed_placeholders)
+    if unknown:
+        raise ValueError(f"stage template has unsupported placeholders: {', '.join(unknown)}")
+    rendered = template_text
+    for key in sorted(placeholders):
+        rendered = rendered.replace("{" + key + "}", str(values.get(key, "")))
+    return rendered.strip()
+
+
+def normalize_output_name(raw: str) -> str:
+    """Sanitise a user-supplied string for use as a directory name."""
+    name = str(raw or "").strip()
+    if not name:
+        return "untitled"
+    cleaned = WORKFLOW_OUTPUT_NAME_RE.sub("-", name).strip("._-")
+    return cleaned or "untitled"
+
+
+def detect_workflow_from_project(project_path: str) -> Optional[str]:
+    """Detect the workflow name from a project path by reading its context marker."""
+    if not project_path:
+        return None
+    for wf_name in list_workflows():
+        try:
+            cfg = load_workflow_config(wf_name)
+        except Exception:
+            continue
+        marker = cfg.get("contextMarkerFile", "")
+        if marker:
+            marker_path = os.path.join(project_path, marker)
+            if os.path.isfile(marker_path):
+                return wf_name
+    # Fallback: check if the workflow name appears in the project path
+    for wf_name in list_workflows():
+        if wf_name in os.path.basename(project_path) or wf_name in project_path:
+            return wf_name
+    return None
+
+
 SCHEDULER_STATE_FILE = "scheduler.kernel.json"
 SCHEDULER_DEFAULT_INTERVAL_SEC = 300
 SCHEDULER_MIN_INTERVAL_SEC = 60
@@ -1529,6 +1648,15 @@ def build_prompt_board_snapshot(root: str, focus_task_id: str, top_n: int = 3) -
     }
 
 
+_STAGE_ID_RE = re.compile(r"Stage\s+([A-Z]\d?)\b", re.IGNORECASE)
+
+
+def _extract_stage_id_from_title(title: str) -> str:
+    """Extract the stage ID (e.g. 'A0', 'J') from a task title like '[...] Stage J: ...'."""
+    m = _STAGE_ID_RE.search(title or "")
+    return m.group(1).upper() if m else ""
+
+
 def infer_task_kind(agent: str, title: str, dispatch_task: str) -> str:
     agent_norm = (agent or "").strip().lower()
     text = f"{title} {dispatch_task}".lower()
@@ -1907,12 +2035,11 @@ def build_agent_prompt(
     for idx, item in enumerate(requirements, start=1):
         lines.append(f"{idx}. {item}")
     
-    # Add environment requirements if project needs specific conda env
-    env_requirements = []
-    if project_path and "paper-xhs-3min-workflow" in project_path:
-        env_requirements.append("必须使用 conda 环境 'workplace'（包含 python + gurobi 优化求解器）")
-        env_requirements.append("对于优化问题（SDP/DRO等），必须调用真实求解器（CVXPY/Gurobi/MOSEK），不允许启发式规则替代")
-        env_requirements.append("所有 Python 命令必须在 workplace 环境中执行：conda run -n workplace python ...")
+    # Add environment requirements from workflow config if applicable
+    env_requirements: List[str] = []
+    detected_wf = detect_workflow_from_project(project_path) if project_path else None
+    if detected_wf:
+        env_requirements = get_workflow_env_requirements(detected_wf)
     
     if env_requirements:
         lines.append("ENVIRONMENT_REQUIREMENTS:")
@@ -1950,7 +2077,20 @@ def build_agent_prompt(
             "4. If blocked, summary must state blocker cause clearly.",
         ]
     )
-    return "\n".join(lines)
+    prompt = "\n".join(lines)
+
+    # Workflow-scoped context injection (e.g. paper context for repro stages)
+    if detected_wf and project_path:
+        try:
+            injectors = get_workflow_context_injectors(detected_wf)
+            if injectors:
+                stage_id = _extract_stage_id_from_title(title)
+                run_dir = project_path
+                prompt = paper_context_injector.inject_into_prompt(prompt, run_dir, injectors, stage_id)
+        except Exception:
+            pass  # best-effort — don't break dispatch on injector failure
+
+    return prompt
 
 
 def send_group_message(group_id: str, account_id: str, text: str, mode: str) -> Dict[str, Any]:
@@ -5450,11 +5590,9 @@ def normalize_project_path(raw: str) -> str:
 
 
 def normalize_xhs_output_name(raw: str) -> str:
-    name = str(raw or "").strip()
-    if not name:
-        return "untitled-paper"
-    cleaned = XHS_OUTPUT_NAME_RE.sub("-", name).strip("._-")
-    return cleaned or "untitled-paper"
+    """Legacy wrapper — delegates to normalize_output_name with paper-specific default."""
+    result = normalize_output_name(raw)
+    return result if result != "untitled" else "untitled-paper"
 
 
 def read_project_doc(project_path: str) -> Tuple[str, str]:
@@ -5625,21 +5763,13 @@ def write_project_depends_on(root: str, created_tasks: List[Dict[str, Any]]) -> 
 
 
 def read_xhs_stage_template(template_file: str) -> str:
-    path = os.path.join(XHS_TEMPLATE_DIR, template_file)
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read()
+    """Legacy wrapper — delegates to read_stage_template."""
+    return read_stage_template(XHS_TEMPLATE_DIR, template_file)
 
 
 def render_xhs_stage_prompt(template_text: str, values: Dict[str, str]) -> str:
-    placeholders = set(XHS_PLACEHOLDER_RE.findall(template_text or ""))
-    unknown = sorted([key for key in placeholders if key not in XHS_ALLOWED_PLACEHOLDERS])
-    if unknown:
-        raise ValueError(f"xhs template has unsupported placeholders: {', '.join(unknown)}")
-
-    rendered = template_text
-    for key in sorted(placeholders):
-        rendered = rendered.replace("{" + key + "}", str(values.get(key, "")))
-    return rendered.strip()
+    """Legacy wrapper — delegates to render_stage_prompt."""
+    return render_stage_prompt(template_text, XHS_ALLOWED_PLACEHOLDERS, values)
 
 
 def write_task_dependency_chain(root: str, task_ids: List[str]) -> Dict[str, Any]:
@@ -5671,21 +5801,32 @@ def write_task_dependency_chain(root: str, task_ids: List[str]) -> Dict[str, Any
     return {"updatedTasks": updated, "tasksWithDependsOn": linked}
 
 
-def xhs_bootstrap_once(args: argparse.Namespace) -> Dict[str, Any]:
+def workflow_bootstrap_once(
+    args: argparse.Namespace,
+    workflow_name: str,
+) -> Dict[str, Any]:
+    """Generic workflow bootstrap: creates tasks from a workflow config's stage list."""
+    intent = f"{workflow_name}_bootstrap"
     actor = str(getattr(args, "actor", "orchestrator") or "orchestrator").strip() or "orchestrator"
     if actor != "orchestrator":
-        return {"ok": False, "handled": True, "intent": "xhs_bootstrap", "error": "xhs-bootstrap is restricted to actor=orchestrator"}
+        return {"ok": False, "handled": True, "intent": intent, "error": "workflow bootstrap is restricted to actor=orchestrator"}
+
+    try:
+        wf_cfg = load_workflow_config(workflow_name)
+    except FileNotFoundError as err:
+        return {"ok": False, "handled": True, "intent": intent, "error": str(err)}
 
     paper_id = str(getattr(args, "paper_id", "") or "").strip()
     if not paper_id:
-        return {"ok": False, "handled": True, "intent": "xhs_bootstrap", "error": "paper_id is required"}
+        return {"ok": False, "handled": True, "intent": intent, "error": "paper_id is required"}
 
-    workflow_root = normalize_project_path(str(getattr(args, "workflow_root", "") or DEFAULT_XHS_WORKFLOW_ROOT))
+    default_wf_root = normalize_project_path(wf_cfg.get("defaultWorkflowRoot", ""))
+    workflow_root = normalize_project_path(str(getattr(args, "workflow_root", "") or default_wf_root))
     if not workflow_root or not os.path.isdir(workflow_root):
         return {
             "ok": False,
             "handled": True,
-            "intent": "xhs_bootstrap",
+            "intent": intent,
             "error": f"workflow root not found: {clip(workflow_root or str(getattr(args, 'workflow_root', '') or ''), 200)}",
         }
 
@@ -5694,18 +5835,20 @@ def xhs_bootstrap_once(args: argparse.Namespace) -> Dict[str, Any]:
         return {
             "ok": False,
             "handled": True,
-            "intent": "xhs_bootstrap",
+            "intent": intent,
             "error": f"pdf path not found: {clip(pdf_path or str(getattr(args, 'pdf_path', '') or ''), 200)}",
         }
 
+    default_output_root = normalize_project_path(wf_cfg.get("defaultOutputRoot", ""))
     run_dir_raw = str(getattr(args, "run_dir", "") or "").strip()
-    paper_dir = normalize_xhs_output_name(paper_id)
-    run_dir = normalize_project_path(run_dir_raw) if run_dir_raw else os.path.join(DEFAULT_XHS_OUTPUT_ROOT, paper_dir)
+    paper_dir = normalize_output_name(paper_id)
+    run_dir = normalize_project_path(run_dir_raw) if run_dir_raw else os.path.join(default_output_root, paper_dir)
     os.makedirs(run_dir, exist_ok=True)
 
-    context_marker = os.path.join(run_dir, XHS_CONTEXT_MARKER_FILE)
+    marker_file = wf_cfg.get("contextMarkerFile", "orchestrator-bootstrap.json")
+    context_marker = os.path.join(run_dir, marker_file)
     context_obj = {
-        "workflowName": XHS_WORKFLOW_NAME,
+        "workflowName": workflow_name,
         "paperId": paper_id,
         "workflowRoot": workflow_root,
         "runDir": run_dir,
@@ -5720,24 +5863,33 @@ def xhs_bootstrap_once(args: argparse.Namespace) -> Dict[str, Any]:
         "run_dir": run_dir,
         "pdf_path": pdf_path,
     }
-    project_name = f"{XHS_WORKFLOW_NAME}:{paper_id}"
+    project_name = f"{workflow_name}:{paper_id}"
+    template_dir = get_workflow_template_dir(workflow_name)
+    allowed_ph = get_workflow_placeholders(workflow_name)
+    stages = wf_cfg.get("stages", [])
 
     created: List[Dict[str, Any]] = []
     created_ids: List[str] = []
-    for stage in XHS_STAGE_DEFINITIONS:
+    prev_stage_id = ""
+    for stage in stages:
         stage_id = str(stage.get("stageId") or "").strip()
         stage_title = str(stage.get("title") or "").strip()
         owner_hint = governance.canonical_agent(str(stage.get("ownerHint") or "")) or "coder"
         template_file = str(stage.get("templateFile") or "").strip()
 
+        # Provide upstream_output_dir pointing to previous stage's artifacts
+        stage_values = dict(values)
+        if prev_stage_id:
+            stage_values["upstream_output_dir"] = os.path.join(run_dir, "artifacts", prev_stage_id.lower())
+
         try:
-            template = read_xhs_stage_template(template_file)
-            dispatch_prompt = render_xhs_stage_prompt(template, values)
+            template = read_stage_template(template_dir, template_file)
+            dispatch_prompt = render_stage_prompt(template, allowed_ph, stage_values)
         except Exception as err:
             return {
                 "ok": False,
                 "handled": True,
-                "intent": "xhs_bootstrap",
+                "intent": intent,
                 "error": f"failed to load stage template {template_file}: {clip(str(err), 200)}",
             }
 
@@ -5769,6 +5921,7 @@ def xhs_bootstrap_once(args: argparse.Namespace) -> Dict[str, Any]:
                 "publish": publish,
             }
         )
+        prev_stage_id = stage_id
 
     depends_sync = write_task_dependency_chain(args.root, created_ids)
 
@@ -5795,7 +5948,7 @@ def xhs_bootstrap_once(args: argparse.Namespace) -> Dict[str, Any]:
         kickoff = dispatch_once(d_args)
 
     msg = (
-        f"[TASK] XHS workflow bootstrapped: {paper_id} | created={len(created_ids)} | "
+        f"[TASK] {workflow_name} workflow bootstrapped: {paper_id} | created={len(created_ids)} | "
         f"run_dir={run_dir}"
     )
     ack = send_group_message(args.group_id, args.account_id, msg, args.mode)
@@ -5808,8 +5961,9 @@ def xhs_bootstrap_once(args: argparse.Namespace) -> Dict[str, Any]:
     return {
         "ok": ok,
         "handled": True,
-        "intent": "xhs_bootstrap",
+        "intent": intent,
         "paperId": paper_id,
+        "workflowName": workflow_name,
         "workflowRoot": workflow_root,
         "runDir": run_dir,
         "pdfPath": pdf_path,
@@ -5821,6 +5975,11 @@ def xhs_bootstrap_once(args: argparse.Namespace) -> Dict[str, Any]:
         "bootstrap": kickoff,
         "ack": ack,
     }
+
+
+def xhs_bootstrap_once(args: argparse.Namespace) -> Dict[str, Any]:
+    """Legacy wrapper — delegates to workflow_bootstrap_once."""
+    return workflow_bootstrap_once(args, XHS_WORKFLOW_NAME)
 
 
 def cmd_xhs_bootstrap(args: argparse.Namespace) -> int:
