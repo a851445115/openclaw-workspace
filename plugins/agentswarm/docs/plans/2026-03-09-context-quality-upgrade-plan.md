@@ -1,8 +1,8 @@
-# Agentswarm 上下文质量升级实施计划
+# Agentswarm 上下文质量升级 + Workflow 抽象层重构 实施计划
 
-> 日期: 2026-03-09
-> 目标: 解决 agent 间上下文断裂、验收门过弱、prompt 质量不足三大核心缺陷
-> 来源: Paper A2 (EHH-IES) 复现失败复盘 + 架构审计
+> 日期: 2026-03-09 (v2 修订: 增加 Workflow 结构性重构)
+> 目标: 1) 解决 agent 间上下文断裂、验收门过弱、prompt 质量不足三大核心缺陷; 2) 解耦 workflow 定义与通用引擎
+> 来源: Paper A2 (EHH-IES) 复现失败复盘 + 架构审计 + Workflow 兼容性分析
 
 ---
 
@@ -17,6 +17,9 @@
 | 任务拆解纯正则 | task_decomposer.py 无 LLM 回退 | 无法从论文正文推断实现任务 |
 | Stage 间无输出验证 | dispatch_once 不检查上游产物 | 错误向下游传播 |
 | 审计反馈无闭环 | Stage N 失败不自动触发 Stage L 修复 | 发现伪造后需人工介入 |
+| **Workflow 与通用引擎耦合** | XHS 16 个 stage 硬编码在 milestones.py 中 | 无法添加新 workflow、环境要求泄漏到通用 prompt |
+| **模板系统不灵活** | 仅支持 4 个固定占位符 | stage 无法引用上游产物路径 |
+| **论文知识注入层缺失** | build_agent_prompt 无 workflow-scoped 上下文 | Stage L/M/N 无法获得论文方法论细节 |
 
 ---
 
@@ -104,38 +107,83 @@ CRITICAL RULES:
 
 ---
 
-### P1 — 上下文质量提升
+### P1 — Workflow 抽象层重构（结构性重构）
 
-#### P1-1: 论文知识注入层 (Paper Context Injector)
+#### P1-W1: Workflow 配置 Schema + 加载器
+
+**新建文件**: `config/workflows/paper-xhs-3min.json`
+**修改文件**: `scripts/lib/milestones.py` (新增 `workflow_registry.py` 功能内联或独立)
+
+**方案**:
+1. 创建 `config/workflows/paper-xhs-3min.json`:
+   ```json
+   {
+     "name": "paper-xhs-3min",
+     "description": "论文 → 小红书 + 复现 16 阶段 workflow",
+     "defaultWorkflowRoot": "~/.openclaw/projects/paper-xhs-3min-workflow",
+     "defaultOutputRoot": "~/xhs-share",
+     "contextMarkerFile": "orchestrator-bootstrap.json",
+     "placeholders": ["paper_id", "workflow_root", "run_dir", "pdf_path"],
+     "envRequirements": [
+       "必须使用 conda 环境 'workplace'（包含 python + gurobi 优化求解器）",
+       "对于优化问题（SDP/DRO等），必须调用真实求解器",
+       "所有 Python 命令必须在 workplace 环境中执行：conda run -n workplace python ..."
+     ],
+     "stages": [ ... 当前 XHS_STAGE_DEFINITIONS 内容搬到这里 ... ]
+   }
+   ```
+2. 新增加载函数 `load_workflow_config(root, workflow_name) -> Dict`:
+   - 从 `config/workflows/{workflow_name}.json` 加载
+   - 验证 schema 完整性
+3. 新增注册查找函数 `list_workflows(root) -> List[str]`
+
+#### P1-W2: 从 milestones.py 提取 XHS 硬编码
+
+**修改文件**: `scripts/lib/milestones.py`
+
+**方案**:
+1. 删除 `DEFAULT_XHS_WORKFLOW_ROOT`, `DEFAULT_XHS_OUTPUT_ROOT`, `DEFAULT_XHS_N8N_TRIGGER_SCRIPT`, `XHS_WORKFLOW_NAME`, `XHS_TEMPLATE_DIR`, `XHS_CONTEXT_MARKER_FILE`, `XHS_ALLOWED_PLACEHOLDERS`, `XHS_STAGE_DEFINITIONS` 等硬编码常量
+2. 改为从 `load_workflow_config()` 动态加载
+3. `xhs_bootstrap_once()` 泛化为 `workflow_bootstrap_once(args, workflow_name)`
+4. `read_xhs_stage_template()` 泛化为 `read_stage_template(template_dir, template_file)`
+5. `render_xhs_stage_prompt()` 泛化为 `render_stage_prompt(template_text, allowed_placeholders, values)`
+6. 保留 XHS 常量作为兼容别名（指向 config 加载结果），避免破坏现有测试
+
+#### P1-W3: 移除 build_agent_prompt 中的硬编码 workflow 判断
+
+**修改文件**: `scripts/lib/milestones.py`
+
+**方案**:
+1. 删除 `if project_path and "paper-xhs-3min-workflow" in project_path` 分支
+2. 改为从 task 的 project context 中读取 workflow_name → 加载 workflow config → 读取 `envRequirements`
+3. 使 `build_agent_prompt()` 对所有 workflow 统一处理环境要求
+
+#### P1-W4: 论文知识注入（Workflow-scoped）
 
 **新建文件**: `scripts/lib/paper_context_injector.py`
 
-**功能**:
-- `load_paper_context(root, task_id)`: 从 task-context-map 读取 paperId → 查找论文工作目录下的结构化信息
-- `extract_paper_sections(paper_dir)`: 读取 normalized-paper.md / claims.jsonl 等已提取的论文信息
-- `build_paper_prompt_section(paper_context)`: 格式化为 prompt 注入段
+**方案**:
+- `load_paper_context(run_dir)`: 从 workflow run_dir 读取已提取的论文结构化信息
+  - `{run_dir}/artifacts/a0-extract/raw-text.md` → 核心方法论
+  - `{run_dir}/repro/j-scope/method-mapping.md` → 方法映射
+- `build_paper_prompt_section(paper_context) -> str`: 格式化为 prompt 段
+- **集成方式**: 在 workflow config 中声明 `contextInjectors` 字段，`build_agent_prompt()` 根据 workflow config 决定是否注入
+- **仅影响** paper-xhs-3min workflow 的 Stage J-O（论文复现阶段）
 
-**集成到 `build_agent_prompt()`**:
-- 在 TASK_CONTEXT 之后注入 `PAPER_CONTEXT` 段
-- 包含: 核心方法论描述、数学公式、基准指标、参考实现提示
+#### P1-W5: 扩展模板占位符系统
 
-#### P1-2: 正确性测试生成器
+**修改文件**: `scripts/lib/milestones.py` (泛化后的 `render_stage_prompt`)
 
-**新建文件**: `scripts/lib/correctness_test_generator.py`
+**方案**:
+1. 占位符不再硬编码为 4 个固定值
+2. 从 workflow config 的 `placeholders` 字段读取允许的占位符列表
+3. 支持 `{upstream_output_dir}` 等动态占位符（由 bootstrap 时根据前序 stage 的 Required Outputs 推算）
 
-**功能**:
-- `generate_tests_for_task(root, task_id, paper_context)`:
-  - 优化问题: 小规模验证解、约束可行性检查、目标值范围检查
-  - 算法行为: 收敛性检查、论文 Table 数据点验证
-- 输出 `tests/test_reproduction_correctness.py` 到工作区
-- 在 Stage J 完成后自动调用，为 Stage L 准备测试
+---
 
-**集成方式**:
-- 在 `dispatch_once()` 中、Stage L 派发前调用
-- 生成的测试文件路径注入到 Stage L 的 prompt 中
-- Stage L 的 `verifyCommands` 指向这些测试
+### P2 — 剩余增强项
 
-#### P1-3: LLM 驱动的任务拆解
+#### P2-1: LLM 驱动的任务拆解
 
 **修改文件**: `scripts/lib/task_decomposer.py`
 
@@ -143,49 +191,9 @@ CRITICAL RULES:
 - 新增 `llm_decompose_project(root, project_path, doc_text)`:
   - 调用 claude_worker_bridge 执行 LLM 分析
   - 使用专用 JSON schema 要求返回结构化任务列表
-  - 每个任务包含: title, objective, methodologyRef, acceptanceTest, ownerHint, dependsOn, complexity
 - 修改 `decompose_project()`:
   - 先尝试正则拆解
-  - 如果产出任务数 < 3 或平均 confidence < 0.6，回退到 `llm_decompose_project()`
-  - 合并两种结果，去重
-
----
-
-### P2 — 闭环机制
-
-#### P2-1: 审计反馈自动闭环
-
-**修改文件**: `scripts/lib/milestones.py`
-
-**方案**:
-- 新增 `handle_audit_feedback(root, audit_task_id, impl_task_id, audit_result)`:
-  - 当 Stage N (审计) 输出包含 "FAILED" 或 "fabricated" 信号时触发
-  - 将 impl_task_id (Stage L) 重新标记为 pending
-  - 在 retry_context 中注入 audit_findings（审计的完整失败报告）
-  - 在 collaborated_hub 中创建 debugger → coder 的 handoff 消息
-- 在 `classify_spawn_result()` 中检测审计失败信号
-- 自动升级 executor（如从 codex → claude）以获得更强推理能力
-
-#### P2-2: Stage 间输出 Gate Check
-
-**修改文件**: `scripts/lib/milestones.py`
-
-**方案**:
-- 新增 `verify_upstream_outputs(root, task_id)`:
-  - 检查 dependsOn 中所有前置任务的 status
-  - 对于 paper-xhs-3min workflow，检查 stage 模板中定义的 "Required Outputs" 文件是否存在
-  - 若缺失则阻断后续 dispatch 并返回具体缺失项
-- 在 `dispatch_once()` 的 spawn 前调用
-
-#### P2-3: Claude `--resume` 会话持续性
-
-**修改文件**: `scripts/lib/claude_worker_bridge.py`, `scripts/lib/session_registry.py`
-
-**方案**:
-- 在 `session_registry` 中新增 `claude_session_id` 字段
-- Claude bridge 执行成功后，从 stderr 中解析 session-id
-- retry 时在 cmd 中增加 `--resume <session-id>` 参数
-- 失败时回退到无 session 模式
+  - 如果产出任务数 < 3 或平均 confidence < 0.6，回退到 LLM
 
 ---
 
@@ -193,12 +201,9 @@ CRITICAL RULES:
 
 #### P3-1: 为所有改动编写测试
 
-- `tests/test_spawn_output_persistence.py`: 验证完整输出保存/读取/清理
-- `tests/test_worker_system_prompt.py`: 验证三个 bridge 的 system prompt 注入
-- `tests/test_verify_commands.py`: 验证 acceptance gate 的 verifyCommands 执行
-- `tests/test_paper_context_injector.py`: 验证论文上下文提取和注入
-- `tests/test_upstream_gate_check.py`: 验证 stage 间输出验证
-- 更新已有测试以适配新逻辑
+- `tests/test_workflow_registry.py`: workflow config 加载、schema 验证、泛化 bootstrap
+- `tests/test_paper_context_injector.py`: 论文上下文提取（workflow-scoped）
+- 更新已有测试以适配重构后的接口
 
 ---
 
@@ -206,44 +211,37 @@ CRITICAL RULES:
 
 | 操作 | 文件路径 | 改动范围 |
 |------|----------|---------|
-| 修改 | `scripts/lib/milestones.py` | save_spawn_output, build_agent_prompt 注入 PREVIOUS_OUTPUT + PAPER_CONTEXT, verify_upstream_outputs, handle_audit_feedback |
-| 修改 | `scripts/lib/claude_worker_bridge.py` | 增加 --system-prompt 参数 |
-| 修改 | `scripts/lib/codex_worker_bridge.py` | stdin 前缀注入 system prompt |
-| 修改 | `scripts/lib/gemini_worker_bridge.py` | prompt 前缀注入 system prompt |
-| 修改 | `config/acceptance-policy.json` | 填充 verifyCommands, verifyPassPattern, verifyFailPattern |
-| 修改 | `scripts/lib/context_pack.py` | compact_event_payload result 截断限制放宽 |
-| 修改 | `scripts/lib/task_decomposer.py` | 新增 llm_decompose_project 回退 |
-| 修改 | `scripts/lib/session_registry.py` | 新增 claude_session_id 字段 |
-| 新建 | `scripts/lib/paper_context_injector.py` | 论文知识注入模块 |
-| 新建 | `scripts/lib/correctness_test_generator.py` | 正确性测试生成模块 |
-| 新建 | `tests/test_spawn_output_persistence.py` | spawn 输出持久化测试 |
-| 新建 | `tests/test_worker_system_prompt.py` | bridge system prompt 测试 |
-| 新建 | `tests/test_verify_commands.py` | 验收命令执行测试 |
-| 新建 | `tests/test_paper_context_injector.py` | 论文知识注入测试 |
-| 新建 | `tests/test_upstream_gate_check.py` | stage 间 gate check 测试 |
+| 修改 | `scripts/lib/milestones.py` | 提取 XHS 硬编码 → workflow config 加载, 泛化 bootstrap/template/prompt |
+| 新建 | `config/workflows/paper-xhs-3min.json` | workflow 声明式配置 |
+| 新建 | `scripts/lib/paper_context_injector.py` | 论文知识注入（workflow-scoped） |
+| 修改 | `scripts/lib/task_decomposer.py` | LLM 回退 |
+| 新建 | `tests/test_workflow_registry.py` | workflow 加载 + bootstrap 测试 |
+| 新建 | `tests/test_paper_context_injector.py` | 论文上下文测试 |
 
 ---
 
 ## 执行顺序
 
 ```
-Phase 1 (P0): 最小可行修复
-  1. P0-1: save_spawn_output + build_agent_prompt PREVIOUS_OUTPUT
-  2. P0-2: 三个 worker bridge system prompt
-  3. P0-3: acceptance-policy verifyCommands
-  4. 对应测试编写
+Phase 1 (P0): 最小可行修复 ✅ 已完成
+  1. P0-1: spawn output 持久化
+  2. P0-2: build_agent_prompt PREVIOUS_OUTPUT 注入
+  3. P0-3: worker bridge system prompt
+  4. P0-4: verifyCommands 填充
+  + Claude --resume / payload 扩容 / stage gate / audit feedback
 
-Phase 2 (P1): 上下文质量提升
-  5. P1-1: paper_context_injector.py + 集成到 build_agent_prompt
-  6. P1-2: correctness_test_generator.py + 集成到 dispatch_once
-  7. P1-3: task_decomposer LLM 回退
-  8. 对应测试编写
+Phase 2 (P1): Workflow 抽象层重构
+  5. P1-W1: workflow config schema + 加载器
+  6. P1-W2: 提取 XHS 硬编码到 config
+  7. P1-W3: build_agent_prompt 去硬编码
+  8. P1-W4: paper_context_injector (workflow-scoped)
+  9. P1-W5: 扩展模板占位符
 
-Phase 3 (P2): 闭环机制
-  9. P2-1: audit feedback loop
-  10. P2-2: upstream gate check
-  11. P2-3: claude --resume session
-  12. 对应测试编写
+Phase 3 (P2): 剩余增强
+  10. P2-1: LLM task_decomposer 回退
+
+Phase 4 (P3): 测试覆盖
+  11. workflow registry + injector 测试
 ```
 
 ---
@@ -254,13 +252,17 @@ Phase 3 (P2): 闭环机制
 - [x] P0-2: build_agent_prompt PREVIOUS_OUTPUT 段注入
 - [x] P0-3: 三个 worker bridge system prompt (claude/codex/gemini)
 - [x] P0-4: acceptance-policy.json verifyCommands 填充 (coder + debugger)
-- [x] P1-1: Claude --resume session 支持 (session ID 提取 + 持久化 + --resume 注入)
-- [x] P1-2: compact_event_payload result 截断限制从 120 提升到 500 字符
-- [x] P1-3: dispatch_once stage gate check (检查上游 dependsOn 产出)
-- [x] P2-1: 审计反馈闭环 (handle_audit_feedback 自动 reopen 上游任务)
+- [x] P1(旧): Claude --resume session 支持
+- [x] P1(旧): compact_event_payload result 截断限制从 120 提升到 500 字符
+- [x] P1(旧): dispatch_once stage gate check
+- [x] P2(旧): 审计反馈闭环 (handle_audit_feedback)
 - [x] 桥接测试已更新适配 system prompt 变更
-- [ ] Paper A2 workflow 重新执行验证
-- [ ] P1 计划中尚未实施: paper_context_injector, correctness_test_generator, task_decomposer LLM 回退
-- [ ] P3 完整测试覆盖
+- [ ] P1-W1: workflow config schema + 加载器
+- [ ] P1-W2: XHS 硬编码提取到 config
+- [ ] P1-W3: build_agent_prompt 去掉 workflow 名称判断
+- [ ] P1-W4: paper_context_injector (workflow-scoped)
+- [ ] P1-W5: 模板占位符扩展
+- [ ] P2-1: LLM task_decomposer 回退
+- [ ] P3: workflow 相关测试
 
-> 最后更新: 2026-03-09, commit 63ede30
+> 最后更新: 2026-03-09 v2
