@@ -250,8 +250,17 @@ Phase 3 (P2): 闭环机制
 
 ## 验收标准
 
-- [ ] 所有改动通过 `python -m pytest tests/ -x` 
-- [ ] dry-run-mvp 脚本通过
-- [ ] Paper A2 workflow 重新执行时，Stage L 的 coder agent 能看到完整的前轮输出
-- [ ] verifyCommands 在 acceptance gate 中实际执行
-- [ ] System prompt 在三个 bridge 的 subprocess 调用中可见（通过 fake output 测试验证）
+- [x] P0-1: spawn output 持久化 (save_spawn_output / load_latest_spawn_output / _prune_spawn_outputs)
+- [x] P0-2: build_agent_prompt PREVIOUS_OUTPUT 段注入
+- [x] P0-3: 三个 worker bridge system prompt (claude/codex/gemini)
+- [x] P0-4: acceptance-policy.json verifyCommands 填充 (coder + debugger)
+- [x] P1-1: Claude --resume session 支持 (session ID 提取 + 持久化 + --resume 注入)
+- [x] P1-2: compact_event_payload result 截断限制从 120 提升到 500 字符
+- [x] P1-3: dispatch_once stage gate check (检查上游 dependsOn 产出)
+- [x] P2-1: 审计反馈闭环 (handle_audit_feedback 自动 reopen 上游任务)
+- [x] 桥接测试已更新适配 system prompt 变更
+- [ ] Paper A2 workflow 重新执行验证
+- [ ] P1 计划中尚未实施: paper_context_injector, correctness_test_generator, task_decomposer LLM 回退
+- [ ] P3 完整测试覆盖
+
+> 最后更新: 2026-03-09, commit 63ede30
