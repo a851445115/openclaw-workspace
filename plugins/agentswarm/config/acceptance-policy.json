@@ -3,7 +3,7 @@
     "requireEvidence": true,
     "evidenceMode": "hard",
     "evidenceTimeoutSec": 0,
-    "verifyTimeoutSec": 0,
+    "verifyTimeoutSec": 300,
     "verifyCommands": [],
     "requireTypes": [],
     "minScreenshots": 0,
@@ -22,7 +22,13 @@
         "输出",
         "result"
       ],
-      "verifyCommands": []
+      "verifyCommands": [
+        {
+          "cmd": "cd \"$AGENTSWARM_PROJECT_PATH\" && python -m pytest tests/ -x -q 2>&1 | tail -80",
+          "expectExitCode": 0,
+          "timeoutSec": 300
+        }
+      ]
     },
     "debugger": {
       "requireAny": [
@@ -33,6 +39,13 @@
         "复现",
         "stack",
         "trace"
+      ],
+      "verifyCommands": [
+        {
+          "cmd": "cd \"$AGENTSWARM_PROJECT_PATH\" && python -m pytest tests/ -x -q 2>&1 | tail -80",
+          "expectExitCode": 0,
+          "timeoutSec": 300
+        }
       ]
     },
     "invest-analyst": {

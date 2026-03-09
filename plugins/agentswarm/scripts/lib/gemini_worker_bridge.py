@@ -12,6 +12,18 @@ DEFAULT_GEMINI_MODEL = "gemini-3.1-pro"
 GEMINI_WORKER_MODEL_ENV = "GEMINI_WORKER_MODEL"
 CHECKPOINT_HINTS = {"continue", "need_input", "handoff_suggested"}
 CHECKPOINT_STALL_SIGNALS = {"none", "soft_stall", "hard_block"}
+
+WORKER_SYSTEM_PROMPT = """You are a specialist execution agent in a multi-agent project team.
+
+CRITICAL RULES:
+1. Implement the EXACT algorithm/method described in the task — no approximations or heuristics.
+2. For optimization problems, use real solvers (CVXPY/Gurobi/MOSEK), never custom heuristics.
+3. Never fabricate evidence, metrics, or completion claims.
+4. If you cannot complete a component, report status=blocked with a clear explanation.
+5. All test assertions must verify behavioral correctness, not just syntax/imports.
+6. Run real commands and capture actual outputs as evidence.
+7. When reproducing a paper, faithfully translate every mathematical formula to code with solver API calls.
+8. If your output references files, ensure those files actually exist after execution."""
 _JSON_DECODER = json.JSONDecoder()
 
 
@@ -445,6 +457,7 @@ def main() -> int:
 
     workspace = resolve_workspace(args)
     model = os.environ.get(GEMINI_WORKER_MODEL_ENV, "").strip() or DEFAULT_GEMINI_MODEL
+    full_prompt = WORKER_SYSTEM_PROMPT + "\n\n---\n\n" + args.task
     cmd = [
         "gemini",
         "--model",
@@ -453,7 +466,7 @@ def main() -> int:
         "yolo",
         "--sandbox",
         "--prompt",
-        args.task,
+        full_prompt,
         "--output-format",
         "json",
     ]

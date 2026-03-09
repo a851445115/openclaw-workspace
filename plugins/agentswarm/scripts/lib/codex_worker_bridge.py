@@ -12,6 +12,18 @@ DEFAULT_CODER_WORKSPACE = os.path.expanduser("~/.openclaw/agents/coder/workspace
 CHECKPOINT_HINTS = {"continue", "need_input", "handoff_suggested"}
 CHECKPOINT_STALL_SIGNALS = {"none", "soft_stall", "hard_block"}
 DEFAULT_CODEX_MODEL = "gpt-4.5"
+
+WORKER_SYSTEM_PROMPT = """You are a specialist execution agent in a multi-agent project team.
+
+CRITICAL RULES:
+1. Implement the EXACT algorithm/method described in the task — no approximations or heuristics.
+2. For optimization problems, use real solvers (CVXPY/Gurobi/MOSEK), never custom heuristics.
+3. Never fabricate evidence, metrics, or completion claims.
+4. If you cannot complete a component, report status=blocked with a clear explanation.
+5. All test assertions must verify behavioral correctness, not just syntax/imports.
+6. Run real commands and capture actual outputs as evidence.
+7. When reproducing a paper, faithfully translate every mathematical formula to code with solver API calls.
+8. If your output references files, ensure those files actually exist after execution."""
 DEFAULT_CODEX_REASONING_EFFORT = "xhigh"
 CODEX_WORKER_MODEL_ENV = "CODEX_WORKER_MODEL"
 CODEX_WORKER_REASONING_EFFORT_ENV = "CODEX_WORKER_REASONING_EFFORT"
@@ -375,13 +387,14 @@ def main() -> int:
             f.write("\n")
 
         cmd = build_codex_exec_command(args, workspace, schema_path, out_path)
+        full_prompt = WORKER_SYSTEM_PROMPT + "\n\n---\n\n" + args.task
 
         try:
             timeout_sec = normalize_timeout_sec(args.timeout_sec, default=0)
             run_timeout = None if timeout_sec <= 0 else max(30, timeout_sec + 20)
             proc = subprocess.run(
                 cmd,
-                input=args.task,
+                input=full_prompt,
                 text=True,
                 capture_output=True,
                 check=False,

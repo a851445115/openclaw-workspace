@@ -2,14 +2,28 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 TASK_CONTEXT_STATE_FILE = "task-context-map.json"
 DEFAULT_CLAUDE_MODEL = "claude-opus-4-5-20251101"
 CHECKPOINT_HINTS = {"continue", "need_input", "handoff_suggested"}
 CHECKPOINT_STALL_SIGNALS = {"none", "soft_stall", "hard_block"}
+CLAUDE_SESSION_DIR = os.path.join("state", "claude-sessions")
+
+WORKER_SYSTEM_PROMPT = """You are a specialist execution agent in a multi-agent project team.
+
+CRITICAL RULES:
+1. Implement the EXACT algorithm/method described in the task — no approximations or heuristics.
+2. For optimization problems, use real solvers (CVXPY/Gurobi/MOSEK), never custom heuristics.
+3. Never fabricate evidence, metrics, or completion claims.
+4. If you cannot complete a component, report status=blocked with a clear explanation.
+5. All test assertions must verify behavioral correctness, not just syntax/imports.
+6. Run real commands and capture actual outputs as evidence.
+7. When reproducing a paper, faithfully translate every mathematical formula to code with solver API calls.
+8. If your output references files, ensure those files actually exist after execution."""
 
 
 def clip(text: str, limit: int = 300) -> str:
@@ -32,6 +46,47 @@ def parse_json_loose(text: str) -> Any:
     if start >= 0 and end > start:
         return json.loads(s[start : end + 1])
     raise ValueError("no json object found")
+
+
+def _claude_session_path(root: str, task_id: str) -> str:
+    safe_id = re.sub(r"[^A-Za-z0-9._-]+", "-", str(task_id or "")).strip("-") or "unknown"
+    return os.path.join(root, CLAUDE_SESSION_DIR, f"{safe_id}.json")
+
+
+def _save_claude_session(root: str, task_id: str, session_id: str) -> None:
+    path = _claude_session_path(root, task_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    payload = {"sessionId": session_id, "taskId": task_id, "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _load_claude_session(root: str, task_id: str) -> Optional[str]:
+    path = _claude_session_path(root, task_id)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        sid = str(data.get("sessionId") or "").strip()
+        return sid if sid else None
+    except Exception:
+        return None
+
+
+def _extract_session_id_from_stderr(stderr: str) -> Optional[str]:
+    """Extract claude CLI session ID from stderr output."""
+    for pattern in (
+        r"session[:\s]+([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})",
+        r"session[_\s]*id[:\s]+([a-f0-9-]{20,})",
+        r"\b([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\b",
+    ):
+        m = re.search(pattern, stderr, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return None
 
 
 def state_path(root: str) -> str:
@@ -417,6 +472,7 @@ def main() -> int:
 
     workspace = resolve_workspace(args)
     schema_text = json.dumps(build_schema(), ensure_ascii=True, separators=(",", ":"))
+    full_prompt = WORKER_SYSTEM_PROMPT + "\n\n---\n\n" + args.task
     cmd = [
         "claude",
         "--print",
@@ -432,8 +488,12 @@ def main() -> int:
         "--add-dir",
         workspace,
         "-p",
-        args.task,
+        full_prompt,
     ]
+
+    prior_session = _load_claude_session(args.root, args.task_id)
+    if prior_session:
+        cmd.extend(["--resume", prior_session])
 
     try:
         timeout_sec = normalize_timeout_sec(args.timeout_sec, default=0)
@@ -455,6 +515,14 @@ def main() -> int:
 
     stdout = (proc.stdout or "").strip()
     stderr = (proc.stderr or "").strip()
+
+    # Persist session ID for future --resume
+    new_session_id = _extract_session_id_from_stderr(stderr)
+    if new_session_id:
+        try:
+            _save_claude_session(args.root, args.task_id, new_session_id)
+        except Exception:
+            pass
 
     raw_obj: Dict[str, Any] = {}
     if stdout:

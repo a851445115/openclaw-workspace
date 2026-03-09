@@ -90,7 +90,9 @@ class GeminiWorkerBridgeTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--approval-mode") + 1], "yolo")
         self.assertIn("--sandbox", cmd, f"expected --sandbox in command, got: {cmd}")
         self.assertIn("--prompt", cmd, f"expected --prompt in command, got: {cmd}")
-        self.assertEqual(cmd[cmd.index("--prompt") + 1], "写一段更新说明")
+        prompt_value = cmd[cmd.index("--prompt") + 1]
+        self.assertIn("写一段更新说明", prompt_value)
+        self.assertIn("CRITICAL RULES", prompt_value, "system prompt should be prepended")
         self.assertIn("--output-format", cmd, f"expected --output-format in command, got: {cmd}")
         self.assertEqual(cmd[cmd.index("--output-format") + 1], "json")
         kwargs = captured.get("kwargs") or {}

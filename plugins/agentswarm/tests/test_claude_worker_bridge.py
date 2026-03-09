@@ -84,7 +84,9 @@ class ClaudeWorkerBridgeTests(unittest.TestCase):
         self.assertIn("--model", cmd, f"expected explicit model flag in command, got: {cmd}")
         self.assertEqual(cmd[cmd.index("--model") + 1], "claude-opus-4-5-20251101")
         self.assertIn("-p", cmd, f"expected explicit prompt flag in command, got: {cmd}")
-        self.assertEqual(cmd[cmd.index("-p") + 1], "请修复 coder->claude_cli 桥接")
+        prompt_value = cmd[cmd.index("-p") + 1]
+        self.assertIn("请修复 coder->claude_cli 桥接", prompt_value)
+        self.assertIn("CRITICAL RULES", prompt_value, "system prompt should be prepended")
         kwargs = captured.get("kwargs") or {}
         self.assertIs(kwargs.get("stdin"), self.bridge.subprocess.DEVNULL)
         env = kwargs.get("env") or {}

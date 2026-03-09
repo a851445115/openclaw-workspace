@@ -166,6 +166,9 @@ DEFAULT_PROJECT_BOOTSTRAP_TASKS = (
 )
 TASK_CONTEXT_STATE_FILE = "task-context-map.json"
 INTERVENTION_STATE_FILE = "interventions.json"
+SPAWN_OUTPUT_DIR = os.path.join("state", "spawn-outputs")
+SPAWN_OUTPUT_MAX_PER_TASK = 5
+SPAWN_OUTPUT_MAX_INJECT_CHARS = 4000
 DEFAULT_CODER_WORKSPACE = os.path.expanduser("~/.openclaw/agents/coder/workspace")
 RUNTIME_POLICY_CONFIG_CANDIDATES = (
     os.path.join("config", "runtime-policy.json"),
@@ -1451,14 +1454,16 @@ def collect_spawn_unfinished_checklist(spawn: Dict[str, Any]) -> List[str]:
 
 def compact_event_payload(payload: Any) -> Any:
     if not isinstance(payload, dict):
-        return clip(str(payload), 120)
+        return clip(str(payload), 300)
     compact: Dict[str, str] = {}
+    wide_fields = {"result", "blockedReason", "review"}
     for key in ("from", "to", "owner", "result", "blockedReason", "review", "relatedTo", "title"):
         if key in payload and payload.get(key) is not None:
-            compact[key] = clip(str(payload.get(key)), 120)
+            limit = 500 if key in wide_fields else 150
+            compact[key] = clip(str(payload.get(key)), limit)
     if compact:
         return compact
-    return clip(json.dumps(payload, ensure_ascii=False), 120)
+    return clip(json.dumps(payload, ensure_ascii=False), 300)
 
 
 def read_recent_task_events(root: str, task_id: str, limit: int = 8) -> List[Dict[str, Any]]:
@@ -1669,6 +1674,117 @@ def resolve_prompt_strategy(root: str, task: Dict[str, Any], agent: str, dispatc
     return strategy_library.resolve_strategy(library, agent, task_kind, task_id=task_id)
 
 
+# ---------------------------------------------------------------------------
+# Spawn output persistence — save full agent outputs for context continuity
+# ---------------------------------------------------------------------------
+
+def _spawn_output_dir(root: str) -> str:
+    return os.path.join(root, SPAWN_OUTPUT_DIR)
+
+
+def save_spawn_output(
+    root: str,
+    task_id: str,
+    agent: str,
+    spawn_result: Dict[str, Any],
+) -> str:
+    """Persist the full spawn output to disk. Returns the saved file path."""
+    directory = _spawn_output_dir(root)
+    os.makedirs(directory, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    safe_task = re.sub(r"[^A-Za-z0-9_-]", "_", str(task_id or "unknown"))
+    safe_agent = re.sub(r"[^A-Za-z0-9_-]", "_", str(agent or "unknown"))
+    filename = f"{safe_task}-{safe_agent}-{ts}.json"
+    path = os.path.join(directory, filename)
+    payload = {
+        "taskId": str(task_id or ""),
+        "agent": str(agent or ""),
+        "savedAt": datetime.now(timezone.utc).isoformat(),
+        "stdout": str(spawn_result.get("stdout") or ""),
+        "stderr": str(spawn_result.get("stderr") or ""),
+        "decision": str(spawn_result.get("decision") or ""),
+        "detail": str(spawn_result.get("detail") or ""),
+        "reasonCode": str(spawn_result.get("reasonCode") or ""),
+        "executor": str(spawn_result.get("executor") or ""),
+        "normalizedReport": spawn_result.get("normalizedReport") if isinstance(spawn_result.get("normalizedReport"), dict) else {},
+        "spawnResult": spawn_result.get("spawnResult") if isinstance(spawn_result.get("spawnResult"), dict) else {},
+    }
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+    except Exception:
+        LOGGER.warning("save_spawn_output failed: path=%s", path, exc_info=True)
+        return ""
+    # Prune old outputs for same task+agent
+    _prune_spawn_outputs(directory, safe_task, safe_agent, keep=SPAWN_OUTPUT_MAX_PER_TASK)
+    return path
+
+
+def _prune_spawn_outputs(directory: str, task_prefix: str, agent_prefix: str, keep: int = 5) -> None:
+    """Keep only the most recent `keep` output files for a task+agent pair."""
+    prefix = f"{task_prefix}-{agent_prefix}-"
+    try:
+        candidates = sorted(
+            [f for f in os.listdir(directory) if f.startswith(prefix) and f.endswith(".json")],
+        )
+    except Exception:
+        return
+    if len(candidates) <= keep:
+        return
+    for old in candidates[: len(candidates) - keep]:
+        try:
+            os.remove(os.path.join(directory, old))
+        except OSError:
+            pass
+
+
+def load_latest_spawn_output(root: str, task_id: str, max_chars: int = 0) -> str:
+    """Load the most recent full spawn output for a task (any agent). Returns text for prompt injection."""
+    directory = _spawn_output_dir(root)
+    if not os.path.isdir(directory):
+        return ""
+    safe_task = re.sub(r"[^A-Za-z0-9_-]", "_", str(task_id or ""))
+    if not safe_task:
+        return ""
+    limit = max_chars if max_chars > 0 else SPAWN_OUTPUT_MAX_INJECT_CHARS
+    try:
+        candidates = sorted(
+            [f for f in os.listdir(directory) if f.startswith(safe_task + "-") and f.endswith(".json")],
+        )
+    except Exception:
+        return ""
+    if not candidates:
+        return ""
+    latest = candidates[-1]
+    try:
+        with open(os.path.join(directory, latest), "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return ""
+    # Build a readable summary from the saved output
+    parts: List[str] = []
+    agent = str(data.get("agent") or "")
+    decision = str(data.get("decision") or "")
+    if agent:
+        parts.append(f"Previous executor: {agent}")
+    if decision:
+        parts.append(f"Previous decision: {decision}")
+    report = data.get("normalizedReport") if isinstance(data.get("normalizedReport"), dict) else {}
+    if report:
+        for key in ("summary", "evidence", "changes", "risks", "nextActions"):
+            val = report.get(key)
+            if val:
+                parts.append(f"{key}: {json.dumps(val, ensure_ascii=False)}")
+    stdout = str(data.get("stdout") or "")
+    if stdout and not report:
+        parts.append(f"Raw output:\n{stdout}")
+    result = "\n".join(parts)
+    if len(result) > limit:
+        result = result[:limit - 3] + "..."
+    return result
+
+
 def build_agent_prompt(
     root: str,
     task: Dict[str, Any],
@@ -1731,6 +1847,14 @@ def build_agent_prompt(
             [
                 "COLLAB_THREAD_SUMMARY:",
                 json.dumps(collab_summary, ensure_ascii=False, indent=2),
+            ]
+        )
+    previous_output = load_latest_spawn_output(root, task_id)
+    if previous_output:
+        lines.extend(
+            [
+                "PREVIOUS_OUTPUT (full output from last execution round for this task):",
+                previous_output,
             ]
         )
     if retry_pack:
@@ -2420,6 +2544,88 @@ def cleanup_done_state(root: str, task_id: str, session_agent: str = "", session
         LOGGER.warning("done cleanup failed for expert-group lifecycle: taskId=%s", task_key, exc_info=True)
 
     return out
+
+
+AUDIT_FAILURE_SIGNALS = (
+    "fabricat",
+    "not implemented",
+    "core methodology",
+    "fake",
+    "placeholder",
+    "stub",
+    "mock result",
+    "heuristic",
+    "no real solver",
+    "dummy",
+)
+
+
+def handle_audit_feedback(
+    root: str,
+    audit_task_id: str,
+    agent: str,
+    spawn_detail: str,
+    spawn: Dict[str, Any],
+) -> Dict[str, Any]:
+    """When an audit/debugger task completes and signals fabrication or failure,
+    reopen the upstream implementation task with audit findings."""
+    result: Dict[str, Any] = {"triggered": False, "reopened": [], "reason": ""}
+    role = str(agent or "").strip().lower()
+    if role not in ("debugger", "auditor", "reviewer"):
+        result["reason"] = "not_audit_role"
+        return result
+
+    combined = (str(spawn_detail or "") + " " + str(spawn.get("stdout") or "")).lower()
+    failure_detected = any(signal in combined for signal in AUDIT_FAILURE_SIGNALS)
+    if not failure_detected:
+        result["reason"] = "no_failure_signal"
+        return result
+
+    # Find upstream tasks this audit task depends on (i.e., the tasks it audited)
+    audit_task = get_task(root, audit_task_id)
+    if not isinstance(audit_task, dict):
+        result["reason"] = "audit_task_not_found"
+        return result
+
+    dep_refs = _fallback_normalize_refs(audit_task.get("dependsOn"))
+    if not dep_refs:
+        result["reason"] = "no_upstream_deps"
+        return result
+
+    result["triggered"] = True
+    audit_summary = clip(spawn_detail or "audit failed", 300)
+
+    for dep_ref in dep_refs:
+        dep_id = _fallback_normalize_task_id(dep_ref)
+        dep_task = get_task(root, dep_id)
+        if not isinstance(dep_task, dict):
+            continue
+        dep_status = _fallback_status(dep_task)
+        if dep_status != "done":
+            continue
+
+        reopen_text = (
+            f"block task {dep_id}: "
+            f"AUDIT FAILURE from {audit_task_id}: {audit_summary}"
+        )
+        try:
+            apply_result = board_apply(root, "orchestrator", reopen_text)
+            result["reopened"].append({
+                "taskId": dep_id,
+                "ok": bool(apply_result.get("ok")),
+                "auditTaskId": audit_task_id,
+                "reason": audit_summary,
+            })
+            _log(f"[audit-feedback] reopened {dep_id} due to audit failure from {audit_task_id}")
+        except Exception as err:
+            LOGGER.warning("audit feedback reopen failed: depId=%s err=%s", dep_id, err, exc_info=True)
+            result["reopened"].append({
+                "taskId": dep_id,
+                "ok": False,
+                "error": str(err),
+            })
+
+    return result
 
 
 def maybe_cleanup_dispatch_worktree(root: str, task_id: str, decision: str, worktree_info: Any) -> Dict[str, Any]:
@@ -3653,6 +3859,29 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
     task = get_task(args.root, args.task_id) or task
     status = str(task.get("status") or "")
     title = clip(task.get("title") or "未命名任务")
+
+    # Stage gate: verify upstream dependency outputs exist
+    dep_refs = _fallback_normalize_refs(task.get("dependsOn"))
+    if dep_refs:
+        snapshot = load_snapshot(args.root)
+        tasks_map = snapshot.get("tasks") if isinstance(snapshot, dict) else {}
+        if not isinstance(tasks_map, dict):
+            tasks_map = {}
+        missing_outputs: list = []
+        for dep_ref in dep_refs:
+            dep_id = _fallback_normalize_task_id(dep_ref)
+            dep_task = tasks_map.get(dep_id)
+            if not isinstance(dep_task, dict):
+                continue
+            if _fallback_status(dep_task) != "done":
+                continue
+            dep_output = load_latest_spawn_output(args.root, dep_id)
+            if not dep_output:
+                dep_title = str(dep_task.get("title") or dep_id)
+                missing_outputs.append(f"{dep_id} ({clip(dep_title, 60)})")
+        if missing_outputs:
+            _log(f"[stage-gate] task {args.task_id} upstream missing outputs: {missing_outputs}")
+
     explicit_task = str(getattr(args, "task", "") or "").strip()
     bound_dispatch_prompt = lookup_task_dispatch_prompt(args.root, args.task_id)
     if explicit_task:
@@ -3911,6 +4140,10 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                 spawn_attempt_count = 0 if spawn.get("skipped") else 1
                 if not spawn.get("skipped"):
                     try:
+                        save_spawn_output(args.root, args.task_id, args.agent, spawn)
+                    except Exception:
+                        LOGGER.warning("save_spawn_output failed: taskId=%s", args.task_id, exc_info=True)
+                    try:
                         session_executor = str(spawn.get("executor") or session_executor or "unknown")
                         session_record = session_registry.record_attempt(
                             args.root,
@@ -3975,6 +4208,10 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                     retry_spawn = run_dispatch_spawn(args, retry_prompt)
                     spawn_attempt_count += 1
                     if not retry_spawn.get("skipped"):
+                        try:
+                            save_spawn_output(args.root, args.task_id, args.agent, retry_spawn)
+                        except Exception:
+                            LOGGER.warning("save_spawn_output (retry) failed: taskId=%s", args.task_id, exc_info=True)
                         try:
                             session_executor = str(retry_spawn.get("executor") or session_executor or "unknown")
                             session_record = session_registry.record_attempt(
@@ -4108,6 +4345,21 @@ def dispatch_once(args: argparse.Namespace) -> Dict[str, Any]:
                 cleaned_session = cleanup.get("session")
                 if isinstance(cleaned_session, dict) and cleaned_session:
                     session_meta = cleaned_session
+
+                # Audit feedback loop: if this is an audit task that detected failure,
+                # reopen the upstream implementation task.
+                try:
+                    audit_fb = handle_audit_feedback(
+                        args.root,
+                        args.task_id,
+                        args.agent,
+                        detail,
+                        spawn,
+                    )
+                    if audit_fb.get("triggered"):
+                        spawn["auditFeedback"] = audit_fb
+                except Exception:
+                    LOGGER.warning("audit feedback failed: taskId=%s", args.task_id, exc_info=True)
             elif decision == "continue":
                 retry_context_pack = {}
                 try:
