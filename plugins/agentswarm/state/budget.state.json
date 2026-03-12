@@ -223,7 +223,15 @@
       "elapsedMs": 104250,
       "retryCount": 1,
       "updatedAt": "2026-03-05T06:36:10Z"
+    },
+    "T-027|coder": {
+      "taskId": "T-027",
+      "agent": "coder",
+      "tokenUsage": 0,
+      "elapsedMs": 18440,
+      "retryCount": 1,
+      "updatedAt": "2026-03-12T06:12:49Z"
     }
   },
-  "updatedAt": "2026-03-05T06:36:10Z"
+  "updatedAt": "2026-03-12T06:12:49Z"
 }

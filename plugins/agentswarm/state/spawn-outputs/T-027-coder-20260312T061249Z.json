@@ -1,0 +1,53 @@
+{
+  "taskId": "T-027",
+  "agent": "coder",
+  "savedAt": "2026-03-12T06:12:49.626818+00:00",
+  "stdout": "{\"taskId\": \"T-027\", \"agent\": \"coder\", \"status\": \"blocked\", \"summary\": \"gemini cli exit=1\", \"changes\": [], \"evidence\": [\"YOLO mode is enabled. All tool calls will be automatically approved. Loaded cached credentials. YOLO mode is enabled. All tool calls will be automatically approved. Server 'github' supports tool updates. Listening for c...\", \"MCP issues detected. Run /mcp list for status.\"], \"risks\": [], \"nextActions\": [\"请人工复核并补充执行上下文\"], \"metrics\": {\"elapsedMs\": 18440, \"tokenUsage\": 0}}",
+  "stderr": "",
+  "decision": "blocked",
+  "detail": "gemini cli exit=1 | 硬证据: /mcp",
+  "reasonCode": "spawn_failed",
+  "executor": "gemini_cli",
+  "normalizedReport": {
+    "taskId": "T-027",
+    "agent": "coder",
+    "status": "blocked",
+    "summary": "gemini cli exit=1",
+    "evidence": [
+      "YOLO mode is enabled. All tool calls will be automatically approved. Loaded cached credentials. YOLO mode is enabled. All tool calls will be automatically approved. Server 'github...",
+      "MCP issues detected. Run /mcp list for status."
+    ],
+    "changes": [],
+    "risks": [],
+    "nextActions": [
+      "请人工复核并补充执行上下文"
+    ],
+    "hardEvidence": [
+      "/mcp"
+    ],
+    "softEvidence": [],
+    "normalizedText": "gemini cli exit=1 YOLO mode is enabled. All tool calls will be automatically approved. Loaded cached credentials. YOLO mode is enabled. All tool calls will be automatically approved. Server 'github' supports tool updates. Listening for c... MCP issues detected. Run /mcp list for status. 请人工复核并补充执行上下文 YOLO mode is enabled. All tool calls will be automatically approved. Loaded cached credentials. YOLO mode is enabled. All tool calls will be automatically approved. Server 'github... MCP issues det...\ngemini cli exit=1\nYOLO mode is enabled. All tool calls will be automatically approved. Loaded cached credentials. YOLO mode is enabled. All tool calls will be automatically approved. Server 'github' supports tool updates. Listening for c...\nMCP issues detected. Run /mcp list for status.",
+    "acceptanceText": "gemini cli exit=1 YOLO mode is enabled. All tool calls will be automatically approved. Loaded cached credentials. YOLO mode is enabled. All tool calls will be automatically approved. Server 'github' supports tool updates. Listening for c... MCP issues detected. Run /mcp list for status. 请人工复核并补充执行上下文 YOLO mode is enabled. All tool calls will be automatically approved. Loaded cached credentials. YOLO mode is enabled. All tool calls will be automatically approved. Server 'github... MCP issues det...\ngemini cli exit=1\nYOLO mode is enabled. All tool calls will be automatically approved. Loaded cached credentials. YOLO mode is enabled. All tool calls will be automatically approved. Server 'github' supports tool updates. Listening for c...\nMCP issues detected. Run /mcp list for status.",
+    "detail": "gemini cli exit=1 | 硬证据: /mcp",
+    "structured": true
+  },
+  "spawnResult": {
+    "taskId": "T-027",
+    "agent": "coder",
+    "status": "blocked",
+    "summary": "gemini cli exit=1",
+    "changes": [],
+    "evidence": [
+      "YOLO mode is enabled. All tool calls will be automatically approved. Loaded cached credentials. YOLO mode is enabled. All tool calls will be automatically approved. Server 'github' supports tool updates. Listening for c...",
+      "MCP issues detected. Run /mcp list for status."
+    ],
+    "risks": [],
+    "nextActions": [
+      "请人工复核并补充执行上下文"
+    ],
+    "metrics": {
+      "elapsedMs": 18440,
+      "tokenUsage": 0
+    }
+  }
+}

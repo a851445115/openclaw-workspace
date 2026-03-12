@@ -76,7 +76,28 @@
       "cooldownUntilTs": 1772542957,
       "cooldownUntil": "2026-03-03T13:02:37Z",
       "updatedAt": "2026-03-03T12:59:37Z"
+    },
+    "T-027|spawn_failed": {
+      "taskId": "T-027",
+      "reasonCode": "spawn_failed",
+      "attempt": 1,
+      "nextAssignee": "coder",
+      "action": "retry",
+      "recoveryState": "recovery_scheduled",
+      "cooldownUntilTs": 1773296029,
+      "cooldownUntil": "2026-03-12T06:13:49Z",
+      "updatedAt": "2026-03-12T06:12:49Z",
+      "maxAttempts": 1,
+      "failureType": "missing_info",
+      "normalizedReason": "missing_upstream_information",
+      "recoveryStrategy": "retry_with_clarification",
+      "signals": [
+        "reason:spawn_failed",
+        "executor:gemini_cli",
+        "assignee:coder",
+        "missing_secret"
+      ]
     }
   },
-  "updatedAt": "2026-03-03T12:59:37Z"
+  "updatedAt": "2026-03-12T06:12:49Z"
 }

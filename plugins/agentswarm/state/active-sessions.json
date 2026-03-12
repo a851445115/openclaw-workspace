@@ -1,0 +1,18 @@
+{
+  "sessions": {
+    "T-027": {
+      "taskId": "T-027",
+      "worktreePath": "/Users/chengren17/.openclaw/task-worktrees/task-T-027",
+      "pid": 0,
+      "tmuxSession": "",
+      "startTime": "2026-03-12T06:12:25Z",
+      "lastHeartbeat": "2026-03-12T06:12:25Z",
+      "status": "blocked",
+      "endedAt": "2026-03-12T06:12:53Z",
+      "stopReason": "blocked",
+      "stopDetail": "",
+      "watchdogAt": ""
+    }
+  },
+  "updatedAt": "2026-03-12T06:12:53Z"
+}

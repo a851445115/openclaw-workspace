@@ -1,4 +1,32 @@
 {
-  "tasks": {},
-  "updatedAt": "2026-03-05T06:36:14Z"
+  "tasks": {
+    "T-027": {
+      "taskId": "T-027",
+      "agent": "coder",
+      "executor": "gemini_cli",
+      "updatedAt": "2026-03-12T06:12:53Z",
+      "lastPromptDigest": "4a99356169626612",
+      "lastOutputDigest": "9787932725242aea",
+      "blockedReason": "spawn_failed",
+      "artifactIndex": [
+        "/mcp",
+        "YOLO mode is enabled. All tool calls will be automatically approved. Loaded cached credentials. YOLO mode is enabled. All tool calls will be automatically approved. Server 'github...",
+        "MCP issues detected. Run /mcp list for status.",
+        "{\"taskId\": \"T-027\", \"agent\": \"coder\", \"status\": \"blocked\", \"summary\": \"gemini cli exit=1\", \"changes\": [], \"evidence\": [\"YOLO mode is enabled. All tool calls will be automatically approved. Loaded cached credentials. YOL..."
+      ],
+      "unfinishedChecklist": [
+        "\u8bf7\u4eba\u5de5\u590d\u6838\u5e76\u8865\u5145\u6267\u884c\u4e0a\u4e0b\u6587"
+      ],
+      "recentDecisions": [
+        {
+          "at": "2026-03-12T06:12:53Z",
+          "decision": "blocked",
+          "reasonCode": "spawn_failed",
+          "agent": "coder",
+          "executor": "gemini_cli"
+        }
+      ]
+    }
+  },
+  "updatedAt": "2026-03-12T06:12:53Z"
 }

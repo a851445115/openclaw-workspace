@@ -1,0 +1,67 @@
+{
+  "groupId": "eg_bde877b4c0367e2e",
+  "taskId": "T-027",
+  "status": "created",
+  "createdAt": "2026-03-12T06:12:54Z",
+  "updatedAt": "2026-03-12T06:12:54Z",
+  "history": [
+    {
+      "at": "2026-03-12T06:12:54Z",
+      "from": "",
+      "to": "created",
+      "event": "dispatch_blocked"
+    }
+  ],
+  "reasons": [
+    "high_risk_reason"
+  ],
+  "templates": [
+    {
+      "role": "coder",
+      "task": "[coder] Task T-027 is currently in_progress. Produce a code-level remediation plan with concrete implementation steps. Trigger reasons: high_risk_reason: runtime reason code is classified as high risk by policy. Runtime reasonCode=spawn_failed.",
+      "requiredFields": [
+        "hypothesis",
+        "evidence",
+        "confidence",
+        "proposedFix",
+        "risk"
+      ]
+    },
+    {
+      "role": "debugger",
+      "task": "[debugger] Task T-027 is currently in_progress. Trace the blocker path and isolate the most probable failure mechanism. Trigger reasons: high_risk_reason: runtime reason code is classified as high risk by policy. Runtime reasonCode=spawn_failed.",
+      "requiredFields": [
+        "hypothesis",
+        "evidence",
+        "confidence",
+        "proposedFix",
+        "risk"
+      ]
+    },
+    {
+      "role": "invest-analyst",
+      "task": "[invest-analyst] Task T-027 is currently in_progress. Evaluate system impact, sequencing, and validation strategy across tasks. Trigger reasons: high_risk_reason: runtime reason code is classified as high risk by policy. Runtime reasonCode=spawn_failed.",
+      "requiredFields": [
+        "hypothesis",
+        "evidence",
+        "confidence",
+        "proposedFix",
+        "risk"
+      ]
+    }
+  ],
+  "consensus": {
+    "consensusPlan": "Run expert triage and execute the highest-confidence fix for reasons: high_risk_reason.",
+    "owner": "coder",
+    "executionChecklist": [
+      "Validate trigger reasons: high_risk_reason.",
+      "Collect hypothesis, evidence, confidence, proposedFix, and risk from each expert.",
+      "Select the highest-confidence proposedFix and schedule execution ownership."
+    ],
+    "acceptanceGate": [
+      "Consensus plan references verifiable evidence.",
+      "Owner is explicitly assigned for execution.",
+      "Risks are documented with mitigation actions."
+    ]
+  }
+}

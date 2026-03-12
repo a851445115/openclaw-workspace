@@ -135,6 +135,11 @@
       "projectName": "paper-xhs-3min:A2",
       "dispatchPrompt": "# Stage O - Reproduction Report And Artifact Package\n\n## Context\n- paper_id: A2\n- workflow_root: /Users/chengren17/.openclaw/projects/paper-xhs-3min-workflow\n- run_dir: /Users/chengren17/xhs-share/A2\n- pdf_path: /Users/chengren17/.openclaw/projects/paper-xhs-3min-workflow/pdfs/A2.pdf\n\n## Inputs\n- /Users/chengren17/xhs-share/A2/repro/n-audit/repro-audit.md\n- /Users/chengren17/xhs-share/A2/repro/n-audit/metric-diff.json\n- /Users/chengren17/xhs-share/A2/repro/m-run/run-manifest.json\n\n## Required Outputs\n- /Users/chengren17/xhs-share/A2/repro/o-report/reproduction-report.md\n- /Users/chengren17/xhs-share/A2/repro/o-report/artifact-index.json\n- /Users/chengren17/xhs-share/A2/repro/o-report/handoff-notes.md\n\n## Acceptance Criteria\n- reproduction-report.md summarizes implemented scope, reproducibility status, and remaining gaps.\n- artifact-index.json lists all reproducibility artifacts with path, type, and purpose.\n- handoff-notes.md gives deterministic rerun instructions.\n\n## Verification And Evidence Requirements\n- Provide command output proving artifact-index.json is parseable JSON.\n- Evidence must include at least one rerun command from handoff-notes.md.\n\n## JSON Output Schema (MUST return exactly one JSON object)\n```json\n{\n  \"taskId\": \"<task-id>\",\n  \"agent\": \"<agent-role>\",\n  \"status\": \"done|blocked|progress\",\n  \"summary\": \"one-line outcome\",\n  \"changes\": [\n    {\n      \"path\": \"<file-or-dir-path>\",\n      \"summary\": \"what changed\"\n    }\n  ],\n  \"evidence\": [\n    \"<verification command output / file path / link>\"\n  ],\n  \"risks\": [\n    \"<risk or empty string>\"\n  ],\n  \"nextActions\": [\n    \"<next action or empty string>\"\n  ]\n}\n```",
       "updatedAt": "2026-03-02T16:32:30Z"
+    },
+    "T-027": {
+      "projectPath": "/Users/chengren17/.openclaw/workspace/projects/agentswarm-frontend",
+      "projectName": "agentswarm Frontend Dashboard PRD",
+      "updatedAt": "2026-03-12T06:12:20Z"
     }
   }
 }

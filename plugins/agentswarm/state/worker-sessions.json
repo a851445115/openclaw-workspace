@@ -23,7 +23,19 @@
       "retryCount": 1,
       "lastReasonCode": "done",
       "lastDetail": "Health check validated with 3 medium risks identified: reproduction pipeline stall (48h gap), 12% task reopen rate, and agent capacity imbalance. Review document created with comprehensive verificati..."
+    },
+    "T-027|coder|gemini_cli": {
+      "taskId": "T-027",
+      "agent": "coder",
+      "executor": "gemini_cli",
+      "sessionId": "ws-T-027-coder-gemini_cli-1773295945170",
+      "createdAt": "2026-03-12T06:12:25Z",
+      "lastActiveAt": "2026-03-12T06:12:53Z",
+      "status": "failed",
+      "retryCount": 1,
+      "lastReasonCode": "spawn_failed",
+      "lastDetail": "gemini cli exit=1 | \u786c\u8bc1\u636e: /mcp"
     }
   },
-  "updatedAt": "2026-03-05T06:36:14Z"
+  "updatedAt": "2026-03-12T06:12:53Z"
 }
