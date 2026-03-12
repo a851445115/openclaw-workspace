@@ -100,3 +100,7 @@
 - Main-session verification confirmed `codex exec --model gpt-4.5 -c 'model_reasoning_effort="xhigh"'` runs successfully and reports `reasoning effort: xhigh`.
 - Subagent verification passed: `python3 -m unittest tests/test_codex_worker_bridge.py -q` (4 tests, OK) and `python3 -m unittest tests/test_orchestrator_runtime.py -q` (108 tests, OK) in the worker environment.
 - Main-session full runtime recheck was blocked by host-level `fork` exhaustion (`fork: Resource temporarily unavailable` / `os error 35`), which also blocked the requested real smoke run for the temporary “文献复现代码知识图谱库” project.
+- 2026-03-12: traced a Feishu-side `502 Upstream request failed` incident without changing runtime config.
+- Verified `openclaw status --deep` showed Feishu healthy while `/tmp/openclaw/openclaw-2026-03-12.log` recorded repeated `agent/embedded` upstream 502 failures around 13:21-13:23 GMT+8.
+- Confirmed the affected orchestrator group session had been reset and still failed on the new session startup prompt, so the fault window was not fixed by session reset alone.
+- Confirmed a fresh `openclaw agent --agent orchestrator --message '你好，请用一句话回复：系统测试。' --json` run succeeded later through `ttapi/gpt-5.4`, which narrowed the likely cause to a transient upstream/provider failure rather than Feishu transport or a permanent prompt-size incompatibility.

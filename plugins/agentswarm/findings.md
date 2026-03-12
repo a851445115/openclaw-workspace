@@ -51,3 +51,9 @@
 - Codex bridge finding: `codex exec --help` 能明确确认 `--model` 与 `-c key=value` 配置覆盖路径，因此可以安全显式传 `--model gpt-4.5` 与 `-c model_reasoning_effort=...`。
 - Main-session verification finding: `codex exec --model gpt-4.5 -c 'model_reasoning_effort="xhigh"'` 在本机可真实运行，并显示 `reasoning effort: xhigh`，因此默认值可以直接使用 `xhigh`，无需保守降级到 `high`。
 - Host blocker finding: 本轮后续验证与真实 smoke run 并非被插件逻辑阻塞，而是被宿主机全局进程 / `fork` 资源耗尽阻塞；错误表现为 `fork: Resource temporarily unavailable` 与 `Failed to create unified exec process: Resource temporarily unavailable (os error 35)`。
+## 2026-03-12
+- `502 Upstream request failed` 这次不是 Feishu 入口层故障；`openclaw status --deep` 显示 Feishu accounts 10/10 healthy，错误日志落点在 `agent/embedded` 的上游模型调用阶段。
+- 故障窗口出现在 2026-03-12 13:21-13:23 GMT+8；`/tmp/openclaw/openclaw-2026-03-12.log` 连续记录 `embedded run agent end ... error=502 Upstream request failed`。
+- 问题群会话 `agent:orchestrator:feishu:group:oc_041146c92a9ccb403a7f4f48fb59701d` 在同一时间点附近被 reset 过，新 session `fa09f65d-e3f0-4fa1-981a-d4837f9bf82b` 启动后连 session startup prompt 都连续 502，说明故障窗口里单纯 reset 会话不能自愈。
+- 同轮排查里，`openclaw agent --agent orchestrator --message '你好，请用一句话回复：系统测试。' --json` 仍能通过 `ttapi/gpt-5.4` 成功返回，且 prompt token 约 328k，说明 `ttapi/gpt-5.4` 不是持续性全局不可用，也不是单纯“大 prompt 必挂”。
+- 当前最合理结论是：`orchestrator -> ttapi/gpt-5.4` 在该时间窗口发生了瞬时上游异常；Feishu 只是入口，不是根因层。若要降低再次出现时的中断概率，优先给 orchestrator 增加稳定 fallback provider，而不是先动 Feishu 通道配置。
